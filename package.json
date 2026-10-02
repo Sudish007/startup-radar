@@ -1,0 +1,21 @@
+{
+  "name": "startup-radar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Startup-discovery aggregator: new launches, funding news and accelerator batches from public feeds and APIs.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "fetch:once": "node src/refresh.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "express": "5.2.1",
+    "rss-parser": "3.13.0"
+  }
+}
