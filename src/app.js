@@ -1,0 +1,191 @@
+import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
+import { KINDS, REGIONS } from './lib/classify.js';
+import { EXPLORE_MORE } from './explore.js';
+
+const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+const CSP = "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+const LIMIT_DEFAULT = 30;
+const LIMIT_MAX = 100;
+const PAGE_MAX = 10000;
+const Q_MAX = 200;
+
+function securityHeaders(req, res, next) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  if (req.path === '/health' || req.path.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+}
+
+function parseIntParam(value, { fallback, min, max }) {
+  if (value === undefined) return fallback;
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function firstString(value) {
+  if (Array.isArray(value)) return value[0];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** Validate /api/items query. Returns { ok: true, params } or { ok: false, error }. */
+export function parseItemsQuery(query, knownSourceIds) {
+  const kind = firstString(query.kind);
+  if (kind !== undefined && kind !== '' && !KINDS.includes(kind)) {
+    return { ok: false, error: `invalid kind; expected one of ${KINDS.join(', ')}` };
+  }
+
+  const region = firstString(query.region);
+  if (region !== undefined && region !== '' && region !== 'world' && !REGIONS.includes(region)) {
+    return { ok: false, error: `invalid region; expected one of ${[...REGIONS, 'world'].join(', ')}` };
+  }
+
+  let sources;
+  const sourceParam = firstString(query.source);
+  if (sourceParam !== undefined && sourceParam !== '') {
+    sources = sourceParam.split(',').map((s) => s.trim()).filter(Boolean);
+    const unknown = sources.filter((s) => !knownSourceIds.has(s));
+    if (unknown.length) return { ok: false, error: `unknown source: ${unknown.join(', ')}` };
+  }
+
+  let since;
+  const sinceParam = firstString(query.since);
+  if (sinceParam !== undefined && sinceParam !== '') {
+    const t = Date.parse(sinceParam);
+    if (Number.isNaN(t)) return { ok: false, error: 'invalid since; expected an ISO 8601 date' };
+    since = new Date(t).toISOString();
+  }
+
+  const qRaw = firstString(query.q);
+  const q = qRaw ? qRaw.trim().slice(0, Q_MAX) : undefined;
+
+  return {
+    ok: true,
+    params: {
+      kind: kind || undefined,
+      region: region || undefined,
+      sources,
+      since,
+      q: q || undefined,
+      page: parseIntParam(firstString(query.page), { fallback: 1, min: 1, max: PAGE_MAX }),
+      limit: parseIntParam(firstString(query.limit), { fallback: LIMIT_DEFAULT, min: 1, max: LIMIT_MAX }),
+    },
+  };
+}
+
+function bearerToken(req) {
+  const header = req.get('authorization');
+  if (!header) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return m ? m[1].trim() : null;
+}
+
+function tokenMatches(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+export function createApp({ db, sources, config, refresh, env = process.env }) {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('etag', false);
+
+  const sourceById = new Map(sources.map((s) => [s.id, s]));
+  const nameOf = (id) => sourceById.get(id)?.name ?? id;
+
+  app.use(securityHeaders);
+  app.use(express.static(PUBLIC_DIR, { maxAge: '1h', index: 'index.html' }));
+
+  app.get('/sources', (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'sources.html'));
+  });
+
+  app.get('/health', (req, res) => {
+    res.json({ ok: true, items: db.countItems(), lastRefresh: db.lastRefresh() });
+  });
+
+  app.get('/api/items', (req, res) => {
+    const parsed = parseItemsQuery(req.query, sourceById);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    const { params } = parsed;
+    const { items, total } = db.queryItems(params);
+    for (const item of items) item.source.name = nameOf(item.source.id);
+    res.json({
+      items,
+      page: params.page,
+      limit: params.limit,
+      total,
+      hasMore: params.page * params.limit < total,
+    });
+  });
+
+  app.get('/api/sources', (req, res) => {
+    const statuses = db.getSourceStatuses();
+    const counts = db.itemCountsBySource();
+    const list = sources.map((s) => {
+      const st = statuses.get(s.id) ?? {};
+      return {
+        id: s.id,
+        name: s.name,
+        homepage: s.homepage,
+        kind: s.kind,
+        region: s.region,
+        enabled: Boolean(s.enabled(env)),
+        requires: s.requires ?? null,
+        lastRunAt: st.last_run_at ?? null,
+        lastSuccessAt: st.last_success_at ?? null,
+        lastError: st.last_error ?? null,
+        lastDurationMs: st.last_duration_ms ?? null,
+        lastItemCount: st.last_item_count ?? null,
+        itemCount: counts[s.id] ?? 0,
+      };
+    });
+    res.json({ sources: list, exploreMore: EXPLORE_MORE });
+  });
+
+  app.get('/api/stats', (req, res) => {
+    res.json(db.getStats());
+  });
+
+  app.post('/api/refresh', async (req, res, next) => {
+    try {
+      if (!config.adminToken) return res.status(404).json({ error: 'not found' });
+      const token = bearerToken(req);
+      if (!tokenMatches(token, config.adminToken)) return res.status(401).json({ error: 'unauthorized' });
+      if (refresh.isRunning()) return res.status(409).json({ running: true });
+      const summary = await refresh.runRefreshCycle();
+      res.json({
+        ok: true,
+        durationMs: summary.durationMs,
+        sources: summary.sources.map(({ id, ok, count, error, durationMs }) => ({ id, ok, count, error, durationMs })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.use('/api', (req, res) => {
+    res.status(404).json({ error: 'not found' });
+  });
+
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    console.error('[app] unhandled error:', err?.message ?? err);
+    if (res.headersSent) return;
+    res.status(500).json({ error: 'internal error' });
+  });
+
+  return app;
+}
