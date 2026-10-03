@@ -91,3 +91,51 @@ export function filterItems(items, { kind = '', region = '', sources = [], q = '
   }
   return out.sort(compareNewestFirst);
 }
+
+// ---------- identity and honest sorting (UI redesign) ----------
+
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const MASK_64 = 0xffffffffffffffffn;
+const utf8 = new TextEncoder();
+
+/**
+ * Stable identity of an item across builds: 64-bit FNV-1a of the UTF-8 bytes of
+ * `String(url ?? '')`, rendered in base 36 (1-13 characters). Numeric ids are
+ * per-build SQLite rowids on the static host, so the unique `url` is the key.
+ * Pure: never throws, coerces non-strings, same input -> same output.
+ */
+export function itemKey(url) {
+  const bytes = utf8.encode(String(url ?? ''));
+  let hash = FNV_OFFSET;
+  for (const b of bytes) {
+    hash ^= BigInt(b);
+    hash = (hash * FNV_PRIME) & MASK_64;
+  }
+  return hash.toString(36);
+}
+
+/** Hacker News points, else Product Hunt votes, else null (only finite numbers count). */
+export function pointsOf(item) {
+  const extra = item?.extra;
+  if (!extra || typeof extra !== 'object') return null;
+  if (typeof extra.points === 'number' && Number.isFinite(extra.points)) return extra.points;
+  if (typeof extra.votes === 'number' && Number.isFinite(extra.votes)) return extra.votes;
+  return null;
+}
+
+/** Items with a points/votes value first (descending); ties and the no-value tail fall back to newest-first. */
+export function comparePoints(a, b) {
+  const pa = pointsOf(a);
+  const pb = pointsOf(b);
+  if (pa !== null && pb !== null && pa !== pb) return pb - pa;
+  if (pa !== null && pb === null) return -1;
+  if (pa === null && pb !== null) return 1;
+  return compareNewestFirst(a, b);
+}
+
+/** `'points'` -> a stable re-sort by comparePoints (new array); any other value keeps the input order. */
+export function sortItems(items, sort) {
+  if (sort === 'points') return [...items].sort(comparePoints);
+  return items;
+}
