@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -97,15 +98,24 @@ function tokenMatches(provided, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-export function createApp({ db, sources, config, refresh, env = process.env }) {
+export function createApp({ db, sources, config, refresh, env = process.env, swVersion = new Date().toISOString() }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
 
   const sourceById = new Map(sources.map((s) => [s.id, s]));
   const nameOf = (id) => sourceById.get(id)?.name ?? id;
+  // The service worker's cache name embeds the version; read once at boot (misconfiguration is fatal here).
+  const swSource = fs.readFileSync(path.join(PUBLIC_DIR, 'sw.js'), 'utf8').replaceAll('__BUILD_VERSION__', String(swVersion));
 
   app.use(securityHeaders);
+
+  // Registered before express.static so the version token is always replaced.
+  app.get('/sw.js', (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(swSource);
+  });
 
   // Same JSON files the static build writes to dist/data/, generated per request.
   app.get('/data/items.json', (req, res) => {

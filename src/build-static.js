@@ -34,6 +34,7 @@ export async function runBuild({
   dbPath,
   snapshotUrl = null,
   now = new Date(),
+  buildVersion = env.GITHUB_SHA?.slice(0, 12) ?? now.toISOString().replace(/\D/g, '').slice(0, 14),
 }) {
   const db = openDb(dbPath);
   try {
@@ -63,6 +64,12 @@ export async function runBuild({
     fs.rmSync(outDir, { recursive: true, force: true });
     fs.cpSync(publicDir, outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, '.nojekyll'), '');
+    // Version the service worker's precache (the token also exists in src/app.js's /sw.js route).
+    const swPath = path.join(outDir, 'sw.js');
+    if (fs.existsSync(swPath)) {
+      fs.writeFileSync(swPath, fs.readFileSync(swPath, 'utf8').replaceAll('__BUILD_VERSION__', String(buildVersion)));
+      log(`[build] sw version ${buildVersion}`);
+    }
     const dataDir = path.join(outDir, 'data');
     fs.mkdirSync(dataDir, { recursive: true });
     const itemsBytes = writeJson(path.join(dataDir, 'items.json'), snapshot.items);

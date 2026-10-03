@@ -139,6 +139,38 @@ describe('runBuild', () => {
     assert.match(final, /^\[build\] imported 1 from snapshot, fetched 2 live \(1 sources OK of 2 enabled\), exported 3 items \(items\.json 3 items \/ [\d.]+ KB\)$/);
   });
 
+  test('without public/sw.js no sw-version line is logged', async () => {
+    const r = await build();
+    assert.equal(r.exitCode, 0);
+    assert.equal(fs.existsSync(path.join(outDir, 'sw.js')), false);
+    assert.equal(logs.filter((l) => l.startsWith('[build] sw version')).length, 0);
+  });
+
+  test('replaces __BUILD_VERSION__ in dist/sw.js and logs the sw version before the summary', async () => {
+    fs.writeFileSync(path.join(publicDir, 'sw.js'), "const VERSION = '__BUILD_VERSION__';\nconst CACHE = `sr-shell-${VERSION}`; // __BUILD_VERSION__\n");
+    const r = await build({ buildVersion: 'abc123' });
+    assert.equal(r.exitCode, 0);
+    const sw = fs.readFileSync(path.join(outDir, 'sw.js'), 'utf8');
+    assert.ok(sw.includes("const VERSION = 'abc123'"));
+    assert.ok(!sw.includes('__BUILD_VERSION__'), 'every occurrence replaced');
+    const versionLines = logs.filter((l) => l.startsWith('[build] sw version'));
+    assert.deepEqual(versionLines, ['[build] sw version abc123']);
+    assert.ok(logs.indexOf('[build] sw version abc123') < logs.length - 1, 'logged before the final summary');
+    assert.match(logs.at(-1), /^\[build\] imported 1 from snapshot, fetched 2 live \(1 sources OK of 2 enabled\), exported 3 items \(items\.json 3 items \/ [\d.]+ KB\)$/);
+    assert.equal(fs.readFileSync(path.join(publicDir, 'sw.js'), 'utf8').includes('__BUILD_VERSION__'), true, 'the source file is untouched');
+  });
+
+  test('buildVersion defaults to GITHUB_SHA (12 chars) or the timestamp of `now`', async () => {
+    fs.writeFileSync(path.join(publicDir, 'sw.js'), "const VERSION = '__BUILD_VERSION__';");
+    let r = await build({ env: { GITHUB_SHA: 'abcdef0123456789abcdef0123456789abcdef01' } });
+    assert.equal(r.exitCode, 0);
+    assert.ok(logs.includes('[build] sw version abcdef012345'));
+    logs = [];
+    r = await build({ env: {} });
+    assert.equal(r.exitCode, 0);
+    assert.ok(logs.includes('[build] sw version 20261002120000'), logs.filter((l) => l.startsWith('[build] sw')).join());
+  });
+
   test('snapshot 404 -> exit 0 with only live items', async () => {
     const r = await build({ http: notFoundHttp() });
     assert.equal(r.exitCode, 0);

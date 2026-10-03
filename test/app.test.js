@@ -20,12 +20,13 @@ const stubSource = {
   },
 };
 
-function boot({ adminToken = null } = {}) {
+function boot({ adminToken = null, swVersion = 'test-v1' } = {}) {
   const db = openDb(':memory:');
   const sources = [stubSource];
   const config = { adminToken, userAgent: 'test', fetchTimeoutMs: 1000, maxBodyBytes: 1000 };
   const refresh = createRefresh({ db, http: {}, sources, env: {}, log: () => {} });
-  const app = createApp({ db, sources, config, refresh, env: {} });
+  // swVersion: null -> let createApp pick its default (a fresh ISO timestamp)
+  const app = createApp({ db, sources, config, refresh, env: {}, ...(swVersion === null ? {} : { swVersion }) });
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
@@ -146,6 +147,53 @@ describe('app without ADMIN_TOKEN', () => {
     const res = await fetch(`${ctx.base}/api/nope`);
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: 'not found' });
+  });
+
+  test('GET /sw.js replaces the version token with no-cache', async () => {
+    const res = await fetch(`${ctx.base}/sw.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /application\/javascript/);
+    assert.equal(res.headers.get('cache-control'), 'no-cache');
+    const body = await res.text();
+    assert.ok(!body.includes('__BUILD_VERSION__'));
+    assert.ok(body.includes("const VERSION = 'test-v1'"));
+    assert.ok(!/['"]\/api\//.test(body) && !/['"]\/data\//.test(body), 'no leading-slash literals in sw.js');
+  });
+
+  test('default swVersion differs per createApp', async () => {
+    const a = await boot({ swVersion: null });
+    await new Promise((r) => setTimeout(r, 2));
+    const b = await boot({ swVersion: null });
+    try {
+      const va = /const VERSION = '([^']+)'/.exec(await (await fetch(`${a.base}/sw.js`)).text())[1];
+      const vb = /const VERSION = '([^']+)'/.exec(await (await fetch(`${b.base}/sw.js`)).text())[1];
+      assert.ok(!Number.isNaN(Date.parse(va)), `ISO timestamp: ${va}`);
+      assert.notEqual(va, vb);
+    } finally {
+      await shutdown(a);
+      await shutdown(b);
+    }
+  });
+
+  test('GET /manifest.webmanifest has no id', async () => {
+    const res = await fetch(`${ctx.base}/manifest.webmanifest`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /application\/manifest\+json/);
+    const manifest = JSON.parse(await res.text());
+    assert.equal('id' in manifest, false);
+    assert.equal(manifest.start_url, './');
+    assert.equal(manifest.scope, './');
+    assert.equal(manifest.display, 'standalone');
+    assert.equal(manifest.icons.length, 3);
+  });
+
+  test('GET /icons/icon-192.png is image/png', async () => {
+    const res = await fetch(`${ctx.base}/icons/icon-192.png`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /image\/png/);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.equal(bytes.readUInt32BE(16), 192);
+    assert.equal(bytes.readUInt32BE(20), 192);
   });
 
   test('POST /api/refresh is 404 when no admin token is configured', async () => {
