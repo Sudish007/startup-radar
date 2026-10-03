@@ -1,88 +1,29 @@
 // Startup Radar sources page. Vanilla ES module; DOM built with
-// createElement/textContent only (strict CSP). Reads the static files
-// ./data/sources.json and ./data/stats.json (Express or GitHub Pages).
+// createElement/textContent only (strict CSP). Reads ./data/sources.json and
+// ./data/stats.json (Express or GitHub Pages); the top bar (theme, help,
+// status line, 5-minute stats poll, minute ticker) is shared through ./ui.js.
+
+import { absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
+import {
+  clear, createStatusLine, el, extLink, fetchJson, initHelp, initInstallPrompt, initTheme, observeSticky, openHelp, pollStats,
+  registerServiceWorker, startTicker, tickTimes, toggleTheme,
+} from './ui.js';
 
 const SOURCES_URL = './data/sources.json';
 const STATS_URL = './data/stats.json';
-
-const KIND_LABELS = {
-  launch: 'Launch',
-  funding: 'Funding',
-  news: 'News',
-  accelerator: 'Accelerator',
-};
-
-const REGION_LABELS = {
-  usa: 'USA',
-  europe: 'Europe',
-  asia: 'Asia',
-  india: 'India',
-  latam: 'Latin America',
-  africa: 'Africa',
-  global: 'Global',
-};
-
 const ERROR_MAX = 120;
-const STATS_POLL_MS = 60_000;
 
 const els = {
-  subtitle: document.getElementById('subtitle'),
-  lastRefreshed: document.getElementById('last-refreshed'),
   status: document.getElementById('status'),
+  strip: document.querySelector('.status-strip'),
   tableWrap: document.getElementById('table-wrap'),
   tbody: document.querySelector('#sources-table tbody'),
   exploreList: document.getElementById('explore-list'),
 };
 
-function el(tag, props = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (value === undefined || value === null) continue;
-    if (key === 'className') node.className = value;
-    else if (key === 'text') node.textContent = value;
-    else node.setAttribute(key, value);
-  }
-  for (const child of children) {
-    if (child === null || child === undefined) continue;
-    node.append(child);
-  }
-  return node;
-}
-
-function clear(node) {
-  while (node.firstChild) node.removeChild(node.firstChild);
-}
-
-function relativeTime(iso, now = Date.now()) {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  const diffSec = Math.round((now - t) / 1000);
-  if (diffSec < 0) return new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  if (diffSec < 60) return 'just now';
-  const min = Math.round(diffSec / 60);
-  if (min < 60) return `${min} min ago`;
-  const hours = Math.round(min / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days} d ago`;
-  return new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-function absoluteTime(iso) {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  return new Date(t).toLocaleString();
-}
-
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) {
-    const msg = body && typeof body.error === 'string' ? body.error : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  return body;
-}
+const statusLine = createStatusLine();
+let payload = null;
+let loadError = '';
 
 function enabledText(s) {
   if (s.enabled) return 'Yes';
@@ -94,15 +35,16 @@ function enabledText(s) {
   return 'No';
 }
 
+function cell(label, children, className = null) {
+  return el('td', { role: 'cell', className, 'data-label': label }, children);
+}
+
 function renderRow(s) {
-  const sourceCell = el('th', { scope: 'row' }, [
-    el('a', { href: s.homepage, target: '_blank', rel: 'noopener noreferrer', text: s.name }),
-  ]);
-
+  const health = s.enabled ? (s.lastError ? 'warn' : 'ok') : 'off';
+  const sourceCell = el('th', { scope: 'row', role: 'rowheader', 'data-label': 'Source' }, [extLink(s.homepage, s.name)]);
   const lastSuccess = s.lastSuccessAt
-    ? el('time', { datetime: s.lastSuccessAt, title: absoluteTime(s.lastSuccessAt), text: relativeTime(s.lastSuccessAt) })
+    ? el('time', { datetime: s.lastSuccessAt, title: absoluteTime(s.lastSuccessAt), 'data-rel': '', text: relativeTime(s.lastSuccessAt) })
     : document.createTextNode('never');
-
   let lastError;
   if (s.lastError) {
     const full = String(s.lastError);
@@ -111,70 +53,97 @@ function renderRow(s) {
   } else {
     lastError = document.createTextNode('\u2014');
   }
-
-  return el('tr', {}, [
+  return el('tr', { role: 'row' }, [
     sourceCell,
-    el('td', { text: enabledText(s) }),
-    el('td', { text: KIND_LABELS[s.kind] || s.kind }),
-    el('td', { text: REGION_LABELS[s.region] || s.region }),
-    el('td', {}, [lastSuccess]),
-    el('td', {}, [lastError]),
-    el('td', { className: 'num', text: String(s.itemCount ?? 0) }),
+    cell('Enabled', [el('span', { className: `health-dot ${health}`, 'aria-hidden': 'true' }), document.createTextNode(enabledText(s))]),
+    cell('Kind', [document.createTextNode(kindLabel(s.kind))]),
+    cell('Region', [document.createTextNode(regionLabel(s.region))]),
+    cell('Last successful fetch', [lastSuccess]),
+    cell('Last error', [lastError], 'error'),
+    cell('Items', [document.createTextNode(String(s.itemCount ?? 0))], 'num'),
   ]);
 }
 
 function renderExplore(list) {
   clear(els.exploreList);
   for (const entry of list) {
-    const li = el('li', {}, [
-      el('a', { href: entry.url, target: '_blank', rel: 'noopener noreferrer', text: entry.name }),
-    ]);
-    if (entry.note) {
-      li.append(document.createTextNode(' \u2014 '));
-      li.append(el('span', { className: 'note', text: entry.note }));
-    }
+    const li = el('li', {}, [extLink(entry.url, entry.name)]);
+    if (entry.note) li.append(el('span', { className: 'note', text: entry.note }));
     els.exploreList.append(li);
   }
 }
 
-async function loadSources() {
-  try {
-    const data = await fetchJson(SOURCES_URL);
-    const sources = data.sources || [];
-    clear(els.tbody);
-    for (const s of sources) els.tbody.append(renderRow(s));
-    renderExplore(data.exploreMore || []);
+function tile(value, label) {
+  return el('li', { className: 'stat' }, [
+    el('span', { className: 'stat-n', text: String(value) }),
+    el('span', { className: 'stat-l', text: label }),
+  ]);
+}
 
-    const enabled = sources.filter((s) => s.enabled).length;
-    els.status.textContent = `${sources.length} configured, ${enabled} enabled.`;
-    els.tableWrap.hidden = false;
-    els.subtitle.textContent = `Newly launched and newly funded startups from ${enabled} public ${enabled === 1 ? 'source' : 'sources'}, refreshed automatically.`;
-  } catch (err) {
+function renderAll() {
+  if (!payload) {
     clear(els.status);
     els.status.setAttribute('role', 'alert');
-    els.status.textContent = `Could not load sources: ${err.message}`;
+    els.status.textContent = `Could not load sources: ${loadError}`;
+    return;
+  }
+  const sources = payload.sources;
+  const enabled = sources.filter((s) => s.enabled);
+  const withErrors = enabled.filter((s) => s.lastError);
+  clear(els.tbody);
+  for (const s of sources) els.tbody.append(renderRow(s));
+  renderExplore(payload.exploreMore || []);
+  els.status.textContent = `${sources.length} configured, ${enabled.length} enabled.`;
+  clear(els.strip);
+  els.strip.append(tile(sources.length, 'Configured'), tile(enabled.length, 'Enabled'), tile(withErrors.length, 'With errors'));
+  els.strip.hidden = false;
+  els.tableWrap.hidden = false;
+}
+
+async function loadSources() {
+  try {
+    const body = await fetchJson(SOURCES_URL);
+    if (!body || !Array.isArray(body.sources)) throw new Error('unexpected response');
+    payload = body;
+  } catch (err) {
+    payload = null;
+    loadError = err.message;
   }
 }
 
 async function loadStats() {
   try {
     const stats = await fetchJson(STATS_URL);
-    const at = stats.lastRefresh ?? stats.generatedAt;
-    if (at) {
-      els.lastRefreshed.textContent = `Last refreshed ${relativeTime(at)}`;
-      els.lastRefreshed.title = absoluteTime(at);
-    } else {
-      els.lastRefreshed.textContent = 'Last refreshed: unknown';
-      els.lastRefreshed.removeAttribute('title');
-    }
+    if (!stats || typeof stats !== 'object') throw new Error('unexpected response');
+    statusLine.update(stats);
   } catch {
-    els.lastRefreshed.textContent = 'Last refreshed: unknown';
+    statusLine.fail();
   }
 }
 
+function tick() {
+  tickTimes(document);
+  statusLine.tick();
+}
+
 async function init() {
-  await Promise.all([loadSources(), loadStats()]);
-  setInterval(loadStats, STATS_POLL_MS);
+  initTheme();
+  initHelp();
+  observeSticky();
+  // Keyboard layer of this page: `t` toggles the theme (also inside the help dialog), `?` opens help.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    const t = e.target instanceof Element ? e.target : document.body;
+    if (t.closest('input, textarea, select, [contenteditable]')) return;
+    if (e.key === 't') { e.preventDefault(); toggleTheme(); return; }
+    if (e.key === '?' && !document.querySelector('dialog[open]')) { e.preventDefault(); openHelp(t instanceof HTMLElement ? t : null); }
+  });
+  await Promise.allSettled([loadSources(), loadStats()]);
+  renderAll();
+  pollStats({ url: STATS_URL, onStats: (stats) => statusLine.update(stats), onError: () => statusLine.fail() });
+  startTicker(tick);
+  registerServiceWorker();
+  initInstallPrompt();
 }
 
 init();

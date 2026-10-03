@@ -358,7 +358,8 @@ time { font: 400 var(--t-meta)/1.4 var(--font-mono); color: var(--fg-2); }
 .sk-badge { width: 80px; height: 20px; } .sk-title { height: 16px; } .sk.short { width: 60%; } .sk-meta { width: 40%; }
 .empty { grid-column: 1 / -1; text-align: center; padding: 48px 16px; display: grid; gap: 12px; justify-items: center; }
 .empty .icon-lg { width: 48px; height: 48px; color: var(--fg-2); }
-.empty h2 { margin: 0; font-size: var(--t-lede); line-height: 1.4; font-weight: 600; color: var(--fg-0); }
+.empty-title { margin: 0; font-size: var(--t-lede); line-height: 1.4; font-weight: 600; color: var(--fg-0); }
+.results { scroll-margin-top: calc(var(--sticky-h) + 16px); }
 .empty p { margin: 0; color: var(--fg-1); }
 .alert { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: var(--danger-tint); border-left: 3px solid var(--danger); border-radius: var(--r-2); color: var(--danger-fg); }
 .alert p { margin: 0; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
