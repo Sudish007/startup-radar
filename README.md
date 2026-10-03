@@ -1,9 +1,14 @@
 # Startup Radar
 
-A small, self-hosted aggregator for discovering new startups: product launches, funding news and
+A small aggregator for discovering new startups: product launches, funding news and
 accelerator batches, pulled from public feeds and APIs into one searchable, filterable page.
-It runs as a single Node.js process with a SQLite database, refreshes itself on a timer, and can
-be deployed to [Railway](https://railway.com) in a few minutes.
+
+Live site: **https://sudish007.github.io/startup-radar** — a static build hosted for free on
+GitHub Pages and rebuilt every hour by GitHub Actions (see
+[Hosting on GitHub Pages](#8-hosting-on-github-pages-free)). The same code also runs as a
+single Node.js process with a SQLite database that refreshes itself on a timer, which is the
+[Railway](https://railway.com) deployment described further down for anyone who wants a live
+server and the JSON API.
 
 It only aggregates sources that publish a public feed or API. Paid databases (Crunchbase,
 PitchBook, Dealroom and others) are listed as links; nothing is scraped from them. Vote counts,
@@ -17,32 +22,41 @@ metrics.
 3. [Requirements](#3-requirements)
 4. [Quick start](#4-quick-start)
 5. [Configuration](#5-configuration)
-6. [API](#6-api)
+6. [API and data files](#6-api-and-data-files)
 7. [How refresh works](#7-how-refresh-works)
-8. [Deploy to Railway](#8-deploy-to-railway)
-9. [Railway limits and cost](#9-railway-limits-and-cost)
-10. [Screenshots](#10-screenshots)
-11. [Adding a source](#11-adding-a-source)
-12. [Tests](#12-tests)
-13. [Security notes](#13-security-notes)
-14. [License](#14-license)
+8. [Hosting on GitHub Pages (free)](#8-hosting-on-github-pages-free)
+9. [Deploy to Railway (live server)](#9-deploy-to-railway-live-server)
+10. [Railway limits and cost](#10-railway-limits-and-cost)
+11. [Screenshots](#11-screenshots)
+12. [Adding a source](#12-adding-a-source)
+13. [Tests](#13-tests)
+14. [Security notes](#14-security-notes)
+15. [License](#15-license)
 
 ## 1. What it is
 
-Startup Radar fetches 19 public sources every `REFRESH_MINUTES` (default 30), normalizes each
-entry to one row (title, URL, summary, source, kind, region, published date), de-duplicates by
-URL and stores everything in SQLite. The web UI at `/` lists items newest first and lets you
-filter by kind (launch, funding, news, accelerator), region (USA, Europe, Asia, India, Latin
-America, Africa, global, or an All / USA / World toggle), source and time window, and search
-titles and summaries (all terms must match as whole words or word prefixes). `/sources` shows every adapter with its last fetch
-status, last error and item count, followed by an "Explore more" list of directories that are
-links only. A read-only JSON API backs the UI.
+Startup Radar fetches 19 public sources, normalizes each entry to one row (title, URL, summary,
+source, kind, region, published date), de-duplicates by URL and stores everything in SQLite.
+On the static site this happens once per hourly build; on a server it happens every
+`REFRESH_MINUTES` (default 30).
+
+The web UI (`index.html`) loads the item list once from `data/items.json` and does all
+filtering, sorting, searching and paging in the browser: filter by kind (launch, funding,
+news, accelerator), region (USA, Europe, Asia, India, Latin America, Africa, global, or an
+All / USA / World toggle), source and time window, and search titles and summaries (all terms
+must match as whole words or word prefixes). Filter state is kept in the URL so views can be
+shared. `sources.html` shows every adapter with its last fetch status, last error and item
+count, followed by an "Explore more" list of directories that are links only. The same UI
+works unchanged on GitHub Pages and on the Node server; the server additionally exposes a
+read-only JSON API.
 
 ## 2. Sources
 
-Every source below was probed live on 2026-10-02. "Aggregated by default" sources need no
-credentials. "Optional" sources are implemented but off unless you set an environment variable.
-"Links only" sources are shown on `/sources` as links and are never fetched, each with the reason.
+Every source below was probed live on 2026-10-02 from a home network. "Aggregated by default"
+sources need no credentials. "Optional" sources are implemented but off unless you set an
+environment variable. "Links only" sources are shown on `sources.html` as links and are never
+fetched, each with the reason. Some sources behave differently when fetched from GitHub's
+shared runner IPs; see the note in [Hosting on GitHub Pages](#8-hosting-on-github-pages-free).
 
 ### Aggregated by default (19)
 
@@ -77,8 +91,8 @@ counts unless `PRODUCTHUNT_TOKEN` is configured, because the public feed does no
 | Source | Enable with | Notes |
 |---|---|---|
 | Reddit — r/SideProject + r/startups | `ENABLE_REDDIT=true` | Uses the Atom endpoints (`new.rss`); Reddit's JSON endpoints returned 403 and `r/startups` returned 429 on every probe, so shared cloud IPs are likely to be rate-limited. One subreddit failing does not fail the source. |
-| Product Hunt (GraphQL API) | `PRODUCTHUNT_TOKEN` | Replaces the Atom feed with the v2 GraphQL API and adds vote counts. A failing token is reported as an error on `/sources` rather than silently falling back to the feed. |
-| Crunchbase — funding rounds (API) | `CRUNCHBASE_API_KEY` | Crunchbase v4 `searches/funding_rounds`. Shown as "not configured" on `/sources` without a key. The response mapping follows the v4 docs and has not been verified against a live key. |
+| Product Hunt (GraphQL API) | `PRODUCTHUNT_TOKEN` | Replaces the Atom feed with the v2 GraphQL API and adds vote counts. A failing token is reported as an error on `sources.html` rather than silently falling back to the feed. |
+| Crunchbase — funding rounds (API) | `CRUNCHBASE_API_KEY` | Crunchbase v4 `searches/funding_rounds`. Shown as "not configured" on `sources.html` without a key. The response mapping follows the v4 docs and has not been verified against a live key. |
 
 ### Links only (not aggregated)
 
@@ -104,9 +118,10 @@ counts unless `PRODUCTHUNT_TOKEN` is configured, because the public feed does no
 - Node.js 22 or newer. `better-sqlite3` 13 (the SQLite binding) requires Node 22+, and it ships
   prebuilt binaries for Linux, macOS and Windows, so no compiler or Python is needed for
   `npm install`. `engines.node` in `package.json` is `>=22`; Railway reads it and builds with
-  Node 22.
+  Node 22; the GitHub Actions workflow uses Node 24.
 - Outbound HTTPS access to the sources above.
-- Nothing else: SQLite is embedded and the frontend is static files.
+- Nothing else: SQLite is embedded and the frontend is static files. Hosting the static build
+  needs no server at all (GitHub Pages serves `dist/`).
 
 ## 4. Quick start
 
@@ -120,13 +135,26 @@ Other commands:
 
 ```bash
 npm run fetch:once          # run one refresh cycle, print a per-source table, exit
+npm run build:static        # fetch all sources once and write the static site to dist/ (what GitHub Pages serves)
+npm run verify:pages -- <baseUrl>   # HTTP-level checks of a deployed site, e.g. https://sudish007.github.io/startup-radar
 npm run dev                 # same as start, restarts on file changes (node --watch)
 npm test                    # unit + API tests (node --test), no network needed
 ```
 
-The database is created on first start in `DATA_DIR` (default `./data/startup-radar.db`); the
-directory is created if it does not exist. The first refresh cycle usually finishes within a few
-seconds; `/` shows "Last refreshed never" until then.
+`npm start` creates the database on first start in `DATA_DIR` (default
+`./data/startup-radar.db`); the directory is created if it does not exist. The first refresh
+cycle usually finishes within a few seconds; the page shows "Last refreshed never" until then.
+
+`npm run build:static` needs network access and takes a few seconds to half a minute. It uses a
+temporary database (never `./data`), prints the same per-source table as `fetch:once` plus an
+`imported / fetched / exported` summary, and writes `dist/` (a copy of `public/`, `.nojekyll`
+and `data/*.json`). `dist/` is gitignored. To preview it locally serve the folder with any static
+file server, for example `python -m http.server 8080 --directory dist`.
+
+`scripts/screenshots.py` (Python + Playwright) has two modes: the default parity mode compares
+the UI with `/api/items` against a running Node server and rewrites the screenshots; with
+`SMOKE_ONLY=1` it runs browser checks that need only the static files, so it also works against
+a `dist/` preview or the live Pages site. See [Tests](#13-tests).
 
 ## 5. Configuration
 
@@ -143,16 +171,44 @@ Copy `.env.example` to get started.
 | `PRODUCTHUNT_TOKEN` | unset | producthunt | Developer Token from producthunt.com/v2/oauth/applications → create app → "Developer Token". Switches Product Hunt to the GraphQL API (adds votes). |
 | `CRUNCHBASE_API_KEY` | unset | crunchbase | Enables the Crunchbase v4 funding-rounds adapter. |
 | `ENABLE_REDDIT` | `false` | reddit | `true` enables r/SideProject + r/startups (Atom). Off by default because Reddit answered 403/429 during verification. |
-| `PUBLIC_URL` | `http://localhost:3000` | config | Used in the outbound `User-Agent: StartupRadar/1.0 (+<PUBLIC_URL>)`. Set it to your Railway domain. |
+| `PUBLIC_URL` | `http://localhost:3000` | config | Used in the outbound `User-Agent: StartupRadar/1.0 (+<PUBLIC_URL>)`. Set it to your Pages or Railway URL. |
+| `PREVIOUS_SNAPSHOT_URL` | unset | build:static only | URL of the previously published `data/items.json`. Its items (plus the sibling `archive.json` and `sources.json`) are imported before the live fetch so history survives between static builds. A 404 (first build) or a network error is logged and tolerated. Ignored by `npm start`. |
+
+`PORT`, `DATA_DIR`, `REFRESH_MINUTES` and `ADMIN_TOKEN` apply only to the Node server; the
+static build has no port, no persistent database and no write endpoint. `PRODUCTHUNT_TOKEN`,
+`CRUNCHBASE_API_KEY`, `ENABLE_REDDIT` and `PUBLIC_URL` apply to both.
 
 Fixed constants (not configurable): 15 s timeout per source, 5 MB maximum response body,
-API `limit` default 30 / maximum 100, summaries truncated to 300 characters.
+API `limit` default 30 / maximum 100, summaries truncated to 300 characters. Static export caps:
+items from the last 90 days, at most 3 000 items, `items.json` split at 800 items when the
+whole set exceeds 600 KB (the rest goes to `archive.json`).
 
-## 6. API
+## 6. API and data files
+
+### Data files (GitHub Pages and the Node server)
+
+The frontend reads only these four files, with relative URLs, so it works under any base path
+(the live site lives under `/startup-radar/`). On GitHub Pages they are static files written by
+`npm run build:static`; the Node server generates the same shapes on request at the same paths
+(`Cache-Control: no-store`). All filtering, searching and paging happens in the browser
+(`public/filter.js`), so there are no query parameters.
+
+| File | Content |
+|---|---|
+| `GET /data/items.json` | Array of items (same object shape as `/api/items` below, including `source.name`), newest first, from the last 90 days, at most 3 000. When the full set is larger than 600 KB this file holds the newest 800 and the rest moves to `archive.json`. |
+| `GET /data/archive.json` | Older items (same shape) when the split happened; otherwise the file does not exist (404). The UI fetches it on demand: when "Load more" runs out of recent items, when the 30-days or All-time chip is selected, or when a search is typed. |
+| `GET /data/sources.json` | Exactly the `/api/sources` payload: `{ "sources": [...], "exploreMore": [...] }`. Backs `sources.html`. |
+| `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started) and `archiveItems` (number of items in `archive.json`, `0` when there is none). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
+
+`sources.html` is the sources page on both hosts; the Node server keeps `/sources` as an alias
+for old links.
+
+### JSON API (Node server only)
 
 All endpoints return JSON. `GET` endpoints need no authentication and are read-only.
-`/api/*` and `/health` responses carry `Cache-Control: no-store`. Errors are
-`{ "error": "<message>" }` without stack traces.
+`/api/*`, `/data/*` and `/health` responses carry `Cache-Control: no-store`. Errors are
+`{ "error": "<message>" }` without stack traces. None of the `/api/*` routes or `/health`
+exist on GitHub Pages; the static site has only the data files above.
 
 ### `GET /health`
 
@@ -216,7 +272,8 @@ nothing else: `points`/`comments`/`author`/`hnUrl` (Hacker News), `batch` (Launc
 
 ### `POST /api/refresh`
 
-Triggers one refresh cycle and waits for it. No request body.
+Triggers one refresh cycle and waits for it. No request body. Not available on GitHub Pages
+(there is no process to refresh; the hourly workflow rebuilds the site instead).
 
 | Condition | Response |
 |---|---|
@@ -235,6 +292,9 @@ curl "http://localhost:3000/api/items?source=hn_show,producthunt&region=world"
 curl http://localhost:3000/api/sources
 curl http://localhost:3000/api/stats
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3000/api/refresh
+# the static data files, on the live site and on the server
+curl https://sudish007.github.io/startup-radar/data/stats.json
+curl http://localhost:3000/data/items.json
 ```
 
 ## 7. How refresh works
@@ -246,8 +306,8 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3000/api/r
 2. All enabled sources are fetched concurrently. Each one has a 15 s timeout and a 5 MB response
    cap; every outbound request goes through one HTTP client that sets the `User-Agent`.
 3. Failures are isolated: a source that errors or times out is recorded in `source_status`
-   (`lastError`, shown on `/sources`) and the other sources still complete. Only one cycle runs at
-   a time; overlapping triggers share the in-flight cycle.
+   (`lastError`, shown on `sources.html`) and the other sources still complete. Only one cycle
+   runs at a time; overlapping triggers share the in-flight cycle.
 4. Each raw entry is normalized: title trimmed and limited to 300 characters, URL must be
    `http(s)`, HTML is stripped from the summary and it is truncated to 300 characters, the date is
    converted to ISO 8601 UTC (the source's own date; YC uses `launched_at`; the fetch time is used
@@ -267,7 +327,125 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3000/api/r
 (`source | status | items | ms | error`), including disabled sources and the variable they need.
 It exits 0 when at least one enabled source succeeded.
 
-## 8. Deploy to Railway
+### The static build (`npm run build:static`)
+
+The static site is produced by the same engine, in three stages, against a temporary SQLite
+database that is deleted afterwards:
+
+1. **Snapshot import.** If `PREVIOUS_SNAPSHOT_URL` is set, the previously published
+   `data/items.json` (and its siblings `archive.json` and `sources.json`) are downloaded (15 s
+   timeout, 3 attempts for anything but a 404) and every item goes through the normal
+   `normalizeItem` + upsert path, grouped by source. The previous `sources.json` seeds the
+   source statuses so "last successful fetch" stays honest for a source that fails this time.
+   Items from a source that no longer exists are skipped and counted. A 404 (first build) or a
+   final download failure is logged (`[build] snapshot: none (HTTP 404 for …)`) and the build
+   starts empty.
+2. **Live fetch.** One normal refresh cycle over all enabled sources (step 2–6 above). Because
+   the snapshot was imported first, live data wins for mutable fields of an item that exists in
+   both. The per-source table is printed to the log.
+3. **Export.** If no source returned any item the build logs `[build] FAIL: no source returned
+   items` and exits 1 without touching `dist/`, so a total outage never replaces a good site with
+   an empty one. Otherwise `dist/` is recreated: `public/` is copied, `.nojekyll` is added and
+   `data/items.json`, `data/sources.json`, `data/stats.json` (and `data/archive.json` when the
+   600 KB / 800-item split applies) are written. The last log line reads
+   `[build] imported N from snapshot, fetched M live (K sources OK of T enabled), exported X items (…)`.
+
+Only items published in the last 90 days are exported (at most 3 000), so an item disappears
+from the static site 90 days after its publish date even though the snapshot chain would carry
+it forever.
+
+## 8. Hosting on GitHub Pages (free)
+
+This is how the public site at **https://sudish007.github.io/startup-radar** is hosted. It costs
+nothing: GitHub Pages serves the static files and GitHub Actions minutes are free for public
+repositories.
+
+### How it works
+
+`.github/workflows/pages.yml` runs on every push to `main` (except changes under `docs/`), on a
+schedule (`17 * * * *`, i.e. hourly at minute 17 to avoid the top-of-the-hour queue), and on
+demand (`workflow_dispatch`). The `build` job checks out the repo, installs with `npm ci`, runs
+`npm test`, then `npm run build:static` with:
+
+- `PUBLIC_URL=https://sudish007.github.io/startup-radar` (for the outbound User-Agent),
+- `PREVIOUS_SNAPSHOT_URL=https://sudish007.github.io/startup-radar/data/items.json`, so each
+  build imports what the previous build published before fetching the feeds. This is the only
+  persistence: the runner has no disk between runs, the Pages site is the database. The first
+  build gets a 404 here and starts empty, which is expected.
+- `PRODUCTHUNT_TOKEN` and `CRUNCHBASE_API_KEY` from repository secrets (both optional; the
+  adapters skip when they are empty).
+
+The `dist/` folder is uploaded with `actions/upload-pages-artifact` (with hidden files, so
+`.nojekyll` ships) and the `deploy` job publishes it with `actions/deploy-pages` to the
+`github-pages` environment. The workflow has `permissions: contents: read, pages: write,
+id-token: write` and never commits to the repository. Runs are serialized
+(`concurrency: pages`, no cancellation) so two builds cannot race for the snapshot.
+
+Per-source failures are logged in the per-source table but do not fail the build; it fails only
+when zero sources returned items, in which case nothing is deployed and the previous site stays
+online.
+
+Caps: items from the last 90 days, at most 3 000, `items.json` split at 800 items when the
+whole set exceeds 600 KB (older items go to `archive.json` and load on demand). Right after a
+build the data is a few seconds old; because the build runs hourly and Pages' CDN caches files
+for 10 minutes, what a visitor sees can be up to about 70 minutes old.
+
+> **Sources blocked from GitHub runners:** to be filled in from the first Actions run log.
+
+### Limits (from the GitHub docs)
+
+- A Pages site may not exceed 1 GB; this site is well under 1 MB of HTML/JS/CSS plus about
+  0.3–1.6 MB of JSON.
+- Soft bandwidth limit of 100 GB per month.
+- A deployment times out after 10 minutes; the build job has a 15-minute timeout and normally
+  finishes in about a minute.
+- The 10-builds-per-hour soft limit applies to Pages' built-in Jekyll builds, not to custom
+  Actions workflows like this one.
+- GitHub Actions minutes are free for public repositories.
+- Scheduled workflows can be delayed when GitHub is busy, so a build may start several minutes
+  after :17 or occasionally be skipped.
+- **60-day inactivity rule:** in a public repository, scheduled workflows are disabled
+  automatically when there has been no repository activity for 60 days. The hourly run itself
+  does not count as activity. When that happens the site stays online but stops updating. To
+  re-enable the schedule, do any of: push a commit to `main`, run
+  `gh workflow enable pages.yml`, or open the repository's **Actions** tab, select the workflow
+  and click **Enable workflow**.
+
+### Fork it and host your own copy
+
+1. Fork the repository (public, so Actions and Pages are free).
+2. Enable Pages with the GitHub Actions source: **Settings → Pages → Build and deployment →
+   Source: GitHub Actions**, or from the CLI
+   `gh api -X POST repos/<you>/startup-radar/pages -f build_type=workflow`
+   (if Pages already exists use `-X PUT` instead).
+3. Edit the two URLs in `.github/workflows/pages.yml` (`PUBLIC_URL` and
+   `PREVIOUS_SNAPSHOT_URL`) to `https://<you>.github.io/startup-radar` and
+   `https://<you>.github.io/startup-radar/data/items.json`.
+4. Optional secrets: `gh secret set PRODUCTHUNT_TOKEN` and `gh secret set CRUNCHBASE_API_KEY`
+   (or **Settings → Secrets and variables → Actions**).
+5. Push to `main` or run `gh workflow run pages.yml`, then watch it with `gh run watch`. The
+   first run reports `snapshot: none (HTTP 404 …)` and deploys; from the second run on, the log
+   shows `imported N items` from your previous deploy.
+6. Check the result: `npm run verify:pages -- https://<you>.github.io/startup-radar`.
+
+If you rename the repository, change the two URLs again; the site path follows the repo name.
+
+### What the static site does not have
+
+- No `/api/*` endpoints and no `/health`; only the four `data/*.json` files. Anything that needs
+  server-side queries (arbitrary `since` dates, `limit`, `page`) is done by the browser instead.
+- No `POST /api/refresh`: trigger a rebuild with `gh workflow run pages.yml` or from the Actions
+  tab.
+- No `Content-Security-Policy` or other security headers from the server; the pages carry the
+  same CSP as a `<meta>` tag instead (see [Security notes](#14-security-notes)).
+- Data is at most ~70 minutes old rather than `REFRESH_MINUTES`, and items older than 90 days
+  are not kept.
+
+## 9. Deploy to Railway (live server)
+
+Railway is the alternative when you want the Node server itself: the JSON API, a persistent
+SQLite database with unlimited history, refreshes every `REFRESH_MINUTES` and `POST /api/refresh`.
+It is not free (see [Railway limits and cost](#10-railway-limits-and-cost)).
 
 The repo contains two Railway configuration files:
 
@@ -300,7 +478,8 @@ step. Railway injects `PORT`; the server binds it on `0.0.0.0`.
 5. Service → **Settings → Networking → Generate Domain**. Open `https://<your-domain>/health`;
    it should return `{"ok":true,...}`.
 
-Every push to `main` redeploys.
+Every push to `main` redeploys (and, independently, triggers the GitHub Pages workflow if that
+is enabled; the two deployments do not interact).
 
 ### (b) From the CLI
 
@@ -346,7 +525,7 @@ The app still works without a volume: the database is created in `./data` inside
 and the first refresh cycle fills it within seconds. It is just ephemeral: history resets on each
 deploy, and anything older than what the feeds still list is lost.
 
-## 9. Railway limits and cost
+## 10. Railway limits and cost
 
 Verified on 2026-10-02 at docs.railway.com/reference/pricing/plans:
 
@@ -364,9 +543,9 @@ The Free plan's 0.5 GB volume cap is more than enough for the database (a few MB
 refreshes); the 1 GB volume in `.railway/railway.ts` assumes the Hobby plan, so lower `sizeMB` to
 `512` if you stay on Free.
 
-## 10. Screenshots
+## 11. Screenshots
 
-Captured from a local run with real data by `scripts/screenshots.py`.
+Captured from a local run with real data by `scripts/screenshots.py` (parity mode).
 
 ![Home page: masthead with "Last refreshed", filter bar (kind, region, All/USA/World toggle, sources, search, time chips) and a list of startup cards newest first](docs/screenshots/home.png)
 
@@ -376,7 +555,7 @@ Captured from a local run with real data by `scripts/screenshots.py`.
 
 ![Sources page: a table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
 
-## 11. Adding a source
+## 12. Adding a source
 
 A source is one file in `src/sources/<id>.js` whose default export follows this contract. The
 registry imports every `*.js` in that folder at startup, validates the shape and sorts by id;
@@ -390,7 +569,7 @@ export default {
   kind: 'news',                     // launch | funding | news | accelerator (default for its items)
   region: 'usa',                    // usa | europe | asia | india | latam | africa | global
   enabled: (env) => true,           // e.g. (env) => Boolean(env.MY_API_KEY)
-  requires: null,                   // shown on /sources when disabled, e.g. 'MY_API_KEY'
+  requires: null,                   // shown on sources.html when disabled, e.g. 'MY_API_KEY'
   async fetch(ctx) {
     // ctx = { http, rss, env, signal, log }
     // return [{ title, url, summary, publishedAt, kind?, region?, extra? }]
@@ -420,13 +599,14 @@ use the source's own canonical page as `url`; put source-specific numbers in `ex
 when the source actually provides them. Add a fixture-based test in `test/sources.test.js` and
 a row to the table in this README.
 
-## 12. Tests
+## 13. Tests
 
 ```bash
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (78 tests in 20 suites, no network, about a second):
+Runs `node --test` over `test/*.test.js` (124 tests in 31 suites, no network, about a second).
+The GitHub Pages workflow runs the same command before every build.
 
 - `normalize.test.js`: URL normalization (tracking parameters, fragments, trailing slashes),
   HTML stripping and entity decoding, truncation, date parsing, `normalizeItem` validation.
@@ -437,37 +617,76 @@ Runs `node --test` over `test/*.test.js` (78 tests in 20 suites, no network, abo
   Product Hunt Atom and GraphQL, Reddit boilerplate stripping, Crunchbase, BetaList) and registry
   validation.
 - `db.test.js`: in-memory schema, upsert de-duplication (`?utm_source=x` and the clean URL
-  become one row), first-source-wins, search, filters, pagination, status rows.
+  become one row), first-source-wins, FTS5 prefix search (and the logged `LIKE` fallback),
+  filters, pagination, status rows, `listItems`.
+- `export.test.js`: the shared payload builders: `itemsPayload` window/limit/`source.name` and
+  the `items.json` / `archive.json` split, `statsPayload` (`generatedAt`, `archiveItems`),
+  `sourcesPayload` key set.
+- `snapshot.test.js`: round trip export → import into a second database (counts, kinds,
+  `fetchedAt` preserved, unknown sources skipped, invalid rows counted, live data wins), status
+  seeding, `fetchSnapshot` with 404 / repeated timeouts / success.
+- `build-static.test.js`: `runBuild` end to end with stub sources and a fake HTTP client in a
+  temp directory: `.nojekyll`, copied `index.html`, merged `items.json`, failing source shown in
+  `sources.json`, 404 snapshot tolerated, exit 1 and no `data/` when every source fails.
+- `filter.test.js`: the browser-side filter module (`public/filter.js`): kind, region, World
+  scope, sources, each time chip, prefix search, multi-term AND, case and punctuation handling,
+  newest-first ordering.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
-  clamping, `/api/refresh` 404/401/409/200, HTML pages, security headers.
+  clamping, `/api/refresh` 404/401/409/200, `/data/*.json` routes and `no-store`, HTML pages,
+  security headers.
 
-`scripts/screenshots.py` captures the four screenshots above and asserts the frontend rules in a
-real browser (body font 16 px, nothing below 12 px, controls at least 40 px tall, rendered
-filter results equal to the API's answer for the same query, no horizontal overflow). It needs
-Python with `playwright` installed and a local Edge or Chrome; it launches the browser via
-Playwright's `channel` option so no browser download is required. With the server running:
+`scripts/verify-pages.mjs <baseUrl> [--max-age-hours N]` (also `npm run verify:pages -- <baseUrl>`)
+checks a deployed site over HTTP without a browser: the HTML and JS use only relative URLs, all
+static files answer 200, `data/items.json` is a newest-first array within the 90-day window with
+the required fields, `data/sources.json` and `data/stats.json` have the documented shape,
+`generatedAt` is fresher than `N` hours (default 3) and `data/archive.json` is either absent or a
+consistent split. It prints one `PASS`/`FAIL` line per check and exits 1 on any failure. It works
+against `http://localhost:3000`, a local `dist/` preview and the live site.
+
+`scripts/screenshots.py` runs the frontend in a real browser. It needs Python with `playwright`
+installed and a local Edge or Chrome; it launches the browser via Playwright's `channel` option
+so no browser download is required. Two modes:
+
+- **Parity mode** (default, needs the Node server with a fresh database): captures the four
+  screenshots above and asserts the frontend rules (body font 16 px, nothing below 12 px,
+  controls at least 40 px tall, no horizontal overflow at 390 px, `rel="noopener noreferrer"` on
+  outbound links), that the page requested `data/items.json` exactly once and never `/api/items`,
+  and that the rendered result of every filter, time chip, search and source selection equals
+  what `/api/items` returns for the same query (within the 90-day export window).
+- **Smoke mode** (`SMOKE_ONLY=1`, needs only the static files, writes no screenshots): home
+  page renders newest first with a real "Last refreshed", kind / scope / time / search / reset
+  filters change the cards and the URL, `sources.html` lists every source from
+  `data/sources.json`, the 390 px layout has no overflow, and there are no console errors. Use it
+  against a `dist/` preview or the live Pages site.
 
 ```powershell
-# generic
+# parity mode against the local server (generic / dev machine with the venv one level up)
 python scripts/screenshots.py
-# dev machine: the Python venv one level above the repo, Edge channel (default)
 ..\.venv\Scripts\python.exe scripts\screenshots.py
 # use Chrome instead of Edge, or point at another server
 $env:PW_CHANNEL = "chrome"; $env:BASE_URL = "http://localhost:4000"; python scripts/screenshots.py
+# smoke mode against the live site
+$env:SMOKE_ONLY = "1"; $env:BASE_URL = "https://sudish007.github.io/startup-radar"; python scripts/screenshots.py
 ```
 
-## 13. Security notes
+## 14. Security notes
 
 - The site and the `GET` API are public and read-only by design; there is no user login.
 - `POST /api/refresh` is the only write endpoint. It exists only when `ADMIN_TOKEN` is set,
   requires `Authorization: Bearer <token>`, compares tokens in constant time and never logs
-  the token. Without `ADMIN_TOKEN` it returns 404.
-- Every response carries `Content-Security-Policy: default-src 'self'; img-src 'self' data:;
-  object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: strict-origin-when-cross-origin` and `X-Frame-Options: DENY`; `x-powered-by`
-  is disabled. The frontend has no inline scripts or styles and builds the DOM with
-  `createElement`/`textContent`, never `innerHTML` with source data. Outbound links use
-  `rel="noopener noreferrer"`.
+  the token. Without `ADMIN_TOKEN` it returns 404. It does not exist on GitHub Pages.
+- Every server response carries `Content-Security-Policy: default-src 'self'; img-src 'self'
+  data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin` and
+  `X-Frame-Options: DENY`; `x-powered-by` is disabled. GitHub Pages sends no such headers, so
+  both HTML pages also carry the same policy (minus `frame-ancestors`, which a meta tag cannot
+  express) as `<meta http-equiv="Content-Security-Policy">`; the same tag is served by the Node
+  server and does not conflict with the header. The frontend has no inline scripts or styles and
+  builds the DOM with `createElement`/`textContent`, never `innerHTML` with source data. Outbound
+  links use `rel="noopener noreferrer"`.
+- The GitHub Actions workflow runs with `contents: read` (it never writes to the repository) and
+  only the `pages: write` / `id-token: write` permissions that deploying to Pages requires.
+  Secrets are referenced by name and never printed.
 - All SQL is parameterized; full-text queries are tokenized and quoted before reaching FTS5;
   API enums are whitelisted and `page`/`limit` are bounded. Only `http:`/`https:` URLs are stored.
 - Outbound requests send an identifying `User-Agent`, time out after 15 s and read at most 5 MB.
@@ -477,6 +696,6 @@ $env:PW_CHANNEL = "chrome"; $env:BASE_URL = "http://localhost:4000"; python scri
   put a proxy or CDN with rate limits in front of it.
 - Keep `.env` out of git (it is in `.gitignore`); `.env.example` contains placeholders only.
 
-## 14. License
+## 15. License
 
 [MIT](LICENSE). Copyright (c) 2026 Startup Radar contributors.
