@@ -3,108 +3,258 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Startup Radar — new and newly funded startups</title>
   <meta name="description" content="Newly launched and newly funded startups aggregated from public sources.">
-  <link rel="icon" href="data:,">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0B0F17">
+  <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Radar">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+  <script src="./theme.js"></script>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <a class="skip-link" href="#results">Skip to results</a>
 
   <header class="site-header">
-    <div class="wrap">
-      <div class="masthead">
-        <h1>Startup Radar</h1>
+    <div class="topbar">
+      <div class="wrap">
+        <h1><span class="brand"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></span></h1>
+
         <nav class="site-nav" aria-label="Main">
           <ul>
-            <li><a href="./index.html" aria-current="page">Home</a></li>
+            <li><a href="./index.html" aria-current="page">Feed</a></li>
             <li><a href="./sources.html">Sources</a></li>
           </ul>
         </nav>
+
+        <div class="topbar-row2">
+          <form id="search-form" class="search-form" role="search" aria-label="Search">
+            <label class="visually-hidden" for="q">Search titles and summaries</label>
+            <div class="search-field">
+              <svg class="icon search-icon" aria-hidden="true" focusable="false"><use href="./icons.svg#search"></use></svg>
+              <input type="search" id="q" name="q" placeholder="Search titles and summaries" autocomplete="off">
+              <kbd class="search-hint" aria-hidden="true">/</kbd>
+            </div>
+          </form>
+          <button type="button" id="filters-open" class="btn-secondary" aria-label="Filters"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#filter"></use></svg><span>Filters</span><span class="count-badge" hidden></span></button>
+        </div>
+
+        <div class="segmented" role="group" aria-label="Layout">
+          <button type="button" id="view-grid" aria-label="Grid layout" aria-pressed="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#grid"></use></svg></button>
+          <button type="button" id="view-list" aria-label="List layout" aria-pressed="false"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#list"></use></svg></button>
+        </div>
+
+        <button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#sun"></use></svg></button>
+
+        <p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+        <span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+
+        <button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#keyboard"></use></svg></button>
       </div>
-      <p class="subtitle" id="subtitle">Newly launched and newly funded startups from public sources, refreshed automatically.</p>
-      <p class="refreshed" id="last-refreshed" aria-live="polite">Last refreshed: loading…</p>
     </div>
   </header>
 
-  <main class="wrap">
-    <form id="filters" class="filters" role="search" aria-label="Filter startups">
-      <div class="field field-search">
-        <label for="q">Search</label>
-        <input type="search" id="q" name="q" placeholder="Title or summary" autocomplete="off">
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-main">
+        <p class="lede" id="subtitle">Newly launched and newly funded startups from public sources, refreshed automatically.</p>
+        <ul class="stats">
+          <li class="stat" id="stat-feed"><span class="stat-n">—</span><span class="stat-l">Items · 90 days</span></li>
+          <li class="stat" id="stat-24h"><span class="stat-n">—</span><span class="stat-l">Last 24 hours</span></li>
+          <li class="stat" id="stat-7d"><span class="stat-n">—</span><span class="stat-l">Last 7 days</span></li>
+          <li class="stat" id="stat-sources"><a class="stat-link" href="./sources.html"><span class="stat-n">—</span><span class="stat-l">Sources OK / enabled</span></a></li>
+        </ul>
       </div>
 
-      <div class="field">
-        <label for="kind">Kind</label>
-        <select id="kind" name="kind">
-          <option value="">All</option>
-          <option value="launch">Launches</option>
-          <option value="funding">Funding</option>
-          <option value="news">News</option>
-          <option value="accelerator">Accelerators</option>
-        </select>
-      </div>
+      <section id="radar-panel" class="radar-panel" aria-labelledby="radar-title" tabindex="-1">
+        <p id="radar-title" class="overline">Last 48 h</p>
+        <div class="radar-stage">
+          <div class="radar-sweep" aria-hidden="true"></div>
+          <svg class="radar" viewBox="0 0 360 360" role="img" aria-label="Radar of the items published in the last 48 hours; newest nearest the centre. Hover or click a dot, or browse the same items in the feed below.">
+            <circle class="ring" cx="180" cy="180" r="15" fill="none" stroke="var(--hairline)"/>
+            <circle class="ring" cx="180" cy="180" r="82.5" fill="none" stroke="var(--hairline)"/>
+            <circle class="ring" cx="180" cy="180" r="150" fill="none" stroke="var(--hairline)"/>
+            <line class="cross" x1="30" y1="180" x2="330" y2="180" stroke="var(--hairline)"/>
+            <line class="cross" x1="180" y1="30" x2="180" y2="330" stroke="var(--hairline)"/>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="195" y="160.6" width="31.4" height="19.6"/>
+            <text class="radar-caption" x="199" y="175" text-anchor="start">now</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="262.5" y="160.6" width="39.2" height="19.6"/>
+            <text class="radar-caption" x="266.5" y="175" text-anchor="start">24 h</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="318.8" y="160.6" width="39.2" height="19.6"/>
+            <text class="radar-caption" x="354" y="175" text-anchor="end">48 h</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="303.2" y="1.6" width="54.8" height="19.6"/>
+            <text class="radar-label" x="354" y="16" text-anchor="end">LAUNCH</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="295.4" y="337.6" width="62.6" height="19.6"/>
+            <text class="radar-label" x="354" y="352" text-anchor="end">FUNDING</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="0" y="337.6" width="39.2" height="19.6"/>
+            <text class="radar-label" x="4" y="352" text-anchor="start">NEWS</text>
+            <rect class="radar-plate" fill="var(--bg-1)" rx="3" x="0" y="1.6" width="93.8" height="19.6"/>
+            <text class="radar-label" x="4" y="16" text-anchor="start">ACCELERATOR</text>
+            <g class="blips"></g>
+          </svg>
+        </div>
+        <ul class="radar-legend" aria-label="Regions">
+          <li><span class="dot dot-usa" aria-hidden="true"></span>USA</li>
+          <li><span class="dot dot-europe" aria-hidden="true"></span>Europe</li>
+          <li><span class="dot dot-asia" aria-hidden="true"></span>Asia</li>
+          <li><span class="dot dot-india" aria-hidden="true"></span>India</li>
+          <li><span class="dot dot-latam" aria-hidden="true"></span>Latin America</li>
+          <li><span class="dot dot-africa" aria-hidden="true"></span>Africa</li>
+          <li><span class="dot dot-global" aria-hidden="true"></span>Global</li>
+        </ul>
+        <div class="radar-tip" role="tooltip" aria-hidden="true" hidden></div>
+      </section>
+    </div>
+  </section>
 
-      <div class="field">
-        <label for="region">Region</label>
-        <select id="region" name="region">
-          <option value="">All</option>
-          <option value="usa">USA</option>
-          <option value="europe">Europe</option>
-          <option value="asia">Asia</option>
-          <option value="india">India</option>
-          <option value="latam">Latin America</option>
-          <option value="africa">Africa</option>
-          <option value="global">Global</option>
-        </select>
-      </div>
+  <main>
+    <section id="filter-panel" class="filter-panel" aria-labelledby="filter-panel-title">
+      <div class="wrap">
+        <div class="sheet-head">
+          <h2 id="filter-panel-title" tabindex="-1">Filters</h2>
+          <button type="button" id="filters-close" class="btn-ghost icon-btn" aria-label="Close filters"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#close"></use></svg></button>
+        </div>
+        <div class="sheet-body">
+          <form id="filters" class="filters" role="search" aria-label="Filter startups">
+            <div class="select">
+              <label class="select-label" for="kind">Kind</label>
+              <select id="kind" name="kind">
+                <option value="">All kinds</option>
+                <option value="launch">Launches</option>
+                <option value="funding">Funding</option>
+                <option value="news">News</option>
+                <option value="accelerator">Accelerators</option>
+              </select>
+              <svg class="icon chevron" aria-hidden="true" focusable="false"><use href="./icons.svg#chevron-down"></use></svg>
+            </div>
 
-      <div class="group" role="group" aria-labelledby="scope-label">
-        <span class="group-label" id="scope-label">Scope</span>
-        <div class="chips">
-          <button type="button" class="scope" data-scope="" aria-pressed="true">All</button>
-          <button type="button" class="scope" data-scope="usa" aria-pressed="false">USA</button>
-          <button type="button" class="scope" data-scope="world" aria-pressed="false">World</button>
+            <div class="select">
+              <label class="select-label" for="region">Region</label>
+              <select id="region" name="region">
+                <option value="">All regions</option>
+                <option value="usa">USA</option>
+                <option value="europe">Europe</option>
+                <option value="asia">Asia</option>
+                <option value="india">India</option>
+                <option value="latam">Latin America</option>
+                <option value="africa">Africa</option>
+                <option value="global">Global</option>
+              </select>
+              <svg class="icon chevron" aria-hidden="true" focusable="false"><use href="./icons.svg#chevron-down"></use></svg>
+            </div>
+
+            <div class="group" role="group" aria-labelledby="scope-label">
+              <span class="group-label" id="scope-label">Scope</span>
+              <div class="chips">
+                <button type="button" class="scope" data-scope="" aria-pressed="true">All</button>
+                <button type="button" class="scope" data-scope="usa" aria-pressed="false">USA</button>
+                <button type="button" class="scope" data-scope="world" aria-pressed="false">World</button>
+              </div>
+            </div>
+
+            <div class="group" role="group" aria-labelledby="since-label">
+              <span class="group-label" id="since-label">Published</span>
+              <div class="chips">
+                <button type="button" class="chip" data-since="today" aria-pressed="false">Today</button>
+                <button type="button" class="chip" data-since="7d" aria-pressed="false">7 days</button>
+                <button type="button" class="chip" data-since="30d" aria-pressed="false">30 days</button>
+                <button type="button" class="chip" data-since="" aria-pressed="true">All time</button>
+              </div>
+            </div>
+
+            <details id="sources-filter" class="sources-filter">
+              <summary>Sources</summary>
+              <fieldset id="source-list" class="source-list">
+                <legend>Limit to these sources</legend>
+              </fieldset>
+            </details>
+
+            <button type="button" id="reset" class="btn-ghost">Reset filters</button>
+          </form>
+        </div>
+        <div class="sheet-footer">
+          <button type="button" id="filters-apply" class="btn-primary">Show items</button>
         </div>
       </div>
+    </section>
+    <div class="scrim" hidden></div>
 
-      <div class="group" role="group" aria-labelledby="since-label">
-        <span class="group-label" id="since-label">Published</span>
-        <div class="chips">
-          <button type="button" class="chip" data-since="today" aria-pressed="false">Today</button>
-          <button type="button" class="chip" data-since="7d" aria-pressed="false">7 days</button>
-          <button type="button" class="chip" data-since="30d" aria-pressed="false">30 days</button>
-          <button type="button" class="chip" data-since="" aria-pressed="true">All time</button>
+    <div class="wrap feed">
+      <div class="toolbar">
+        <p id="result-count" class="result-count" aria-live="polite">Loading…</p>
+        <label class="visually-hidden" for="sort">Sort</label>
+        <div class="select select-sort">
+          <select id="sort" name="sort">
+            <option value="">Newest</option>
+            <option value="points">Most points / votes</option>
+          </select>
+          <svg class="icon chevron" aria-hidden="true" focusable="false"><use href="./icons.svg#chevron-down"></use></svg>
         </div>
       </div>
+      <p class="sort-note" hidden>Sorted by Hacker News points and Product Hunt votes where the source provides them; items without either are listed afterwards, newest first.</p>
+      <div id="offline-note" class="offline-note" role="status" hidden></div>
 
-      <div class="group">
-        <button type="button" id="reset">Reset filters</button>
+      <section id="results" class="results" aria-busy="true" aria-label="Results" tabindex="-1">
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+        <div class="card skeleton" aria-hidden="true"><span class="sk sk-badge"></span><span class="sk sk-title"></span><span class="sk sk-title short"></span><span class="sk sk-text"></span><span class="sk sk-text"></span><span class="sk sk-text short"></span><span class="sk sk-meta"></span></div>
+      </section>
+
+      <div class="load-more-row">
+        <button type="button" id="load-more" class="btn-secondary" hidden>Load more</button>
       </div>
-
-      <details id="sources-filter">
-        <summary>Sources</summary>
-        <fieldset id="source-list" class="source-list">
-          <legend>Limit to these sources</legend>
-        </fieldset>
-      </details>
-    </form>
-
-    <p id="result-count" class="result-count" aria-live="polite">Loading…</p>
-
-    <section id="results" class="results" aria-busy="true" aria-label="Results" tabindex="-1"></section>
-
-    <div class="load-more-row">
-      <button type="button" id="load-more" hidden>Load more</button>
     </div>
   </main>
 
   <footer class="site-footer">
     <div class="wrap">
       <p>Data comes from the listed sources; no numbers are generated by this site. See the <a href="./sources.html">sources and their status</a>.</p>
+      <p class="footer-links"><a id="help-link" href="#help">Keyboard shortcuts</a> <button type="button" id="install" class="btn-secondary" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#download"></use></svg><span>Install app</span></button></p>
     </div>
   </footer>
+
+  <dialog id="detail" class="detail" aria-labelledby="detail-title" aria-describedby="detail-summary">
+    <div class="detail-panel"></div>
+  </dialog>
+
+  <dialog id="help" class="help" aria-labelledby="help-title">
+    <div class="help-panel">
+      <div class="help-head">
+        <h2 id="help-title" tabindex="-1">Keyboard shortcuts</h2>
+        <button type="button" id="help-close" class="btn-ghost icon-btn" aria-label="Close"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#close"></use></svg></button>
+      </div>
+      <dl class="help-list">
+        <dt><kbd>/</kbd></dt><dd>Focus the search field</dd>
+        <dt><kbd>j</kbd> <kbd>↓</kbd></dt><dd>Next card (at the last card: load more)</dd>
+        <dt><kbd>k</kbd> <kbd>↑</kbd></dt><dd>Previous card</dd>
+        <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First / last card</dd>
+        <dt><kbd>Enter</kbd></dt><dd>Open the highlighted card in the detail panel</dd>
+        <dt><kbd>o</kbd></dt><dd>Open the original page in a new tab</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close the topmost open layer: help, detail panel, filter sheet, sources list, or clear the highlight</dd>
+        <dt><kbd>t</kbd></dt><dd>Toggle dark / light theme</dd>
+        <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+        <dt><kbd>j</kbd> <kbd>→</kbd></dt><dd>In the detail panel: next item</dd>
+        <dt><kbd>k</kbd> <kbd>←</kbd></dt><dd>In the detail panel: previous item</dd>
+      </dl>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="new-items" class="new-items" role="status" hidden>
+    <button type="button" id="new-items-btn"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#refresh"></use></svg><span class="pill-text">New items · Refresh</span></button>
+    <button type="button" class="pill-dismiss" aria-label="Dismiss"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#close"></use></svg></button>
+  </div>
 
   <script src="./app.js" type="module"></script>
 </body>

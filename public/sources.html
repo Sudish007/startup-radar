@@ -3,28 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sources — Startup Radar</title>
   <meta name="description" content="Configured data sources for Startup Radar and their current fetch status.">
-  <link rel="icon" href="data:,">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0B0F17">
+  <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Radar">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+  <script src="./theme.js"></script>
   <link rel="stylesheet" href="./styles.css">
 </head>
-<body>
+<body class="page-sources">
   <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="site-header">
-    <div class="wrap">
-      <div class="masthead">
-        <p class="brand"><a href="./index.html">Startup Radar</a></p>
+    <div class="topbar">
+      <div class="wrap">
+        <p class="brand"><a class="brand-link" href="./index.html"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></a></p>
+
         <nav class="site-nav" aria-label="Main">
           <ul>
-            <li><a href="./index.html">Home</a></li>
+            <li><a href="./index.html">Feed</a></li>
             <li><a href="./sources.html" aria-current="page">Sources</a></li>
           </ul>
         </nav>
+
+        <button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#sun"></use></svg></button>
+
+        <p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+        <span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+
+        <button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#keyboard"></use></svg></button>
       </div>
-      <p class="subtitle" id="subtitle">Newly launched and newly funded startups from public sources, refreshed automatically.</p>
-      <p class="refreshed" id="last-refreshed" aria-live="polite">Last refreshed: loading…</p>
     </div>
   </header>
 
@@ -32,38 +49,57 @@
     <h1>Sources</h1>
     <p class="intro">Aggregated feeds and their current status. Items are only added from sources marked enabled.</p>
 
-    <p id="status" aria-live="polite">Loading sources…</p>
+    <p id="status" class="status-line" aria-live="polite">Loading sources…</p>
+    <ul class="status-strip stats" hidden></ul>
 
     <div class="table-scroll" id="table-wrap" hidden>
-      <table id="sources-table">
+      <table id="sources-table" role="table">
         <caption>Configured sources</caption>
-        <thead>
-          <tr>
-            <th scope="col">Source</th>
-            <th scope="col">Enabled</th>
-            <th scope="col">Kind</th>
-            <th scope="col">Region</th>
-            <th scope="col">Last successful fetch</th>
-            <th scope="col">Last error</th>
-            <th scope="col">Items</th>
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader">Source</th>
+            <th scope="col" role="columnheader">Enabled</th>
+            <th scope="col" role="columnheader">Kind</th>
+            <th scope="col" role="columnheader">Region</th>
+            <th scope="col" role="columnheader">Last successful fetch</th>
+            <th scope="col" role="columnheader">Last error</th>
+            <th scope="col" role="columnheader" class="num">Items</th>
           </tr>
         </thead>
-        <tbody></tbody>
+        <tbody role="rowgroup"></tbody>
       </table>
     </div>
 
     <section class="explore" id="explore" aria-labelledby="explore-heading">
       <h2 id="explore-heading">Explore more (links only — not aggregated)</h2>
       <p class="intro">Directories and databases worth a visit. Nothing from these sites is fetched or counted here.</p>
-      <ul id="explore-list"></ul>
+      <ul id="explore-list" class="explore-list"></ul>
     </section>
   </main>
 
   <footer class="site-footer">
     <div class="wrap">
       <p>Data comes from the listed sources; no numbers are generated by this site. <a href="./index.html">Back to the feed</a>.</p>
+      <p class="footer-links"><a id="help-link" href="#help">Keyboard shortcuts</a> <button type="button" id="install" class="btn-secondary" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#download"></use></svg><span>Install app</span></button></p>
     </div>
   </footer>
+
+  <dialog id="help" class="help" aria-labelledby="help-title">
+    <div class="help-panel">
+      <div class="help-head">
+        <h2 id="help-title" tabindex="-1">Keyboard shortcuts</h2>
+        <button type="button" id="help-close" class="btn-ghost icon-btn" aria-label="Close"><svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#close"></use></svg></button>
+      </div>
+      <dl class="help-list">
+        <dt><kbd>t</kbd></dt><dd>Toggle dark / light theme</dd>
+        <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+      </dl>
+      <p class="help-note">The feed page has more: <kbd>/</kbd> search, <kbd>j</kbd> <kbd>k</kbd> move between cards, <kbd>Enter</kbd> open, <kbd>o</kbd> open the original in a new tab.</p>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="./sources.js" type="module"></script>
 </body>
