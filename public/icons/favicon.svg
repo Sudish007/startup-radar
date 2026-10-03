@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <style>
+    .ring { stroke: #E6EAF2; }
+    @media (prefers-color-scheme: light) { .ring { stroke: #0F1623; } }
+  </style>
+  <path d="M256 256 L256 80 A176 176 0 0 1 421.38 195.81 Z" fill="#22D3EE" fill-opacity="0.55"/>
+  <circle class="ring" cx="256" cy="256" r="176" fill="none" stroke-width="12"/>
+  <path class="ring" d="M80 256H432M256 80V432" stroke-opacity="0.4" stroke-width="8"/>
+  <circle cx="256" cy="256" r="28" fill="#22D3EE"/>
+</svg>
