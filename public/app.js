@@ -1,5 +1,12 @@
 // Startup Radar home page. Vanilla ES module; all DOM built with
 // createElement/textContent (strict CSP, no inline scripts or HTML strings).
+//
+// Data comes from the static files ./data/items.json, ./data/sources.json and
+// ./data/stats.json (served by the Express app or by GitHub Pages); every
+// filter, the search and the paging run in the browser (see ./filter.js).
+// ./data/archive.json (older items) is loaded on demand only.
+
+import { SINCE_VALUES, filterItems } from './filter.js';
 
 const KIND_LABELS = {
   launch: 'Launch',
@@ -18,10 +25,14 @@ const REGION_LABELS = {
   global: 'Global',
 };
 
-const SINCE_VALUES = new Set(['today', '7d', '30d', '']);
 const PAGE_SIZE = 30;
 const STATS_POLL_MS = 60_000;
 const DEBOUNCE_MS = 300;
+
+const ITEMS_URL = './data/items.json';
+const ARCHIVE_URL = './data/archive.json';
+const SOURCES_URL = './data/sources.json';
+const STATS_URL = './data/stats.json';
 
 const els = {
   subtitle: document.getElementById('subtitle'),
@@ -48,8 +59,16 @@ const state = {
   page: 1,
 };
 
+const data = {
+  primary: [],
+  archive: null, // null = not loaded yet; [] = loaded (or no archive exists)
+  archiveItems: 0, // from stats.json; > 0 means an archive.json exists
+  archiveLoading: null, // in-flight promise (single flight)
+  archiveError: '', // last network error while loading the archive
+  loadError: '', // items.json could not be loaded
+};
+
 let knownSources = [];
-let currentRequest = 0;
 
 // ---------- helpers ----------
 
@@ -104,16 +123,6 @@ export function compactMoney(n) {
   return String(n);
 }
 
-export function sinceToIso(since, now = new Date()) {
-  if (since === 'today') {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    return d.toISOString();
-  }
-  if (since === '7d') return new Date(now.getTime() - 7 * 86_400_000).toISOString();
-  if (since === '30d') return new Date(now.getTime() - 30 * 86_400_000).toISOString();
-  return null;
-}
-
 function debounce(fn, ms) {
   let timer = null;
   return (...args) => {
@@ -149,19 +158,6 @@ function stateToParams() {
 function syncLocation() {
   const qs = stateToParams().toString();
   history.replaceState(null, '', qs ? `${location.pathname}?${qs}` : location.pathname);
-}
-
-export function buildQuery(s = state) {
-  const params = new URLSearchParams();
-  if (s.kind) params.set('kind', s.kind);
-  if (s.region) params.set('region', s.region);
-  if (s.sources.length) params.set('source', s.sources.join(','));
-  if (s.q) params.set('q', s.q);
-  const sinceIso = sinceToIso(s.since);
-  if (sinceIso) params.set('since', sinceIso);
-  params.set('page', String(s.page));
-  params.set('limit', String(PAGE_SIZE));
-  return params;
 }
 
 // ---------- rendering ----------
@@ -250,6 +246,7 @@ function renderError(message) {
   els.results.append(el('p', { className: 'alert', role: 'alert', text: message }));
   els.resultCount.textContent = '';
   els.loadMore.hidden = true;
+  els.results.setAttribute('aria-busy', 'false');
 }
 
 function renderSourceOptions(sources) {
@@ -268,6 +265,49 @@ function renderSourceOptions(sources) {
   }
 }
 
+/** Filter + sort + page the loaded items and redraw the list, count and Load-more button. */
+function render() {
+  if (data.loadError) {
+    renderError(`Could not load items: ${data.loadError}`);
+    return;
+  }
+
+  const all = data.archive ? data.primary.concat(data.archive) : data.primary;
+  const matches = filterItems(all, state);
+  const shownItems = matches.slice(0, state.page * PAGE_SIZE);
+  const total = matches.length;
+  const shown = shownItems.length;
+  const archivePending = data.archive === null && data.archiveItems > 0;
+
+  clear(els.results);
+  if (data.archiveError) {
+    els.results.append(el('p', { className: 'alert', role: 'alert', text: `Could not load older items: ${data.archiveError}` }));
+  }
+  for (const item of shownItems) els.results.append(renderCard(item));
+
+  if (total === 0) {
+    els.resultCount.textContent = 'No items match these filters.';
+    els.results.append(el('p', { className: 'empty', text: 'Nothing here yet. Try a wider time range, another region, or reset the filters.' }));
+  } else if (archivePending) {
+    els.resultCount.textContent = `${total} recent items \u00b7 showing ${shown} \u00b7 older items load on demand`;
+  } else {
+    els.resultCount.textContent = `${total} items \u00b7 showing ${shown}`;
+  }
+
+  if (shown < total) {
+    els.loadMore.textContent = 'Load more';
+    els.loadMore.hidden = false;
+  } else if (archivePending) {
+    els.loadMore.textContent = 'Load older items';
+    els.loadMore.hidden = false;
+  } else {
+    els.loadMore.textContent = 'Load more';
+    els.loadMore.hidden = true;
+  }
+
+  els.results.setAttribute('aria-busy', data.archiveLoading ? 'true' : 'false');
+}
+
 // ---------- data loading ----------
 
 async function fetchJson(url) {
@@ -280,46 +320,63 @@ async function fetchJson(url) {
   return body;
 }
 
-async function loadItems(reset) {
-  if (reset) state.page = 1;
-  const requestId = ++currentRequest;
+/** Fetch ./data/items.json exactly once. */
+async function loadItems() {
+  els.results.setAttribute('aria-busy', 'true');
+  try {
+    const items = await fetchJson(ITEMS_URL);
+    if (!Array.isArray(items)) throw new Error('unexpected response');
+    data.primary = items;
+    data.loadError = '';
+  } catch (err) {
+    data.primary = [];
+    data.loadError = err.message;
+  }
+}
+
+/**
+ * Load ./data/archive.json once (single flight). A 404 / non-OK answer means
+ * "no archive"; a network error shows an alert and is retried on the next trigger.
+ */
+function ensureArchive() {
+  if (data.archive !== null || data.archiveItems === 0 || data.loadError) return Promise.resolve();
+  if (data.archiveLoading) return data.archiveLoading;
+
+  data.archiveError = '';
   els.results.setAttribute('aria-busy', 'true');
   els.loadMore.disabled = true;
-
-  try {
-    const data = await fetchJson(`/api/items?${buildQuery().toString()}`);
-    if (requestId !== currentRequest) return;
-
-    if (reset) clear(els.results);
-    for (const item of data.items) els.results.append(renderCard(item));
-
-    const shown = els.results.querySelectorAll('article').length;
-    if (data.total === 0) {
-      els.resultCount.textContent = 'No items match these filters.';
-      els.results.append(el('p', { className: 'empty', text: 'Nothing here yet. Try a wider time range, another region, or reset the filters.' }));
-    } else {
-      els.resultCount.textContent = `${data.total} items \u00b7 showing ${shown}`;
-    }
-    els.loadMore.hidden = !data.hasMore;
-  } catch (err) {
-    if (requestId !== currentRequest) return;
-    renderError(`Could not load items: ${err.message}`);
-  } finally {
-    if (requestId === currentRequest) {
-      els.results.setAttribute('aria-busy', 'false');
+  data.archiveLoading = (async () => {
+    try {
+      const res = await fetch(ARCHIVE_URL, { headers: { Accept: 'application/json' } });
+      if (!res.ok) {
+        data.archive = [];
+        data.archiveItems = 0;
+        return;
+      }
+      const body = await res.json().catch(() => null);
+      data.archive = Array.isArray(body) ? body : [];
+      if (!Array.isArray(body)) data.archiveItems = 0;
+    } catch (err) {
+      data.archiveError = err.message;
+    } finally {
+      data.archiveLoading = null;
       els.loadMore.disabled = false;
+      render();
     }
-  }
+  })();
+  return data.archiveLoading;
 }
 
 async function loadStats() {
   try {
-    const stats = await fetchJson('/api/stats');
-    if (stats.lastRefresh) {
-      els.lastRefreshed.textContent = `Last refreshed ${relativeTime(stats.lastRefresh)}`;
-      els.lastRefreshed.title = absoluteTime(stats.lastRefresh);
+    const stats = await fetchJson(STATS_URL);
+    data.archiveItems = Number(stats.archiveItems) || 0;
+    const at = stats.lastRefresh ?? stats.generatedAt;
+    if (at) {
+      els.lastRefreshed.textContent = `Last refreshed ${relativeTime(at)}`;
+      els.lastRefreshed.title = absoluteTime(at);
     } else {
-      els.lastRefreshed.textContent = 'Last refreshed: never (first fetch in progress)';
+      els.lastRefreshed.textContent = 'Last refreshed: unknown';
       els.lastRefreshed.removeAttribute('title');
     }
   } catch {
@@ -329,8 +386,8 @@ async function loadStats() {
 
 async function loadSources() {
   try {
-    const data = await fetchJson('/api/sources');
-    knownSources = data.sources.filter((s) => s.enabled);
+    const payload = await fetchJson(SOURCES_URL);
+    knownSources = payload.sources.filter((s) => s.enabled);
     renderSourceOptions(knownSources);
     const n = knownSources.length;
     els.subtitle.textContent = `Newly launched and newly funded startups from ${n} public ${n === 1 ? 'source' : 'sources'}, refreshed automatically.`;
@@ -344,7 +401,8 @@ async function loadSources() {
 function applyChange() {
   syncControls();
   syncLocation();
-  loadItems(true);
+  state.page = 1;
+  render();
 }
 
 function wireEvents() {
@@ -352,12 +410,15 @@ function wireEvents() {
     e.preventDefault();
     state.q = els.q.value.trim();
     applyChange();
+    if (state.q) ensureArchive();
   });
 
   els.q.addEventListener('input', debounce(() => {
     state.q = els.q.value.trim();
     syncLocation();
-    loadItems(true);
+    state.page = 1;
+    render();
+    if (state.q) ensureArchive();
   }, DEBOUNCE_MS));
 
   els.kind.addEventListener('change', () => {
@@ -381,6 +442,7 @@ function wireEvents() {
     btn.addEventListener('click', () => {
       state.since = btn.dataset.since;
       applyChange();
+      if (state.since === '30d' || state.since === '') ensureArchive();
     });
   }
 
@@ -388,7 +450,8 @@ function wireEvents() {
     if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'checkbox') return;
     state.sources = Array.from(els.sourceList.querySelectorAll('input[type="checkbox"]:checked')).map((b) => b.value);
     syncLocation();
-    loadItems(true);
+    state.page = 1;
+    render();
   });
 
   els.reset.addEventListener('click', () => {
@@ -401,8 +464,12 @@ function wireEvents() {
   });
 
   els.loadMore.addEventListener('click', () => {
+    const shown = els.results.querySelectorAll('article').length;
+    const all = data.archive ? data.primary.concat(data.archive) : data.primary;
+    const exhausted = shown >= filterItems(all, state).length;
     state.page += 1;
-    loadItems(false);
+    render();
+    if (exhausted) ensureArchive();
   });
 }
 
@@ -413,7 +480,9 @@ async function init() {
   syncControls();
   wireEvents();
   await loadSources();
-  await Promise.all([loadStats(), loadItems(true)]);
+  await Promise.all([loadStats(), loadItems()]);
+  render();
+  if (state.q || state.since === '30d') ensureArchive();
   setInterval(loadStats, STATS_POLL_MS);
 }
 
