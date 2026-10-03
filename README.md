@@ -34,7 +34,7 @@ entry to one row (title, URL, summary, source, kind, region, published date), de
 URL and stores everything in SQLite. The web UI at `/` lists items newest first and lets you
 filter by kind (launch, funding, news, accelerator), region (USA, Europe, Asia, India, Latin
 America, Africa, global, or an All / USA / World toggle), source and time window, and search
-titles and summaries with full-text search. `/sources` shows every adapter with its last fetch
+titles and summaries (all terms must match as whole words or word prefixes). `/sources` shows every adapter with its last fetch
 status, last error and item count, followed by an "Explore more" list of directories that are
 links only. A read-only JSON API backs the UI.
 
@@ -168,7 +168,7 @@ Query parameters (all optional):
 | `kind` | one of `launch`, `funding`, `news`, `accelerator`; anything else → 400 |
 | `region` | one of `usa`, `europe`, `asia`, `india`, `latam`, `africa`, `global`, or `world` (= everything except `usa`); anything else → 400 |
 | `source` | comma-separated adapter ids (e.g. `hn_show,techcrunch`); an unknown id → 400 |
-| `q` | search text, max 200 characters; full-text search (SQLite FTS5) with a `LIKE` fallback |
+| `q` | search text, max 200 characters, up to 8 terms; all terms must match as whole words or word prefixes in the title or summary (SQLite FTS5 `"term"*` prefix match, case- and accent-insensitive; a `LIKE` substring fallback is used only if FTS5 is unavailable, which is logged once at startup) |
 | `since` | ISO 8601 date; only items published at or after it; unparsable → 400 |
 | `page` | integer ≥ 1, default 1, max 10000 |
 | `limit` | integer 1..100, default 30; out-of-range values are clamped and echoed back |

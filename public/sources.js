@@ -1,5 +1,9 @@
 // Startup Radar sources page. Vanilla ES module; DOM built with
-// createElement/textContent only (strict CSP).
+// createElement/textContent only (strict CSP). Reads the static files
+// ./data/sources.json and ./data/stats.json (Express or GitHub Pages).
+
+const SOURCES_URL = './data/sources.json';
+const STATS_URL = './data/stats.json';
 
 const KIND_LABELS = {
   launch: 'Launch',
@@ -135,7 +139,7 @@ function renderExplore(list) {
 
 async function loadSources() {
   try {
-    const data = await fetchJson('/api/sources');
+    const data = await fetchJson(SOURCES_URL);
     const sources = data.sources || [];
     clear(els.tbody);
     for (const s of sources) els.tbody.append(renderRow(s));
@@ -154,12 +158,13 @@ async function loadSources() {
 
 async function loadStats() {
   try {
-    const stats = await fetchJson('/api/stats');
-    if (stats.lastRefresh) {
-      els.lastRefreshed.textContent = `Last refreshed ${relativeTime(stats.lastRefresh)}`;
-      els.lastRefreshed.title = absoluteTime(stats.lastRefresh);
+    const stats = await fetchJson(STATS_URL);
+    const at = stats.lastRefresh ?? stats.generatedAt;
+    if (at) {
+      els.lastRefreshed.textContent = `Last refreshed ${relativeTime(at)}`;
+      els.lastRefreshed.title = absoluteTime(at);
     } else {
-      els.lastRefreshed.textContent = 'Last refreshed: never (first fetch in progress)';
+      els.lastRefreshed.textContent = 'Last refreshed: unknown';
       els.lastRefreshed.removeAttribute('title');
     }
   } catch {

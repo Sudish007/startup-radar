@@ -107,9 +107,58 @@ describe('db', () => {
     assert.equal(db.queryItems({ q: '"copilot" OR NEAR(' }).total >= 0, true);
   });
 
-  test('buildFtsQuery sanitizes tokens', () => {
-    assert.equal(buildFtsQuery('a "b" c'), '"a" "b" "c"');
+  test('search really uses FTS5: word-prefix AND semantics, no LIKE fallback, no warning', () => {
+    const warnings = [];
+    const fts = openDb(':memory:', { warn: (m) => warnings.push(m) });
+    try {
+      assert.equal(fts.ftsAvailable, true, 'FTS5 must be compiled into better-sqlite3');
+      fts.upsertItems('hn_show', [
+        row(HN, { url: 'https://a.io/1', title: 'Brainstorm app for teams', summary: 'Shows ideas as a map' }),
+        row(HN, { url: 'https://a.io/2', title: 'Heavy rain forecast', summary: 'Weather for showcases' }),
+        row(HN, { url: 'https://a.io/3', title: 'AI pilots for planes' }),
+      ]);
+      // mid-word substrings: LIKE '%storm%' / '%pilot%' would match, prefix FTS must not
+      assert.equal(fts.queryItems({ q: 'storm' }).total, 0);
+      assert.equal(fts.queryItems({ q: 'ain' }).total, 0);
+      // word prefixes match ("Show" -> Shows, showcases; "ai" -> AI but not rain)
+      assert.deepEqual(fts.queryItems({ q: 'Show' }).items.map((i) => i.url).sort(), ['https://a.io/1', 'https://a.io/2']);
+      assert.deepEqual(fts.queryItems({ q: 'ai' }).items.map((i) => i.url), ['https://a.io/3']);
+      assert.equal(fts.queryItems({ q: 'brain' }).total, 1);
+      // every term is required
+      assert.equal(fts.queryItems({ q: 'brain team' }).total, 1);
+      assert.equal(fts.queryItems({ q: 'brain rain' }).total, 0);
+      // arbitrary punctuation / operators never raise an FTS syntax error (and never fall back)
+      for (const q of ['"brain" OR NEAR(', 'brain*', '(rain) -ai', 'a:b', '^ai', '"', 'NOT AND OR']) {
+        assert.equal(typeof fts.queryItems({ q }).total, 'number', q);
+      }
+      assert.deepEqual(warnings, []);
+    } finally {
+      fts.close();
+    }
+  });
+
+  test('LIKE fallback logs one warning with the SQLite error', () => {
+    const warnings = [];
+    const d = openDb(':memory:', { warn: (m) => warnings.push(m) });
+    try {
+      d.upsertItems('hn_show', [row(HN, { url: 'https://a.io/1', title: 'Brainstorm app' })]);
+      d._sqlite.exec('DROP TABLE items_fts');
+      assert.equal(d.queryItems({ q: 'storm' }).total, 1); // LIKE substring hit
+      assert.equal(d.queryItems({ q: 'storm' }).total, 1);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /falling back to LIKE/);
+      assert.match(warnings[0], /no such table: items_fts/);
+    } finally {
+      d.close();
+    }
+  });
+
+  test('buildFtsQuery sanitizes tokens into quoted prefixes', () => {
+    assert.equal(buildFtsQuery('a "b" c'), '"a"* "b"* "c"*');
+    assert.equal(buildFtsQuery('Fin AI-powered'), '"fin"* "ai"* "powered"*');
+    assert.equal(buildFtsQuery('"x" OR NEAR( ^ -'), '"x"* "or"* "near"*');
     assert.equal(buildFtsQuery('   '), null);
+    assert.equal(buildFtsQuery('"" ()'), null);
     assert.equal(buildFtsQuery('1 2 3 4 5 6 7 8 9 10').split(' ').length, 8);
   });
 

@@ -55,6 +55,9 @@ WHERE items.source_id = excluded.source_id;
 `;
 
 const ITEM_COLUMNS = 'id, url, title, summary, source_id, kind, region, published_at, fetched_at, extra_json';
+// Qualified for queries that JOIN items_fts (which also has title/summary columns).
+const ITEM_COLUMNS_QUALIFIED = ITEM_COLUMNS.split(', ').map((c) => `items.${c}`).join(', ');
+const FTS_MAX_TOKENS = 8;
 
 function parseExtra(json) {
   try {
@@ -81,18 +84,19 @@ export function rowToItem(row) {
   };
 }
 
-/** Build a safe FTS5 MATCH expression: up to 8 quoted tokens, inner quotes removed. */
+/**
+ * Build a safe FTS5 MATCH expression: up to 8 letter/digit tokens, each quoted
+ * with a trailing `*` (prefix match), implicitly ANDed. Splitting on anything
+ * that is not a letter or digit strips quotes and every FTS operator, so user
+ * input can never raise an FTS5 syntax error. Mirrors tokenize() in public/filter.js.
+ */
 export function buildFtsQuery(q) {
-  const tokens = String(q ?? '')
-    .split(/\s+/)
-    .map((t) => t.replace(/"/g, '').trim())
-    .filter((t) => t.length > 0)
-    .slice(0, 8);
+  const tokens = (String(q ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, FTS_MAX_TOKENS);
   if (tokens.length === 0) return null;
-  return tokens.map((t) => `"${t}"`).join(' ');
+  return tokens.map((t) => `"${t}"*`).join(' ');
 }
 
-export function openDb(filePath) {
+export function openDb(filePath, { warn = console.warn } = {}) {
   const isMemory = filePath === ':memory:';
   if (!isMemory) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -107,11 +111,18 @@ export function openDb(filePath) {
   sqlite.exec(DDL);
 
   let ftsAvailable = false;
+  let likeFallbackWarned = false;
+  const warnLikeFallback = (err) => {
+    if (likeFallbackWarned) return;
+    likeFallbackWarned = true;
+    warn(`[db] full-text search unavailable, falling back to LIKE substring search: ${err?.message ?? err}`);
+  };
   try {
     sqlite.exec(FTS_DDL);
     ftsAvailable = true;
-  } catch {
+  } catch (err) {
     ftsAvailable = false;
+    warnLikeFallback(err);
   }
 
   const upsertStmt = sqlite.prepare(UPSERT_SQL);
@@ -168,7 +179,7 @@ export function openDb(filePath) {
 
   function runQuery({ clauses, params, join, limit, offset }) {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const sql = `SELECT ${ITEM_COLUMNS} FROM items ${join} ${where} ORDER BY items.published_at DESC, items.id DESC LIMIT ? OFFSET ?`;
+    const sql = `SELECT ${ITEM_COLUMNS_QUALIFIED} FROM items ${join} ${where} ORDER BY items.published_at DESC, items.id DESC LIMIT ? OFFSET ?`;
     const countSql = `SELECT COUNT(*) AS n FROM items ${join} ${where}`;
     const rows = sqlite.prepare(sql).all(...params, limit, offset);
     const total = sqlite.prepare(countSql).get(...params).n;
@@ -194,7 +205,8 @@ export function openDb(filePath) {
             limit: safeLimit,
             offset,
           });
-        } catch {
+        } catch (err) {
+          warnLikeFallback(err);
           result = null; // fall back to LIKE below
         }
       }
@@ -290,5 +302,7 @@ export function openDb(filePath) {
     setSourceStatus,
     itemCountsBySource,
     close: () => sqlite.close(),
+    /** Raw better-sqlite3 handle; tests only. */
+    _sqlite: sqlite,
   };
 }

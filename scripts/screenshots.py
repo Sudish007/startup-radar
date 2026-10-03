@@ -1,43 +1,56 @@
 """Capture Startup Radar screenshots and assert the frontend rules in a real browser.
 
 Usage (from the repo root, server already running on BASE_URL):
-    python scripts/screenshots.py
+    python scripts/screenshots.py              # parity mode (needs the Express /api)
+    SMOKE_ONLY=1 python scripts/screenshots.py # smoke mode (static files only)
 
 Environment:
-    BASE_URL    default http://localhost:3000
+    BASE_URL    default http://localhost:3000 (a sub-path such as
+                http://localhost:8080/startup-radar is fine)
     PW_CHANNEL  chromium channel, default "msedge" (bundled browsers are not
                 installed on the dev machine; "chrome" also works)
+    SMOKE_ONLY  "1" = run_live_smoke only: browser checks that need nothing but
+                the static files (./data/*.json), usable against GitHub Pages.
+                Writes no PNGs.
 
-Writes VIEWPORT-ONLY screenshots (never full-page) to docs/screenshots/:
+Parity mode writes VIEWPORT-ONLY screenshots (never full-page) to docs/screenshots/:
     home.png           desktop 1280x900, unfiltered feed
     home-filtered.png  desktop 1280x900, kind=funding + USA scope
-    sources.png        desktop 1280x900, /sources
+    sources.png        desktop 1280x900, /sources.html
     home-mobile.png    mobile 390x844 at 2x (780x1688 px)
 
 Every check prints "PASS  <name>  (<detail>)" or "FAIL ...". Exit code is 1
-when any check fails. Filter checks compare what the page renders against
-what /api/items returns for the same query, so a filter that silently does
-nothing is caught even when the URL changes.
+when any check fails. Parity filter checks compare what the page renders
+(client-side filtering of ./data/items.json) against what /api/items returns
+for the same query, with the export window (last 90 days) applied to the API,
+so a filter that silently does nothing is caught even when the URL changes.
 """
 
 import os
 import re
 import struct
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode
 
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE_URL", "http://localhost:3000").rstrip("/")
 OUT = Path(__file__).resolve().parents[1] / "docs" / "screenshots"
 CHANNEL = os.environ.get("PW_CHANNEL", "msedge")
+SMOKE_ONLY = os.environ.get("SMOKE_ONLY") == "1"
 WAIT_MS = 30000
 DESKTOP = {"width": 1280, "height": 900}
 MOBILE = {"width": 390, "height": 844}
 MOBILE_SCALE = 2
 PAGE_SIZE = 30
+EXPORT_MAX_DAYS = 90  # mirrors EXPORT_LIMITS.maxDays in src/export.js
+ITEMS_PATH = "/data/items.json"
+API_ITEMS_PATH = "/api/items"
+# A whole ASCII word (>= 4 letters) that is also a whole token for filter.js / FTS5:
+# not glued to another letter or digit on either side.
+WORD_RE = r"(?<![^\W_])[A-Za-z]{4,}(?![^\W_])"
 MIN_FONT_PX = 12
 MIN_BODY_FONT_PX = 16
 CONTROL_MIN_PX = 40
@@ -83,7 +96,7 @@ SNAPSHOT_JS = r"""
 () => {
   const text = (el) => (el ? el.textContent.trim() : '');
   const countText = text(document.querySelector('#result-count'));
-  const m = /^(\d+) items/.exec(countText);
+  const m = /^(\d+) (?:recent )?items/.exec(countText);
   const total = m ? parseInt(m[1], 10) : (countText.startsWith('No items') ? 0 : null);
   const cards = Array.from(document.querySelectorAll('#results article')).map((a) => {
     const t = a.querySelector('time');
@@ -199,6 +212,13 @@ UI_AUDIT_JS = r"""
 }
 """
 
+LAST_REFRESHED_JS = r"""
+() => {
+  const el = document.querySelector('#last-refreshed');
+  return el ? el.textContent.trim() : '';
+}
+"""
+
 SOURCES_PAGE_JS = r"""
 () => {
   const text = (el) => (el ? el.textContent.trim() : '');
@@ -251,6 +271,46 @@ def parse_iso(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def to_iso(dt):
+    """datetime -> the ISO form JavaScript's Date#toISOString() produces (ms precision, Z)."""
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (dt.microsecond // 1000)
+
+
+def since_cutoff(value, now=None):
+    """Same formula as public/filter.js sinceToIso: today = UTC midnight, 7d/30d = now - N days."""
+    now = now or datetime.now(timezone.utc)
+    if value == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if value == "7d":
+        return now - timedelta(days=7)
+    if value == "30d":
+        return now - timedelta(days=30)
+    return None
+
+
+def export_floor(now=None):
+    """Lower bound of the static export window (EXPORT_LIMITS.maxDays)."""
+    now = now or datetime.now(timezone.utc)
+    return now - timedelta(days=EXPORT_MAX_DAYS)
+
+
+class RequestLog:
+    """Records which data / API URLs a page requested."""
+
+    def __init__(self, page):
+        self.data_items = []
+        self.api_items = []
+        page.on("request", self._on_request)
+
+    def _on_request(self, req):
+        path = req.url.split("?", 1)[0]
+        if path.endswith(ITEMS_PATH):
+            self.data_items.append(req.url)
+        if API_ITEMS_PATH in req.url:
+            self.api_items.append(req.url)
+
+
 def png_size(path):
     with open(path, "rb") as f:
         head = f.read(24)
@@ -283,21 +343,28 @@ def describe_change(snap, base, exp=None, api_base=None):
 
 
 class Api:
+    """Thin client for the Express JSON API (parity mode) and the static data files."""
+
     def __init__(self, request):
         self.request = request
 
     def items(self, params):
+        """/api/items with the export window applied: `since` is never older than now - 90 days."""
         qs = dict(params)
         qs.setdefault("limit", PAGE_SIZE)
-        res = self.request.get(BASE + "/api/items?" + urlencode(qs))
+        floor = export_floor()
+        since = qs.get("since")
+        cutoff = max(parse_iso(since), floor) if since else floor
+        qs["since"] = to_iso(cutoff)
+        res = self.request.get(BASE + API_ITEMS_PATH + "?" + urlencode(qs))
         if not res.ok:
             raise RuntimeError("GET /api/items %s -> %d" % (qs, res.status))
         return res.json()
 
     def sources(self):
-        res = self.request.get(BASE + "/api/sources")
+        res = self.request.get(BASE + "/data/sources.json")
         if not res.ok:
-            raise RuntimeError("GET /api/sources -> %d" % res.status)
+            raise RuntimeError("GET /data/sources.json -> %d" % res.status)
         return res.json()
 
 
@@ -360,7 +427,7 @@ def audit_page(page, label, want_controls=True, open_details=False):
 def pick_search_term(api, base_titles, base_total):
     """A word from a rendered title that narrows the result set without emptying it."""
     for title in base_titles:
-        for word in re.findall(r"[A-Za-z]{4,}", title):
+        for word in re.findall(WORD_RE, title):
             data = api.items({"q": word})
             if 1 <= data["total"] < base_total:
                 return word, data
@@ -376,10 +443,9 @@ def run_home_desktop(browser):
     page = ctx.new_page()
     api = Api(ctx.request)
     console_errors = []
-    item_requests = []
     page.on("pageerror", lambda err: console_errors.append(str(err)))
     page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
-    page.on("request", lambda req: item_requests.append(req.url) if "/api/items" in req.url else None)
+    reqs = RequestLog(page)
 
     page.goto(BASE + "/", wait_until="domcontentloaded")
     wait_state(page, {})
@@ -388,7 +454,9 @@ def run_home_desktop(browser):
     base_titles = [c["title"] for c in base["cards"]]
 
     check("home: at least 1 article rendered", base["shown"] >= 1, "%d articles, total %s" % (base["shown"], base["total"]))
-    check("home: result list matches /api/items (total + first title)", ui_matches_api(base, api_base), "total %s" % base["total"])
+    check("home: requested ./data/items.json exactly once", len(reqs.data_items) == 1, "%d requests: %s" % (len(reqs.data_items), ", ".join(reqs.data_items)[:200]))
+    check("home: never requested /api/items", len(reqs.api_items) == 0, "%d requests" % len(reqs.api_items))
+    check("home: result list matches /api/items within the 90-day export window (total + first title)", ui_matches_api(base, api_base), "UI %s / API %s" % (base["total"], api_base["total"]))
     times = [parse_iso(c["time"]) for c in base["cards"] if c["time"]]
     check(
         "home: newest first",
@@ -459,15 +527,13 @@ def run_home_desktop(browser):
         page.click('button.chip[data-since="%s"]' % value)
         wait_state(page, {"since": value})
         snap = snapshot(page)
-        last_req = parse_qs(urlparse(item_requests[-1]).query) if item_requests else {}
-        since_iso = (last_req.get("since") or [None])[0]
-        if not since_iso:
-            check("chip %s: request carried an ISO since parameter" % label, False, item_requests[-1] if item_requests else "no request")
-            continue
+        # Same cutoff formula as filter.js; the page computes it at render time, so
+        # the two clocks differ by milliseconds only.
+        cutoff = since_cutoff(value)
+        since_iso = to_iso(cutoff)
         exp = api.items({"since": since_iso})
         chg_ok, changed, note = describe_change(snap, base, exp, api_base)
         changed_flags.append(("since=" + value, changed, chg_ok))
-        cutoff = parse_iso(since_iso)
         within = all(parse_iso(c["time"]) >= cutoff for c in snap["cards"] if c["time"])
         check(
             "chip %s: UI matches API for since=%s and every card is newer" % (label, since_iso),
@@ -500,7 +566,11 @@ def run_home_desktop(browser):
 
     # --- sources checklist ----------------------------------------------
     src = api.sources()["sources"]
-    candidates = [s for s in src if s["enabled"] and s["itemCount"] > 0 and s["itemCount"] < base["total"]]
+    # itemCount counts the whole DB; make sure the candidate has items inside the export window.
+    candidates = [
+        s for s in src
+        if s["enabled"] and s["itemCount"] > 0 and s["itemCount"] < base["total"] and api.items({"source": s["id"]})["total"] >= 1
+    ]
     if not candidates:
         check("sources checklist: a source with items exists", False)
     else:
@@ -571,6 +641,7 @@ def run_home_desktop(browser):
         changed_count >= 1 and all(ok for _, _c, ok in changed_flags),
         "%d of %d filters changed the set%s" % (changed_count, len(changed_flags), ("; unchanged: " + ", ".join(unchanged)) if unchanged else ""),
     )
+    check("home: still exactly one ./data/items.json request after all filters, none to /api/items", len(reqs.data_items) == 1 and len(reqs.api_items) == 0, "%d data, %d api" % (len(reqs.data_items), len(reqs.api_items)))
     check("home: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
 
     ctx.close()
@@ -585,7 +656,7 @@ def run_sources_desktop(browser):
     page.on("pageerror", lambda err: console_errors.append(str(err)))
     page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
 
-    page.goto(BASE + "/sources", wait_until="domcontentloaded")
+    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
     page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
     page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
     data = page.evaluate(SOURCES_PAGE_JS)
@@ -645,12 +716,110 @@ def run_mobile(browser):
     a = audit_page(page, "home mobile 390px", want_controls=True, open_details=True)
     check("mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
 
-    page.goto(BASE + "/sources", wait_until="domcontentloaded")
+    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
     page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
     b = audit_page(page, "sources mobile 390px", want_controls=False)
     check("mobile sources: document.documentElement.scrollWidth <= 390", b["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % b["scrollWidth"])
     check("mobile: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
     ctx.close()
+
+
+def run_live_smoke(browser):
+    """SMOKE_ONLY mode: browser checks that need only the static files, usable on GitHub Pages."""
+    ctx = browser.new_context(viewport=DESKTOP)
+    page = ctx.new_page()
+    console_errors = []
+    page.on("pageerror", lambda err: console_errors.append(str(err)))
+    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+    reqs = RequestLog(page)
+
+    # --- home ------------------------------------------------------------
+    page.goto(BASE + "/", wait_until="domcontentloaded")
+    wait_state(page, {})
+    base = snapshot(page)
+    check("smoke home: at least 1 article rendered", base["shown"] >= 1, "%d articles, total %s" % (base["shown"], base["total"]))
+    check("smoke home: loaded ./data/items.json once and never /api/items", len(reqs.data_items) == 1 and len(reqs.api_items) == 0, "%d data, %d api" % (len(reqs.data_items), len(reqs.api_items)))
+    times = [parse_iso(c["time"]) for c in base["cards"] if c["time"]]
+    check(
+        "smoke home: newest first",
+        len(times) == base["shown"] and all(times[i] >= times[i + 1] for i in range(len(times) - 1)),
+        "%d timestamps, first %s" % (len(times), times[0].isoformat() if times else "-"),
+    )
+    refreshed = page.evaluate(LAST_REFRESHED_JS)
+    check("smoke home: 'Last refreshed' shows a real time", refreshed.startswith("Last refreshed") and "unknown" not in refreshed and "never" not in refreshed and "loading" not in refreshed, refreshed)
+    audit_page(page, "smoke home desktop", want_controls=True, open_details=True)
+
+    page.select_option("#kind", "funding")
+    wait_state(page, {"kind": "funding"})
+    snap = snapshot(page)
+    check("smoke kind=funding: every card is Funding and the URL carries kind=funding", all(c["kind"] == "Funding" for c in snap["cards"]) and "kind=funding" in page.url, "%d cards, url %s" % (snap["shown"], page.url))
+    page.select_option("#kind", "")
+    wait_state(page, {"kind": ABSENT})
+
+    page.click('button.scope[data-scope="usa"]')
+    wait_state(page, {"region": "usa"})
+    snap = snapshot(page)
+    check("smoke scope USA: every card is USA", snap["shown"] >= 1 and all(c["region"] == "USA" for c in snap["cards"]), "%d cards" % snap["shown"])
+    page.click('button.scope[data-scope="world"]')
+    wait_state(page, {"region": "world"})
+    snap = snapshot(page)
+    check("smoke scope World: no card is USA", snap["shown"] >= 1 and all(c["region"] != "USA" for c in snap["cards"]), "%d cards" % snap["shown"])
+    page.click('button.scope[data-scope=""]')
+    wait_state(page, {"region": ABSENT})
+
+    page.click('button.chip[data-since="7d"]')
+    wait_state(page, {"since": "7d"})
+    snap = snapshot(page)
+    cutoff = since_cutoff("7d")
+    check("smoke chip 7 days: every card is newer than the cutoff", all(parse_iso(c["time"]) >= cutoff for c in snap["cards"] if c["time"]), "%d cards, cutoff %s" % (snap["shown"], to_iso(cutoff)))
+    page.click('button.chip[data-since=""]')
+    wait_state(page, {"since": ABSENT})
+
+    words = re.findall(WORD_RE, base["cards"][0]["title"]) if base["cards"] else []
+    term = words[0] if words else None
+    if term is None:
+        check("smoke search: found a >= 4-letter word in the first title", False, base["cards"][0]["title"] if base["cards"] else "no cards")
+    else:
+        page.fill("#q", term)
+        wait_state(page, {"q": term})
+        snap = snapshot(page)
+        check("smoke search '%s': first card contains the term and URL carries q" % term, bool(snap["cards"]) and term.lower() in snap["cards"][0]["text"].lower() and "q=" in page.url, "%d matches" % (snap["total"] if snap["total"] is not None else -1))
+
+    page.click("#reset")
+    wait_state(page, {"kind": ABSENT, "region": ABSENT, "since": ABSENT, "q": ABSENT, "source": ABSENT})
+    snap = snapshot(page)
+    check("smoke reset: empty query and unfiltered total", snap["search"] == "" and snap["total"] == base["total"], "UI %s / baseline %s" % (snap["total"], base["total"]))
+    check("smoke home: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+
+    # --- sources.html ------------------------------------------------------
+    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
+    page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
+    page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
+    data = page.evaluate(SOURCES_PAGE_JS)
+    res = ctx.request.get(BASE + "/data/sources.json")
+    n_sources = len(res.json()["sources"]) if res.ok else -1
+    check("smoke sources: one table row per source in ./data/sources.json", n_sources >= 1 and len(data["rows"]) == n_sources, "%d rows / %d sources" % (len(data["rows"]), n_sources))
+    check("smoke sources: at least 10 explore links", len(data["explore"]) >= 10, "%d links" % len(data["explore"]))
+    refreshed = page.evaluate(LAST_REFRESHED_JS)
+    check("smoke sources: 'Last refreshed' shows a real time", refreshed.startswith("Last refreshed") and "unknown" not in refreshed and "never" not in refreshed and "loading" not in refreshed, refreshed)
+    audit_page(page, "smoke sources desktop", want_controls=False)
+    check("smoke sources: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+    ctx.close()
+
+    # --- mobile ------------------------------------------------------------
+    mctx = browser.new_context(viewport=MOBILE, device_scale_factor=MOBILE_SCALE, is_mobile=True, has_touch=True)
+    mpage = mctx.new_page()
+    merrors = []
+    mpage.on("pageerror", lambda err: merrors.append(str(err)))
+    mpage.on("console", lambda msg: merrors.append(msg.text) if msg.type == "error" else None)
+    mpage.goto(BASE + "/", wait_until="domcontentloaded")
+    wait_state(mpage, {})
+    snap = snapshot(mpage)
+    check("smoke mobile home: at least 1 article rendered", snap["shown"] >= 1, "%d articles" % snap["shown"])
+    a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True)
+    check("smoke mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
+    check("smoke mobile: no console errors or page errors", len(merrors) == 0, "; ".join(merrors)[:300])
+    mctx.close()
 
 
 def check_files():
@@ -672,22 +841,28 @@ def check_files():
 
 
 def main():
-    OUT.mkdir(parents=True, exist_ok=True)
     print("base url: %s" % BASE)
-    print("output:   %s" % OUT)
+    print("mode:     %s" % ("smoke (SMOKE_ONLY=1, no screenshots)" if SMOKE_ONLY else "parity (compares the UI with /api/items)"))
+    if not SMOKE_ONLY:
+        OUT.mkdir(parents=True, exist_ok=True)
+        print("output:   %s" % OUT)
     print("channel:  %s" % CHANNEL)
     print("")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, channel=CHANNEL)
         try:
-            run_home_desktop(browser)
-            run_sources_desktop(browser)
-            run_mobile(browser)
+            if SMOKE_ONLY:
+                run_live_smoke(browser)
+            else:
+                run_home_desktop(browser)
+                run_sources_desktop(browser)
+                run_mobile(browser)
         finally:
             browser.close()
 
-    check_files()
+    if not SMOKE_ONLY:
+        check_files()
 
     failed = results.count(False)
     print("")
