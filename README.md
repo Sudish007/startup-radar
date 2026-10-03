@@ -390,7 +390,12 @@ whole set exceeds 600 KB (older items go to `archive.json` and load on demand). 
 build the data is a few seconds old; because the build runs hourly and Pages' CDN caches files
 for 10 minutes, what a visitor sees can be up to about 70 minutes old.
 
-> **Sources blocked from GitHub runners:** to be filled in from the first Actions run log.
+> **Sources blocked from GitHub runners** (from the Actions logs of 2026-10-03): 18 of the 19
+> default sources succeed. **Launching Next** (`launchingnext`) answers `HTTP 403` for
+> `https://www.launchingnext.com/rss/` from GitHub-hosted runner IPs on every run, although the
+> same feed works from a home network, so the live site has no Launching Next items. It is still
+> listed on `sources.html` with that error. Everything else, including the sources that are slow
+> locally (Vulcan Post, Disrupt Africa), fetched fine from the runner.
 
 ### Limits (from the GitHub docs)
 
