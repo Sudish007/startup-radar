@@ -9,6 +9,10 @@ import {
   matchesQuery,
   compareNewestFirst,
   filterItems,
+  itemKey,
+  pointsOf,
+  comparePoints,
+  sortItems,
 } from '../public/filter.js';
 
 const NOW = new Date('2026-10-03T12:34:56.000Z');
@@ -148,5 +152,68 @@ describe('filterItems', () => {
   test('filters combine', () => {
     assert.deepEqual(ids(filterItems(ITEMS, { kind: 'news', region: 'world', since: 'today' }, NOW)), [6]);
     assert.deepEqual(ids(filterItems(ITEMS, { kind: 'news', region: 'usa', since: 'today' }, NOW)), []);
+  });
+});
+
+describe('itemKey', () => {
+  test('itemKey is deterministic base-36 (1-13 chars) and coerces non-strings', () => {
+    const keys = ITEMS.map((i) => itemKey(i.url));
+    for (const k of keys) {
+      assert.match(k, /^[0-9a-z]{1,13}$/);
+    }
+    assert.equal(new Set(keys).size, ITEMS.length, 'distinct for the fixture URLs');
+    assert.equal(itemKey('https://example.test/1'), itemKey('https://example.test/1'));
+    assert.notEqual(itemKey('https://example.test/1'), itemKey('https://example.test/2'));
+    assert.equal(itemKey(undefined), itemKey(''));
+    assert.equal(itemKey(null), itemKey(''));
+    assert.equal(itemKey(42), itemKey('42'));
+    assert.doesNotThrow(() => itemKey({}));
+    assert.doesNotThrow(() => itemKey(Symbol('x')));
+    assert.doesNotThrow(() => itemKey(['a', 'b']));
+    // 64-bit FNV-1a of the empty string is the offset basis, in base 36.
+    assert.equal(itemKey(''), (0xcbf29ce484222325n).toString(36));
+    // UTF-8 bytes, not UTF-16 code units.
+    assert.notEqual(itemKey('caf\u00e9'), itemKey('cafe'));
+  });
+});
+
+describe('pointsOf / comparePoints / sortItems', () => {
+  const hn = item(10, { extra: { points: 142, comments: 37 }, publishedAt: '2026-10-01T00:00:00.000Z' });
+  const hnLow = item(11, { extra: { points: 3 }, publishedAt: '2026-10-03T00:00:00.000Z' });
+  const ph = item(12, { extra: { votes: 50 }, publishedAt: '2026-10-02T00:00:00.000Z' });
+  const both = item(13, { extra: { points: 50, votes: 999 }, publishedAt: '2026-09-01T00:00:00.000Z' });
+  const none = item(14, { extra: { author: 'pg' }, publishedAt: '2026-10-03T06:00:00.000Z' });
+  const noneOlder = item(15, { extra: {}, publishedAt: '2026-10-02T06:00:00.000Z' });
+
+  test('pointsOf prefers points over votes', () => {
+    assert.equal(pointsOf(hn), 142);
+    assert.equal(pointsOf(ph), 50);
+    assert.equal(pointsOf(both), 50);
+    assert.equal(pointsOf(none), null);
+    assert.equal(pointsOf({ extra: { points: 'many' } }), null);
+    assert.equal(pointsOf({ extra: { points: Number.NaN, votes: 7 } }), 7);
+    assert.equal(pointsOf({}), null);
+    assert.equal(pointsOf(null), null);
+  });
+
+  test('comparePoints orders valued items desc then newest-first', () => {
+    const sorted = [none, noneOlder, hnLow, ph, hn, both].sort(comparePoints);
+    assert.deepEqual(ids(sorted), [10, 12, 13, 11, 14, 15]);
+    // ties on the value fall back to newest-first (ph and both have 50)
+    assert.ok(comparePoints(ph, both) < 0);
+    assert.ok(comparePoints(none, noneOlder) < 0);
+    assert.equal(comparePoints(hn, hn), 0);
+  });
+
+  test("sortItems('') keeps order; sortItems('points') is stable", () => {
+    const list = filterItems([...ITEMS, hn, ph, none], {}, NOW);
+    assert.equal(sortItems(list, ''), list);
+    assert.deepEqual(ids(sortItems(list, 'bogus')), ids(list));
+    const byPoints = sortItems(list, 'points');
+    assert.notEqual(byPoints, list, 'returns a new array');
+    assert.deepEqual(ids(list), ids(filterItems([...ITEMS, hn, ph, none], {}, NOW)), 'input not mutated');
+    assert.deepEqual(ids(byPoints).slice(0, 2), [10, 12]);
+    assert.deepEqual(ids(byPoints).slice(2), ids(list).filter((id) => id !== 10 && id !== 12));
+    assert.deepEqual(ids(sortItems(byPoints, 'points')), ids(byPoints), 'idempotent');
   });
 });
