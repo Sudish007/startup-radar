@@ -114,6 +114,34 @@ describe('app without ADMIN_TOKEN', () => {
     assert.deepEqual(body.bySource, {});
   });
 
+  test('GET /data/*.json serve the static-export payloads with no-store', async () => {
+    const items = await fetch(`${ctx.base}/data/items.json`);
+    assert.equal(items.status, 200);
+    assert.equal(items.headers.get('cache-control'), 'no-store');
+    assert.match(items.headers.get('content-type'), /application\/json/);
+    assert.deepEqual(await items.json(), []);
+
+    const stats = await fetch(`${ctx.base}/data/stats.json`);
+    assert.equal(stats.status, 200);
+    assert.equal(stats.headers.get('cache-control'), 'no-store');
+    const statsBody = await stats.json();
+    assert.equal(typeof statsBody.generatedAt, 'string');
+    assert.ok(!Number.isNaN(Date.parse(statsBody.generatedAt)));
+    assert.equal(statsBody.archiveItems, 0);
+    assert.equal(statsBody.items, 0);
+
+    const sources = await fetch(`${ctx.base}/data/sources.json`);
+    assert.equal(sources.status, 200);
+    assert.equal(sources.headers.get('cache-control'), 'no-store');
+    const apiSources = await (await fetch(`${ctx.base}/api/sources`)).json();
+    assert.deepEqual(await sources.json(), apiSources);
+
+    const archive = await fetch(`${ctx.base}/data/archive.json`);
+    assert.equal(archive.status, 404);
+    assert.equal(archive.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await archive.json(), { error: 'not found' });
+  });
+
   test('unknown /api path is a JSON 404', async () => {
     const res = await fetch(`${ctx.base}/api/nope`);
     assert.equal(res.status, 404);
@@ -161,5 +189,21 @@ describe('app with ADMIN_TOKEN', () => {
     const sources = await (await fetch(`${ctx.base}/api/sources`)).json();
     assert.equal(sources.sources[0].itemCount, 2);
     assert.equal(sources.sources[0].lastItemCount, 2);
+
+    const dataItems = await (await fetch(`${ctx.base}/data/items.json`)).json();
+    assert.ok(Array.isArray(dataItems));
+    assert.equal(dataItems.length, 2);
+    assert.equal(dataItems[0].title, 'Stub one');
+    assert.equal(dataItems[0].source.name, 'Stub Source');
+    assert.equal(dataItems[1].title, 'Stub two');
+
+    const dataStats = await (await fetch(`${ctx.base}/data/stats.json`)).json();
+    assert.equal(dataStats.items, 2);
+    assert.equal(dataStats.archiveItems, 0);
+    assert.equal(typeof dataStats.generatedAt, 'string');
+    assert.equal(typeof dataStats.lastRefresh, 'string');
+
+    const dataSources = await (await fetch(`${ctx.base}/data/sources.json`)).json();
+    assert.deepEqual(dataSources, sources);
   });
 });

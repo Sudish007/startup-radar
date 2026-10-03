@@ -166,6 +166,33 @@ function statusLabel(source, result, env) {
   return result?.ok ? 'OK' : 'FAIL';
 }
 
+/**
+ * Per-source result table for a refresh cycle summary. Returns the lines to print:
+ * header, separator, one row per registry source, a blank line and the
+ * `N/M enabled sources OK in X ms` footer (without the DB item count).
+ */
+export function formatSummaryTable(sources, summary, env = process.env) {
+  const byId = new Map(summary.sources.map((r) => [r.id, r]));
+  const lines = [];
+
+  const idWidth = Math.max(6, ...sources.map((s) => s.id.length));
+  const statusWidth = Math.max(6, ...sources.map((s) => statusLabel(s, byId.get(s.id), env).length));
+  lines.push(`${pad('source', idWidth)} | ${pad('status', statusWidth)} | ${pad('items', 5)} | ${pad('ms', 6)} | error`);
+  lines.push(`${'-'.repeat(idWidth)}-+-${'-'.repeat(statusWidth)}-+-------+--------+------`);
+  for (const s of sources) {
+    const r = byId.get(s.id);
+    const label = statusLabel(s, r, env);
+    const items = r ? r.count : '-';
+    const ms = r ? r.durationMs : '-';
+    const error = r?.error ?? '';
+    lines.push(`${pad(s.id, idWidth)} | ${pad(label, statusWidth)} | ${pad(items, 5)} | ${pad(ms, 6)} | ${error}`);
+  }
+  const okCount = summary.sources.filter((r) => r.ok).length;
+  lines.push('');
+  lines.push(`${okCount}/${summary.sources.length} enabled sources OK in ${summary.durationMs} ms`);
+  return lines;
+}
+
 async function main() {
   const config = loadConfig();
   const db = openDb(path.join(config.dataDir, 'startup-radar.db'));
@@ -174,22 +201,13 @@ async function main() {
     const http = createHttp(config);
     const refresh = createRefresh({ db, http, sources, env: process.env, log: () => {} });
     const summary = await refresh.runRefreshCycle();
-    const byId = new Map(summary.sources.map((r) => [r.id, r]));
 
-    const idWidth = Math.max(6, ...sources.map((s) => s.id.length));
-    const statusWidth = Math.max(6, ...sources.map((s) => statusLabel(s, byId.get(s.id), process.env).length));
-    console.log(`${pad('source', idWidth)} | ${pad('status', statusWidth)} | ${pad('items', 5)} | ${pad('ms', 6)} | error`);
-    console.log(`${'-'.repeat(idWidth)}-+-${'-'.repeat(statusWidth)}-+-------+--------+------`);
-    for (const s of sources) {
-      const r = byId.get(s.id);
-      const label = statusLabel(s, r, process.env);
-      const items = r ? r.count : '-';
-      const ms = r ? r.durationMs : '-';
-      const error = r?.error ?? '';
-      console.log(`${pad(s.id, idWidth)} | ${pad(label, statusWidth)} | ${pad(items, 5)} | ${pad(ms, 6)} | ${error}`);
-    }
+    const lines = formatSummaryTable(sources, summary, process.env);
+    const footer = lines.pop();
+    lines.pop(); // blank line: main() prints it as the "\n" prefix of the footer, as before
+    for (const line of lines) console.log(line);
+    console.log(`\n${footer}; ${db.countItems()} items in DB`);
     const okCount = summary.sources.filter((r) => r.ok).length;
-    console.log(`\n${okCount}/${summary.sources.length} enabled sources OK in ${summary.durationMs} ms; ${db.countItems()} items in DB`);
     return okCount > 0 ? 0 : 1;
   } finally {
     db.close();

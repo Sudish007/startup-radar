@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { KINDS, REGIONS } from './lib/classify.js';
-import { EXPLORE_MORE } from './explore.js';
+import { buildSnapshot, itemsPayload, sourcesPayload } from './export.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -19,7 +19,7 @@ function securityHeaders(req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('X-Frame-Options', 'DENY');
-  if (req.path === '/health' || req.path.startsWith('/api/')) {
+  if (req.path === '/health' || req.path.startsWith('/api/') || req.path.startsWith('/data/')) {
     res.setHeader('Cache-Control', 'no-store');
   }
   next();
@@ -106,6 +106,26 @@ export function createApp({ db, sources, config, refresh, env = process.env }) {
   const nameOf = (id) => sourceById.get(id)?.name ?? id;
 
   app.use(securityHeaders);
+
+  // Same JSON files the static build writes to dist/data/, generated per request.
+  app.get('/data/items.json', (req, res) => {
+    res.json(itemsPayload({ db, sources }).items);
+  });
+
+  app.get('/data/archive.json', (req, res) => {
+    const { archive } = buildSnapshot({ db, sources, env });
+    if (!archive) return res.status(404).json({ error: 'not found' });
+    res.json(archive);
+  });
+
+  app.get('/data/sources.json', (req, res) => {
+    res.json(sourcesPayload({ db, sources, env }));
+  });
+
+  app.get('/data/stats.json', (req, res) => {
+    res.json(buildSnapshot({ db, sources, env }).stats);
+  });
+
   app.use(express.static(PUBLIC_DIR, { maxAge: '1h', index: 'index.html' }));
 
   app.get('/sources', (req, res) => {
@@ -132,27 +152,7 @@ export function createApp({ db, sources, config, refresh, env = process.env }) {
   });
 
   app.get('/api/sources', (req, res) => {
-    const statuses = db.getSourceStatuses();
-    const counts = db.itemCountsBySource();
-    const list = sources.map((s) => {
-      const st = statuses.get(s.id) ?? {};
-      return {
-        id: s.id,
-        name: s.name,
-        homepage: s.homepage,
-        kind: s.kind,
-        region: s.region,
-        enabled: Boolean(s.enabled(env)),
-        requires: s.requires ?? null,
-        lastRunAt: st.last_run_at ?? null,
-        lastSuccessAt: st.last_success_at ?? null,
-        lastError: st.last_error ?? null,
-        lastDurationMs: st.last_duration_ms ?? null,
-        lastItemCount: st.last_item_count ?? null,
-        itemCount: counts[s.id] ?? 0,
-      };
-    });
-    res.json({ sources: list, exploreMore: EXPLORE_MORE });
+    res.json(sourcesPayload({ db, sources, env }));
   });
 
   app.get('/api/stats', (req, res) => {

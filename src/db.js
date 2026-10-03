@@ -215,6 +215,15 @@ export function openDb(filePath) {
     return { items: result.rows.map(rowToItem), total: result.total };
   }
 
+  /** Newest-first list for exports: no 100 clamp, `limit` defaults to 3000. */
+  function listItems({ since, limit = 3000 } = {}) {
+    const safeLimit = Math.max(1, Number(limit) || 3000);
+    const where = since ? 'WHERE published_at >= ?' : '';
+    const params = since ? [since, safeLimit] : [safeLimit];
+    const sql = `SELECT ${ITEM_COLUMNS} FROM items ${where} ORDER BY published_at DESC, id DESC LIMIT ?`;
+    return sqlite.prepare(sql).all(...params).map(rowToItem);
+  }
+
   function countItems() {
     return countStmt.get().n;
   }
@@ -273,6 +282,7 @@ export function openDb(filePath) {
     ftsAvailable,
     upsertItems,
     queryItems,
+    listItems,
     countItems,
     lastRefresh,
     getStats,
