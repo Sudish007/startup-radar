@@ -5,8 +5,7 @@
 
 import { absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
 import {
-  clear, createStatusLine, el, extLink, fetchJson, initHelp, initInstallPrompt, initTheme, observeSticky, openHelp, pollStats,
-  registerServiceWorker, startTicker, tickTimes, toggleTheme,
+  clear, createStatusLine, el, extLink, fetchJson, initHelp, initTheme, observeSticky, openHelp, pollStats, startPwa, startTicker, tickTimes, toggleTheme,
 } from './ui.js';
 
 const SOURCES_URL = './data/sources.json';
@@ -142,8 +141,7 @@ async function init() {
   renderAll();
   pollStats({ url: STATS_URL, onStats: (stats) => statusLine.update(stats), onError: () => statusLine.fail() });
   startTicker(tick);
-  registerServiceWorker();
-  initInstallPrompt();
+  startPwa();
 }
 
 init();

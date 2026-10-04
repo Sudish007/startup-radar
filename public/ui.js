@@ -1,19 +1,16 @@
-// Startup Radar shared UI module (home + sources pages). Vanilla ES module;
-// every DOM node is built with createElement/textContent (strict CSP), the
-// only element factory is el() and the only place target="_blank" is set is
-// extLink(). Dynamic styles go through style.setProperty / WAAPI only.
+// Startup Radar shared UI module (home + sources). Strict CSP: el() is the only element factory
+// (textContent only), extLink() the only constructor of external anchors, styles via CSSOM/WAAPI.
 
 import { absoluteTime, relativeTime } from './format.js';
 
 export const STATS_POLL_MS = 300_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const XLINK = 'http://www.w3.org/1999/xlink';
 const THEME_KEY = 'sr:theme';
 const THEME_COLORS = { dark: '#0B0F17', light: '#F4F6FA' };
 
 export const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-// ---------- DOM helpers ----------
+// -- DOM helpers --
 
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -24,10 +21,7 @@ export function el(tag, props = {}, children = []) {
     else if (key === 'dataset') Object.assign(node.dataset, value);
     else node.setAttribute(key, value === true ? '' : value);
   }
-  for (const child of children) {
-    if (child === null || child === undefined) continue;
-    node.append(child);
-  }
+  node.append(...children.filter((c) => c !== null && c !== undefined));
   return node;
 }
 
@@ -35,20 +29,18 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-/** <svg class="icon" aria-hidden="true" focusable="false"><use href="./icons.svg#name"/></svg> */
+/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> (inline SVG is not focusable in any target browser) */
 export function icon(name, className = 'icon') {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', className);
   svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
   const use = document.createElementNS(SVG_NS, 'use');
   use.setAttribute('href', `./icons.svg#${name}`);
-  use.setAttributeNS(XLINK, 'xlink:href', `./icons.svg#${name}`);
   svg.append(use);
   return svg;
 }
 
-/** The ONLY constructor of external anchors: target=_blank + rel="noopener noreferrer". */
+/** The only place a new-tab anchor is created (always noopener noreferrer). */
 export function extLink(href, text, { className = null, ariaLabel = null, title = null } = {}) {
   const a = el('a', { href, className, 'aria-label': ariaLabel, title });
   a.target = '_blank';
@@ -61,39 +53,39 @@ export function scrollLock(on) {
   document.documentElement.classList.toggle('has-modal', Boolean(on));
 }
 
-/** fetch + JSON with the error-message convention of the API; `cacheInfo` receives the SW fallback headers. */
+/** Run `done` once `node`'s exit animation ends (at once under reduced motion or without animations; 300 ms safety net). */
+export function afterExit(node, done) {
+  if (reduceMotion.matches || !node?.getAnimations || node.getAnimations().length === 0) { done(); return; }
+  let fired = false;
+  const once = () => { if (!fired) { fired = true; done(); } };
+  node.addEventListener('animationend', once, { once: true });
+  setTimeout(once, 300);
+}
+
+/** fetch + JSON with the API's { error } convention; onResponse sees the raw response (SW headers). */
 export async function fetchJson(url, { noCache = false, onResponse = null } = {}) {
   const res = await fetch(url, { headers: { Accept: 'application/json' }, cache: noCache ? 'no-cache' : 'default' });
   onResponse?.(res);
   const body = await res.json().catch(() => null);
-  if (!res.ok) {
-    const msg = body && typeof body.error === 'string' ? body.error : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
+  if (!res.ok) throw new Error(body && typeof body.error === 'string' ? body.error : `HTTP ${res.status}`);
   return body;
 }
 
-// ---------- toasts ----------
+// -- toasts --
 
 const toastsEl = () => document.getElementById('toasts');
 
 function dismissToast(t, immediate = false) {
   clearTimeout(Number(t.dataset.timer));
-  if (immediate || reduceMotion.matches || !t.isConnected) { t.remove(); return; }
+  if (immediate || !t.isConnected) { t.remove(); return; }
   t.classList.add('closing');
-  t.addEventListener('animationend', () => t.remove(), { once: true });
-  setTimeout(() => t.remove(), 300);
+  afterExit(t, () => t.remove());
 }
 
-/**
- * toast(message, { variant = 'info' | 'error' | 'update', action = { label, onClick } | null, duration = 6000 }) -> HTMLElement
- * At most two auto-dismissing toasts are visible; toasts with an action (and the
- * persistent `update` variant) never auto-dismiss and are never evicted.
- */
+/** toast(message, { variant: info|error|update, action: { label, onClick }, duration }); max two auto-dismissing, actioned ones persist. */
 export function toast(message, { variant = 'info', action = null, duration = 6000 } = {}) {
   const host = toastsEl();
-  const t = el('div', { className: `toast ${variant}`, role: variant === 'error' ? 'alert' : null });
-  t.append(el('p', { text: message }));
+  const t = el('div', { className: `toast ${variant}`, role: variant === 'error' ? 'alert' : null }, [el('p', { text: message })]);
   if (action) {
     const b = el('button', { type: 'button', className: 'toast-action', text: action.label });
     b.addEventListener('click', () => { action.onClick?.(); dismissToast(t, true); });
@@ -126,7 +118,7 @@ export function restoreToasts() {
   else document.body.append(host);
 }
 
-// ---------- theme ----------
+// -- theme --
 
 function storedTheme() {
   try {
@@ -146,11 +138,7 @@ export function applyTheme(theme) {
   const btn = document.getElementById('theme-toggle');
   if (btn) {
     btn.setAttribute('aria-label', t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
-    const use = btn.querySelector('use');
-    if (use) {
-      use.setAttribute('href', `./icons.svg#${t === 'dark' ? 'sun' : 'moon'}`);
-      use.setAttributeNS(XLINK, 'xlink:href', `./icons.svg#${t === 'dark' ? 'sun' : 'moon'}`);
-    }
+    btn.querySelector('use')?.setAttribute('href', `./icons.svg#${t === 'dark' ? 'sun' : 'moon'}`);
   }
 }
 
@@ -160,16 +148,16 @@ export function toggleTheme() {
   applyTheme(next);
 }
 
+/** Wire the toggle; follow the OS preference only until a choice is stored. */
 export function initTheme() {
   applyTheme(currentTheme());
   document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
-  const mq = matchMedia('(prefers-color-scheme: light)');
-  mq.addEventListener('change', (e) => {
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
     if (storedTheme() === null) applyTheme(e.matches ? 'light' : 'dark');
   });
 }
 
-// ---------- help dialog ----------
+// -- help dialog --
 
 let helpOpener = null;
 let helpClosing = false;
@@ -188,13 +176,19 @@ export function closeHelp() {
   if (!d || !d.open || helpClosing) return;
   helpClosing = true;
   d.classList.add('closing');
-  const panel = d.querySelector('.help-panel');
-  const finish = () => { if (d.open) d.close(); };
-  if (reduceMotion.matches || !panel?.getAnimations || panel.getAnimations().length === 0) { finish(); return; }
-  let done = false;
-  const once = () => { if (done) return; done = true; finish(); };
-  panel.addEventListener('animationend', once, { once: true });
-  setTimeout(once, 300);
+  afterExit(d.querySelector('.help-panel'), () => { if (d.open) d.close(); });
+}
+
+/** Fill dl.help-list from [[keys...], description] rows. */
+export function fillHelp(rows) {
+  const dl = document.querySelector('#help dl.help-list');
+  if (!dl) return;
+  clear(dl);
+  for (const [keys, text] of rows) {
+    const dt = el('dt');
+    keys.forEach((k, i) => { if (i) dt.append(' '); dt.append(el('kbd', { text: k })); });
+    dl.append(dt, el('dd', { text }));
+  }
 }
 
 export function initHelp() {
@@ -207,7 +201,7 @@ export function initHelp() {
     restoreToasts();
     const target = helpOpener;
     helpOpener = null;
-    if (target && target.isConnected) target.focus();
+    if (target?.isConnected) target.focus();
   });
   d.addEventListener('click', (e) => { if (e.target === d) closeHelp(); });
   document.getElementById('help-close')?.addEventListener('click', closeHelp);
@@ -215,16 +209,16 @@ export function initHelp() {
   document.getElementById('help-link')?.addEventListener('click', (e) => { e.preventDefault(); openHelp(e.currentTarget); });
 }
 
-// ---------- timers, sticky heights, polling ----------
+// -- timers, sticky heights, polling, status line --
 
-/** Run `fn` every minute while the page is visible, and once when it becomes visible again. */
+/** Run `fn` every minute while visible, and when the page becomes visible again. */
 export function startTicker(fn) {
   const id = setInterval(() => { if (!document.hidden) fn(); }, 60_000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fn(); });
   return () => clearInterval(id);
 }
 
-/** Measure the sticky bars into --topbar-h / --sticky-h on <html> (CSP-safe CSSOM writes). */
+/** Measure the sticky header (+ desktop filter bar) into --topbar-h / --sticky-h on <html>. */
 export function observeSticky() {
   const header = document.querySelector('header.site-header');
   const panel = document.getElementById('filter-panel');
@@ -247,7 +241,7 @@ export function observeSticky() {
   return update;
 }
 
-/** Poll stats.json every 5 minutes (not at start), paused while hidden, immediately on return when stale. */
+/** Poll stats.json every 5 minutes (never at start), paused while hidden, immediately on return when stale. */
 export function pollStats({ url, onStats, onError }) {
   let last = Date.now();
   let inflight = false;
@@ -256,11 +250,9 @@ export function pollStats({ url, onStats, onError }) {
     inflight = true;
     last = Date.now();
     try {
-      const res = await fetch(url, { cache: 'no-cache', headers: { Accept: 'application/json' } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await fetchJson(url, { noCache: true });
       if (!body || typeof body !== 'object') throw new Error('unexpected response');
-      await onStats(body, res);
+      await onStats(body);
     } catch (err) {
       onError?.(err);
     } finally {
@@ -274,28 +266,21 @@ export function pollStats({ url, onStats, onError }) {
   return { poll, stop: () => clearInterval(id) };
 }
 
-/** The #last-refreshed contract: "Last refreshed <relative>" (+ " · update check failed"), no aria-live; #refresh-announce is the live region. */
+/** #last-refreshed text contract (+ " · update check failed"); #refresh-announce is the only live region. */
 export function createStatusLine() {
   const p = document.getElementById('last-refreshed');
-  const dot = p?.querySelector('.live-dot');
   const text = p?.querySelector('.status-text') ?? p;
   const announce = document.getElementById('refresh-announce');
   let at = null;
   let failed = false;
   let announcedFail = false;
-  function paint() {
+  const paint = () => {
     if (!p) return;
-    if (!at) {
-      text.textContent = failed ? 'Last refreshed: unknown' : 'Last refreshed: loading\u2026';
-      p.removeAttribute('title');
-    } else {
-      text.textContent = `Last refreshed ${relativeTime(at)}${failed ? ' \u00b7 update check failed' : ''}`;
-      p.title = absoluteTime(at);
-    }
-    dot?.classList.toggle('is-warn', failed);
-  }
+    text.textContent = at ? `Last refreshed ${relativeTime(at)}${failed ? ' \u00b7 update check failed' : ''}` : `Last refreshed: ${failed ? 'unknown' : 'loading\u2026'}`;
+    if (at) p.title = absoluteTime(at); else p.removeAttribute('title');
+    p.querySelector('.live-dot')?.classList.toggle('is-warn', failed);
+  };
   return {
-    get at() { return at; },
     update(stats) {
       const next = stats?.lastRefresh ?? stats?.generatedAt ?? null;
       const changed = at !== null && next !== null && next !== at;
@@ -310,81 +295,20 @@ export function createStatusLine() {
       paint();
       if (!announcedFail && announce) { announce.textContent = 'Update check failed'; announcedFail = true; }
     },
-    tick() { paint(); },
+    tick: paint,
   };
-}
-
-// ---------- PWA: service worker registration, update toast, install prompt ----------
-
-let awaitingReload = false;
-let updateToast = null;
-
-function showUpdateToast(worker) {
-  if (updateToast && updateToast.isConnected) return;
-  updateToast = toast('Update available \u2014 Reload', {
-    variant: 'update',
-    action: {
-      label: 'Reload',
-      onClick: () => {
-        awaitingReload = true;
-        worker.postMessage({ type: 'SKIP_WAITING' });
-      },
-    },
-  });
-}
-
-/** Register ./sw.js (relative scope) after load on https or localhost; failures only warn. */
-export function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
-  const local = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-  if (location.protocol !== 'https:' && !local) return;
-  const run = async () => {
-    try {
-      const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-      if (reg.waiting && navigator.serviceWorker.controller) showUpdateToast(reg.waiting);
-      reg.addEventListener('updatefound', () => {
-        const w = reg.installing;
-        if (!w) return;
-        w.addEventListener('statechange', () => {
-          if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdateToast(w);
-        });
-      });
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!awaitingReload) return; // the first install (clients.claim) never reloads
-        awaitingReload = false;
-        location.reload();
-      });
-    } catch (err) {
-      console.warn('[radar] service worker registration failed:', err?.message ?? err);
-    }
-  };
-  if (document.readyState === 'complete') run();
-  else window.addEventListener('load', run, { once: true });
-}
-
-/** Show the footer Install button only when the browser offers beforeinstallprompt. */
-export function initInstallPrompt() {
-  const btn = document.getElementById('install');
-  if (!btn) return;
-  let deferred = null;
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferred = e;
-    btn.hidden = false;
-  });
-  btn.addEventListener('click', async () => {
-    const ev = deferred;
-    deferred = null;
-    btn.hidden = true;
-    if (!ev) return;
-    try { await ev.prompt(); } catch { /* dismissed or unavailable */ }
-  });
-  window.addEventListener('appinstalled', () => { btn.hidden = true; });
 }
 
 /** Re-render every relative time stamp (`time[datetime][data-rel]`) inside `root`. */
 export function tickTimes(root = document) {
-  for (const t of root.querySelectorAll('time[datetime][data-rel]')) {
-    t.textContent = relativeTime(t.getAttribute('datetime'));
-  }
+  for (const t of root.querySelectorAll('time[datetime][data-rel]')) t.textContent = relativeTime(t.getAttribute('datetime'));
+}
+
+// -- PWA --
+
+/** After `load`, import ./pwa.js (SW registration, update toast, install prompt); failures only warn. */
+export function startPwa() {
+  const run = () => import('./pwa.js').then((m) => m.init({ toast })).catch((err) => console.warn('[radar] pwa init failed:', err?.message ?? err));
+  if (document.readyState === 'complete') run();
+  else window.addEventListener('load', run, { once: true });
 }
