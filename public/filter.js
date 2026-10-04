@@ -1,11 +1,10 @@
-// Startup Radar client-side filtering. DOM-free ES module shared by
-// public/app.js and test/filter.test.js; mirrors the server's /api/items
-// semantics (kind, region incl. the "world" scope, sources, since, word /
-// word-prefix search over title + summary, newest-first ordering).
+// Startup Radar client-side filtering (DOM-free; shared with test/filter.test.js). Mirrors the
+// server's /api/items semantics: kind, region incl. the "world" scope, sources, since, word /
+// word-prefix search over title + summary, newest-first ordering.
 
 export const SINCE_VALUES = new Set(['today', '7d', '30d', '']);
 
-/** Chip value -> ISO lower bound. today = UTC midnight, 7d/30d = now - N days, '' = null. */
+/** Chip value -> ISO lower bound: today = UTC midnight, 7d/30d = now - N days, '' = null. */
 export function sinceToIso(since, now = new Date()) {
   if (since === 'today') {
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -18,10 +17,7 @@ export function sinceToIso(since, now = new Date()) {
 
 const TOKEN_RE = /[\p{L}\p{N}]+/gu;
 
-/**
- * Lowercase word tokens. Diacritics are folded (e.g. "café" -> "cafe") like the
- * server's FTS5 unicode61 tokenizer does, so the client and server agree.
- */
+/** Lowercase word tokens; diacritics folded ("café" -> "cafe") like the server's FTS5 unicode61 tokenizer. */
 export function tokenize(text) {
   if (typeof text !== 'string' || text === '') return [];
   const folded = text.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase();
@@ -31,7 +27,7 @@ export function tokenize(text) {
 /** Same cap as buildFtsQuery() in src/db.js. */
 export const MAX_QUERY_TOKENS = 8;
 
-/** Query text -> at most MAX_QUERY_TOKENS tokens (what the server's MATCH expression uses). */
+/** Query text -> at most MAX_QUERY_TOKENS tokens (what the server's MATCH uses). */
 export function queryTokens(q) {
   return tokenize(q).slice(0, MAX_QUERY_TOKENS);
 }
@@ -48,9 +44,8 @@ function itemTokens(item) {
 }
 
 /**
- * Every query token must be a whole word or a word prefix in the item's title or
- * summary ("show" matches "showcase", "ai" does not match "rain"). Mirrors the
- * server's FTS5 `"token"*` prefix MATCH with implicit AND.
+ * Every query token must be a whole word or word prefix in the title or summary ("show" matches
+ * "showcase", "ai" does not match "rain"): the server's FTS5 `"token"*` MATCH with implicit AND.
  */
 export function matchesQuery(item, qTokens) {
   if (!qTokens || qTokens.length === 0) return true;
@@ -67,9 +62,8 @@ export function compareNewestFirst(a, b) {
 }
 
 /**
- * Apply { kind, region, sources, q, since } to `items` and return a new array
- * sorted newest first. `region === 'world'` means every region except 'usa';
- * `sources` is an array of source ids (empty = all); `since` is a SINCE_VALUES entry.
+ * Apply { kind, region, sources, q, since } to `items` -> new array, newest first. region 'world' =
+ * every region except 'usa'; sources = array of ids (empty = all); since = a SINCE_VALUES entry.
  */
 export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '' } = {}, now = new Date()) {
   const sinceIso = SINCE_VALUES.has(since) ? sinceToIso(since, now) : null;
@@ -99,12 +93,7 @@ const FNV_PRIME = 0x100000001b3n;
 const MASK_64 = 0xffffffffffffffffn;
 const utf8 = new TextEncoder();
 
-/**
- * Stable identity of an item across builds: 64-bit FNV-1a of the UTF-8 bytes of
- * `String(url ?? '')`, rendered in base 36 (1-13 characters). Numeric ids are
- * per-build SQLite rowids on the static host, so the unique `url` is the key.
- * Pure: never throws, coerces non-strings, same input -> same output.
- */
+/** Stable identity across builds (ids are per-build rowids): 64-bit FNV-1a of String(url ?? '') in base 36 (1-13 chars). */
 export function itemKey(url) {
   const bytes = utf8.encode(String(url ?? ''));
   let hash = FNV_OFFSET;
@@ -124,7 +113,7 @@ export function pointsOf(item) {
   return null;
 }
 
-/** Items with a points/votes value first (descending); ties and the no-value tail fall back to newest-first. */
+/** Valued items first (descending); ties and the no-value tail fall back to newest-first. */
 export function comparePoints(a, b) {
   const pa = pointsOf(a);
   const pb = pointsOf(b);
@@ -134,7 +123,7 @@ export function comparePoints(a, b) {
   return compareNewestFirst(a, b);
 }
 
-/** `'points'` -> a stable re-sort by comparePoints (new array); any other value keeps the input order. */
+/** 'points' -> stable re-sort by comparePoints (new array); anything else keeps the input order. */
 export function sortItems(items, sort) {
   if (sort === 'points') return [...items].sort(comparePoints);
   return items;
