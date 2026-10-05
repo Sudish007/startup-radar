@@ -1,8 +1,9 @@
 // Startup Radar live radar panel: pure geometry (unit-tested, DOM-free at module level) plus the SVG
 // renderer and pointer tooltip. Angle = kind sector (launch, funding, news, accelerator clockwise from
-// 12 o'clock) + region sub-wedge, spread inside it by a hash of the item key; radius = 0.10R (now) ..
-// 0.55R (24 h) .. R (48 h); newest 400 drawn. The ring captions sit on the 9 o'clock half of the
-// crosshair (the caption channel); blips keep CAPTION_CLEAR px off it and LINE_CLEAR px off the lines.
+// 12 o'clock) + region sub-wedge sized by sqrt(bucket size), the blip hash-spread inside it; radius =
+// 0.10R (now) .. 0.55R (24 h) .. R (48 h) +/- 2 px hash jitter; newest 400 drawn. The ring captions sit on
+// the 9 o'clock half of the crosshair (the caption channel); blips keep CAPTION_CLEAR px off it and
+// LINE_CLEAR px off the lines at their drawn radius. Dense buckets draw smaller, lighter blips.
 
 import { itemKey } from './filter.js';
 import { regionLabel, relativeTime } from './format.js';
@@ -16,8 +17,12 @@ export const KIND_ORDER = ['launch', 'funding', 'news', 'accelerator'];
 export const REGION_ORDER = ['usa', 'europe', 'asia', 'india', 'latam', 'africa', 'global'];
 export const CAPTION_RAY = 270;
 export const CAPTION_CLEAR = 17; // plate half-height 10 + open blip 5.5 + air
-export const LINE_CLEAR = 4.5; // 1 px line + 3.5 px blip + air
-export const SPREAD = [0.1, 0.9]; // the part of its sub-wedge a blip may occupy
+export const LINE_CLEAR = 4.5; // 1 px line + 3 px blip + air
+export const MIN_SLOT_DEG = 6; // floor of a non-empty region sub-wedge (equal shares when the floors do not fit)
+export const MAJORITY_DEG = 45; // floor of a bucket holding at least half of its sector's items (what the other floors leave, at most)
+export const SLOT_PAD_DEG = 1.5; // inner padding of a sub-wedge, capped at a quarter of its width
+export const RADIAL_JITTER = 2; // +/- px off the age radius, clamped to [0.10R, R]
+export const MIN_GAP = 0.5; // px between any two blip centres after de-stacking (as rendered, cx/cy rounded to 0.01)
 const MIN_SECTOR_DEG = 14; // 2 degrees per region slot at the very centre (r < 20 px)
 const DEG = 180 / Math.PI;
 const VIEWBOX = 360;
@@ -25,6 +30,9 @@ const PAD_X = 4;
 const PAD_Y = 2;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const itemsBySvg = new WeakMap();
+
+const kindIndex = (kind) => { const k = KIND_ORDER.indexOf(kind); return k < 0 ? 2 : k; };
+const regionIndex = (region) => { const i = REGION_ORDER.indexOf(region); return i < 0 ? REGION_ORDER.length - 1 : i; };
 
 /** Age in hours at `now` (negative for future dates, NaN when unparsable). */
 export function ageHours(item, now = Date.now()) {
@@ -37,23 +45,61 @@ const clearanceDeg = (px, r) => Math.asin(Math.min(1, px / Math.max(r, 1e-9))) *
 
 /** [start, end] of a kind's sector at radius r: its quadrant minus the clearances (the caption channel at 270). */
 export function sectorSpan(kind, r = RADIUS) {
-  let k = KIND_ORDER.indexOf(kind);
-  if (k < 0) k = 2;
-  const q0 = k * 90;
+  const q0 = kindIndex(kind) * 90;
   const q1 = q0 + 90;
   const line = clearanceDeg(LINE_CLEAR, r);
   const channel = Math.min(clearanceDeg(CAPTION_CLEAR, r), 90 - line - MIN_SECTOR_DEG);
   return [q0 + (q0 === CAPTION_RAY ? channel : line), q1 - (q1 === CAPTION_RAY ? channel : line)];
 }
 
-/** [start, end] of the region sub-wedge inside the sector at radius r; unknown regions -> global. */
-export function slotSpan(kind, region, r = RADIUS) {
-  let i = REGION_ORDER.indexOf(region);
-  if (i < 0) i = REGION_ORDER.length - 1;
-  const [a, b] = sectorSpan(kind, r);
-  const w = (b - a) / REGION_ORDER.length;
-  return [a + i * w, a + (i + 1) * w];
+/** Sub-wedge widths (deg) per region of one sector: sqrt(count) shares of `width`, >= minDeg when non-empty, 0 when
+ * empty, >= MAJORITY_DEG for a bucket holding at least half of the items (as far as the other floors allow), summing to
+ * `width`; equal shares when even the floors do not fit (the very centre). */
+export function allocateSlots(counts, width, minDeg = MIN_SLOT_DEG) {
+  const out = counts.map(() => 0);
+  let free = counts.map((c, i) => (c > 0 ? i : -1)).filter((i) => i >= 0);
+  if (!free.length) return out;
+  const equal = free.length * minDeg >= width;
+  const weight = (i) => (equal ? 1 : Math.sqrt(counts[i]));
+  const total = free.reduce((s, i) => s + counts[i], 0);
+  const top = free.reduce((a, i) => (counts[i] > counts[a] ? i : a), free[0]);
+  const majority = Math.max(minDeg, Math.min(MAJORITY_DEG, width - (free.length - 1) * minDeg));
+  const floor = (i) => (i === top && counts[i] * 2 >= total ? majority : minDeg);
+  let rest = width;
+  while (!equal) {
+    const sum = free.reduce((s, i) => s + weight(i), 0);
+    const starved = free.filter((i) => (weight(i) / sum) * rest < floor(i));
+    if (!starved.length || starved.length === free.length) break;
+    for (const i of starved) { out[i] = floor(i); rest -= floor(i); }
+    free = free.filter((i) => !starved.includes(i));
+  }
+  const sum = free.reduce((s, i) => s + weight(i), 0);
+  for (const i of free) out[i] = (weight(i) / sum) * rest;
+  out[free[0]] += width - out.reduce((s, w) => s + w, 0); // floating-point drift goes to one proportional slot
+  return out;
 }
+
+/** [start, end] per region (REGION_ORDER) inside the kind sector at radius r for the bucket sizes `counts`. */
+export function slotSpans(kind, counts, r = RADIUS) {
+  const [a, b] = sectorSpan(kind, r);
+  let at = a;
+  return allocateSlots(counts, b - a).map((w) => [at, (at += w)]);
+}
+
+/** Bucket sizes of a lone item: its region takes the whole sector. */
+const lone = (region) => REGION_ORDER.map((_, i) => (i === regionIndex(region) ? 1 : 0));
+
+/** [start, end] of the region sub-wedge at radius r; unknown regions -> global; without `counts` the item is alone. */
+export function slotSpan(kind, region, r = RADIUS, counts = lone(region)) {
+  return slotSpans(kind, counts, r)[regionIndex(region)];
+}
+
+/** The sub-wedge minus SLOT_PAD_DEG on both sides (at most a quarter of its width each). */
+const padded = (kind, region, r, counts) => {
+  const [s0, s1] = slotSpan(kind, region, r, counts);
+  const pad = Math.min(SLOT_PAD_DEG, (s1 - s0) / 4);
+  return [s0 + pad, s1 - pad];
+};
 
 /** Deterministic fraction in [0, 1) from the item key (FNV-1a + avalanche); never Math.random, so renders are stable. */
 export function spreadFraction(key) {
@@ -65,10 +111,15 @@ export function spreadFraction(key) {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-/** Blip angle in degrees: sub-wedge start + (0.1 + 0.8 * fraction) of its width. */
-export function blipAngle(kind, region, key, r = RADIUS) {
-  const [s0, s1] = slotSpan(kind, region, r);
-  return s0 + (SPREAD[0] + (SPREAD[1] - SPREAD[0]) * spreadFraction(key)) * (s1 - s0);
+/** Deterministic radial offset in (-RADIAL_JITTER, RADIAL_JITTER) px from the item key (a salted spreadFraction). */
+export function radialJitter(key) {
+  return (2 * spreadFraction(`${key}|r`) - 1) * RADIAL_JITTER;
+}
+
+/** Blip angle in degrees: the hash-chosen point of its padded sub-wedge. */
+export function blipAngle(kind, region, key, r = RADIUS, counts) {
+  const [lo, hi] = padded(kind, region, r, counts);
+  return lo + (hi - lo) * spreadFraction(key);
 }
 
 /** R * (0.10 + 0.90 * clamp(age / 48, 0, 1)); future dates clamp to 0.10R. */
@@ -77,13 +128,63 @@ export function radiusFor(ageH, R = RADIUS) {
   return R * (0.10 + 0.90 * f);
 }
 
-/** { x, y, r, angle, key } for one item. */
-export function blipPosition(item, now = Date.now(), R = RADIUS) {
+const place = (b) => {
+  const rad = b.angle / DEG;
+  b.x = CENTER + b.r * Math.sin(rad);
+  b.y = CENTER - b.r * Math.cos(rad);
+  return b;
+};
+
+/** { x, y, r, angle, lo, hi, key } for one item; `counts` = its kind's bucket sizes per region (default: alone). */
+export function blipPosition(item, now = Date.now(), R = RADIUS, counts) {
   const key = itemKey(item?.url);
-  const r = radiusFor(ageHours(item, now), R);
-  const angle = blipAngle(item?.kind, item?.region, key, r);
-  const rad = angle / DEG;
-  return { x: CENTER + r * Math.sin(rad), y: CENTER - r * Math.cos(rad), r, angle, key };
+  const r = Math.min(R, Math.max(0.1 * R, radiusFor(ageHours(item, now), R) + radialJitter(key)));
+  const [lo, hi] = padded(item?.kind, item?.region, r, counts);
+  return place({ key, r, angle: lo + (hi - lo) * spreadFraction(key), lo, hi });
+}
+
+/** Blip radius and fill-opacity for a bucket of `count` items: dense buckets read as density, not as a solid shape. */
+export function blipStyle(count) {
+  return count > 60 ? { blipR: 2, opacity: 0.6 } : count > 20 ? { blipR: 2.5, opacity: 0.75 } : { blipR: 3, opacity: 0.9 };
+}
+
+/** Bucket sizes of the drawn items: Map kind -> number[REGION_ORDER.length]. */
+export function bucketCounts(items) {
+  const m = new Map();
+  for (const it of items) {
+    const kind = KIND_ORDER[kindIndex(it?.kind)];
+    if (!m.has(kind)) m.set(kind, REGION_ORDER.map(() => 0));
+    m.get(kind)[regionIndex(it?.region)] += 1;
+  }
+  return m;
+}
+
+/** Positions and styles of the drawn items, one per item in order (pure, DOM-free): bucket-sized sub-wedges, then
+ * de-stacking in key order - a blip within MIN_GAP px of an earlier one tries, alternating sides, 1 px steps along its
+ * ring inside its padded sub-wedge and 0.5 px steps off its radius inside the 2 px jitter budget (32 steps at most). */
+export function layoutRadar(drawn, now = Date.now()) {
+  const buckets = bucketCounts(drawn);
+  const blips = drawn.map((item) => {
+    const counts = buckets.get(KIND_ORDER[kindIndex(item?.kind)]);
+    return Object.assign(blipPosition(item, now, RADIUS, counts), blipStyle(counts[regionIndex(item?.region)]), { item, counts });
+  });
+  const done = [];
+  for (const b of [...blips].sort((p, q) => (p.key < q.key ? -1 : 1))) {
+    const { r: r0, angle: a0, lo: lo0, hi: hi0 } = b;
+    const base = radiusFor(ageHours(b.item, now));
+    for (let s = 1; s <= 32 && done.some((o) => Math.hypot(o.x - b.x, o.y - b.y) < MIN_GAP + 0.02); s += 1) {
+      const k = ((s + 3) >> 2) * (s & 1 ? 1 : -1); // +1, -1 (angular), +1, -1 (radial), +2, -2, +2, -2, ...
+      const radial = (s - 1) & 2;
+      b.r = radial ? Math.min(RADIUS, base + RADIAL_JITTER, Math.max(0.1 * RADIUS, base - RADIAL_JITTER, r0 + k / 2)) : r0;
+      [b.lo, b.hi] = radial ? padded(b.item?.kind, b.item?.region, b.r, b.counts) : [lo0, hi0];
+      b.angle = Math.min(b.hi, Math.max(b.lo, radial ? a0 : a0 + k * (DEG / r0)));
+      place(b);
+    }
+    done.push(b);
+    delete b.item;
+    delete b.counts;
+  }
+  return blips;
 }
 
 function within48h(item, now) {
@@ -136,11 +237,12 @@ export function renderRadar(svg, items, now = Date.now(), openKey = null) {
   const group = svg.querySelector('g.blips');
   if (!group) return 0;
   const drawn = radarItems(items, now);
+  const blips = layoutRadar(drawn, now);
   const byKey = new Map();
   for (const c of group.querySelectorAll('circle.blip')) byKey.set(c.dataset.key, c);
   const lookup = new Map();
-  for (const item of drawn) {
-    const pos = blipPosition(item, now);
+  drawn.forEach((item, i) => {
+    const pos = blips[i];
     const { key } = pos;
     lookup.set(key, item);
     let circle = byKey.get(key);
@@ -155,12 +257,13 @@ export function renderRadar(svg, items, now = Date.now(), openKey = null) {
     circle.setAttribute('class', `blip${fresh ? ' is-fresh' : ''}${open ? ' is-open' : ''}`);
     circle.setAttribute('cx', pos.x.toFixed(2));
     circle.setAttribute('cy', pos.y.toFixed(2));
-    circle.setAttribute('r', open ? '5' : '3.5');
+    circle.setAttribute('r', open ? '5' : String(pos.blipR));
     // --accent-fill (= --accent when dark) stays >= 3:1 on white at the 0.75 pulse trough
-    circle.setAttribute('fill', open ? 'var(--accent-fill)' : `var(--region-${REGION_ORDER.includes(item.region) ? item.region : 'global'})`);
+    circle.setAttribute('fill', open ? 'var(--accent-fill)' : `var(--region-${REGION_ORDER[regionIndex(item.region)]})`);
+    circle.setAttribute('fill-opacity', open ? '1' : String(pos.opacity)); // styles.css restores 1 on :hover
     circle.setAttribute('stroke', open ? 'var(--fg-0)' : 'transparent');
-    circle.setAttribute('stroke-width', open ? '1' : '9'); // transparent 9 px stroke = 16 px pointer target
-  }
+    circle.setAttribute('stroke-width', open ? '1' : String(16 - 2 * pos.blipR)); // transparent stroke pads the pointer target to 16 px
+  });
   for (const stale of byKey.values()) stale.remove();
   itemsBySvg.set(svg, lookup);
   return drawn.length;
