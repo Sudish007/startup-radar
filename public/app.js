@@ -2,7 +2,7 @@
 // ./data/*.json (filtering in ./filter.js); drawer (?item=<key>), keyboard map, filter sheet, stats polling, radar.
 
 import { SINCE_VALUES, filterItems, itemKey, pointsOf, sortItems } from './filter.js';
-import { KIND_LABELS, REGION_LABELS, absoluteTime, detailRows, hnDiscussion, hostnameOf, kindLabel, metaParts, pluralize, regionLabel, relativeTime, safeHttpUrl } from './format.js';
+import { KIND_LABELS, REGION_LABELS, absoluteTime, detailRows, hnDiscussion, hostnameOf, kindLabel, metaParts, pluralize, pointsText, regionLabel, relativeTime, safeHttpUrl, votesText } from './format.js';
 import { afterExit, clear, createStatusLine, el, extLink, fetchJson, fillHelp, icon, initHelp, initTheme, moveToastsInto, observeSticky, openHelp, pollStats, reduceMotion, restoreToasts, scrollLock, startPwa, startTicker, tickTimes, toast, toggleTheme } from './ui.js';
 import { fitPlates, initRadar, radarCount, renderRadar, MAX_BLIPS } from './radar.js';
 
@@ -212,7 +212,7 @@ function renderCard(item, view) {
     const line = el('p', { className: 'meta meta-line' }, [sourceBadge(item), tx(' \u00b7 '), regionBadge(item)]);
     if (item.publishedAt) line.append(tx(' \u00b7 '), timeEl(item.publishedAt));
     const points = pointsOf(item);
-    if (points !== null) line.append(tx(` \u00b7 ${points} ${typeof item.extra?.points === 'number' ? 'points' : 'votes'}`));
+    if (points !== null) line.append(tx(` \u00b7 ${typeof item.extra?.points === 'number' ? pointsText(points) : votesText(points)}`));
     line.title = line.textContent;
     return el('article', { className: 'card card-row', dataset: { key } }, [kindBadge(item), el('div', { className: 'card-main' }, [titleLink(item, key), line]), extButton(item)]);
   }
@@ -579,9 +579,8 @@ function renderDetail(item) {
     button({ id: 'detail-close', className: 'btn-ghost icon-btn', 'aria-label': 'Close' }, [icon('close')], closeDetail),
   ]);
   const body = el('div', { className: 'detail-body' }, [el('h2', { id: 'detail-title', tabindex: '-1', text: item.title || '(untitled)' })]);
-  if (item.publishedAt && absoluteTime(item.publishedAt)) {
-    body.append(el('p', { className: 'detail-time' }, [tx(`Published ${absoluteTime(item.publishedAt)} (`), timeEl(item.publishedAt), tx(')')]));
-  }
+  // relative time only (title = absolute); the absolute "Published" value lives in the metadata table below
+  if (item.publishedAt && absoluteTime(item.publishedAt)) body.append(el('p', { className: 'detail-time' }, [timeEl(item.publishedAt)]));
   const summary = item.summary && String(item.summary).trim();
   body.append(summary ? el('p', { id: 'detail-summary', className: 'detail-summary', text: item.summary }) : el('p', { id: 'detail-summary', className: 'detail-empty', text: 'No summary provided by the source.' }));
   const rows = detailRows(item);
