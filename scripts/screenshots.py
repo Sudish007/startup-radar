@@ -9,7 +9,8 @@ Environment:
                   http://localhost:8080/startup-radar is fine)
     PW_CHANNEL    chromium channel, default "msedge" (bundled browsers are not
                   installed on the dev machine; "chrome" also works)
-    SMOKE_ONLY    "1" = static-file checks only (home + sources + mobile + the
+    SMOKE_ONLY    "1" = static-file checks only (home + sources + the trends,
+                  funding and YC lens pages against their JSON + mobile + the
                   deep link + the service worker), usable against GitHub Pages
                   or a dist/ preview. Writes no PNGs.
     STATIC_ROOT   smoke mode only: the directory the server serves BASE_URL
@@ -83,7 +84,11 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./styles.css", "./sources.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+# page kind -> index of its link in NAV (audit_state asserts aria-current there)
+NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "sources": 5}
+# lens pages (FEAT-003): (kind, path, selector that proves the data rendered)
+LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details")]
 SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192", "g"]
 # nav.js NAV in order (label, href); every page ships this static list and the shell re-fills it
 NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Sources", "./sources.html")]
@@ -826,6 +831,14 @@ def goto_sources(page):
     page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
 
 
+def goto_lens(page, kind, query=""):
+    """Open a lens page (trends/funding/yc) and wait until its data rendered."""
+    path, ready = next((p, r) for k, p, r in LENS_PAGES if k == kind)
+    page.goto(BASE + path + query, wait_until="domcontentloaded")
+    page.wait_for_selector(ready, timeout=WAIT_MS)
+    page.wait_for_function("() => /Last refreshed/.test(document.getElementById('last-refreshed').textContent) && !/loading/.test(document.getElementById('last-refreshed').textContent)", timeout=WAIT_MS)
+
+
 def open_sheet(page):
     """Phone contexts: open the filter sheet (the sources disclosure lives inside it)."""
     page.click("#filters-open")
@@ -949,8 +962,9 @@ def ui_matches_api(snap, api_data):
     return first_title(snap) == first_title(api_data)
 
 
-def audit_page(page, label, want_controls=True, open_details=False, sheet=False):
-    """Font-size, control-height, link-rel and overflow audit for the current page."""
+def audit_page(page, label, want_controls=True, open_details=False, sheet=False, want_links=True):
+    """Font-size, control-height, link-rel and overflow audit for the current page (want_links=False: a page
+    without outbound links by design, e.g. trends/funding - every target=_blank anchor present must still be safe)."""
     if sheet:
         open_sheet(page)
     if open_details and page.locator("#sources-filter").count():
@@ -989,7 +1003,7 @@ def audit_page(page, label, want_controls=True, open_details=False, sheet=False)
             )
     check(
         "%s: target=_blank links carry rel noopener noreferrer" % label,
-        a["blankLinks"] >= 1 and a["badLinks"] == 0,
+        (a["blankLinks"] >= 1 or not want_links) and a["badLinks"] == 0,
         "%d links, %d bad" % (a["blankLinks"], a["badLinks"]),
     )
     check(
@@ -1381,6 +1395,14 @@ def run_live_smoke(browser):
     errors.check("smoke sources")
     ctx.close()
 
+    # --- lens pages (FEAT-003): numbers equal the JSON, drawer opens, no overflow at 1280 ---------------
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    smoke_lens_pages(page, ctx, "smoke", audit=True)
+    errors.check("smoke lens pages desktop")
+    ctx.close()
+
     # --- mobile ------------------------------------------------------------
     mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     mpage = mctx.new_page()
@@ -1391,8 +1413,176 @@ def run_live_smoke(browser):
     check("smoke mobile home: at least 1 article rendered", snap["shown"] >= 1, "%d articles" % snap["shown"])
     a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True, sheet=True)
     check("smoke mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
+    for kind, _, _ in LENS_PAGES:
+        goto_lens(mpage, kind)
+        a = audit_page(mpage, "smoke %s mobile 390px" % kind, want_controls=True, want_links=(kind == "yc"))
+        check("smoke mobile %s: scrollWidth <= 390" % kind, a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
     merrors.check("smoke mobile")
     mctx.close()
+
+
+LENS_STATE_JS = r"""
+() => {
+  const text = (el) => (el ? el.textContent.trim() : '');
+  const sparks = Array.from(document.querySelectorAll('#sector-grid .sparkline'));
+  const groups = Array.from(document.querySelectorAll('#industry-groups details'));
+  return {
+    method: text(document.getElementById('method')),
+    attribution: text(document.getElementById('attribution')),
+    termRows: document.querySelectorAll('#terms-table tbody tr.term-row').length,
+    sparklines: sparks.length,
+    sparkPoints: sparks.map((s) => (s.querySelector('polyline').getAttribute('points') || '').split(' ').filter(Boolean).length),
+    sparkLabels: sparks.map((s) => s.getAttribute('aria-label') || ''),
+    sparkRole: sparks.every((s) => s.getAttribute('role') === 'img'),
+    sparkAxes: Array.from(document.querySelectorAll('#sector-grid .spark')).map((f) => [Array.from(f.querySelectorAll('.spark-y span')).map(text).join(' '), Array.from(f.querySelectorAll('.spark-x span')).map(text).join(' ')]),
+    weekHeaders: Array.from(document.querySelectorAll('#kind-table thead th')).map(text),
+    kindRows: document.querySelectorAll('#kind-table tbody tr').length,
+    regionRows: document.querySelectorAll('#region-table tbody tr').length,
+    examples: document.querySelectorAll('#terms-table button.example').length,
+    fundingRows: Array.from(document.querySelectorAll('#funding-table tbody tr[data-key]')).map((tr) => ({
+      key: tr.dataset.key,
+      title: text(tr.querySelector('th a')),
+      amount: text(tr.querySelector('td[data-label="Amount"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
+      note: (tr.querySelector('td[data-label="Amount"] .cell-note') || {}).textContent || '',
+      usd: text(tr.querySelector('td[data-label="approx. USD"]')),
+    })),
+    fundingCount: text(document.getElementById('count')),
+    coverage: text(document.getElementById('coverage')),
+    usdHeaderTitle: (document.querySelector('#funding-table thead th.num') || {}).title || '',
+    fxNote: text(document.getElementById('fx-note')),
+    fxRows: Array.from(document.querySelectorAll('#fx-table tbody tr')).map((tr) => [text(tr.querySelector('th')), text(tr.querySelector('td'))]),
+    sectorTotalRows: document.querySelectorAll('#sector-totals tbody tr').length,
+    stageTotalRows: document.querySelectorAll('#stage-totals tbody tr').length,
+    stageOptions: Array.from(document.querySelectorAll('#stage option')).map((o) => o.value),
+    industryGroups: groups.map((d) => ({ industry: text(d.querySelector('summary > span')), n: text(d.querySelector('summary .n')), open: d.open, rows: d.querySelectorAll('li.company-row').length })),
+    companyLinks: Array.from(document.querySelectorAll('#industry-groups h3 a')).map((a) => ({ text: text(a), href: a.getAttribute('href'), target: a.getAttribute('target'), openKey: a.dataset.openKey || null })),
+    tagRows: Array.from(document.querySelectorAll('#tag-list li')).map((li) => [text(li.querySelector('.tag')), text(li.querySelector('.n'))]),
+    teamBars: Array.from(document.querySelectorAll('#team-bars .bar-row')).map((r) => [text(r.querySelector('.bar-label')), text(r.querySelector('.bar-n')), (r.querySelector('.bar') || {}).style ? r.querySelector('.bar').style.width : '']),
+    batchChips: Array.from(document.querySelectorAll('#batch-chips button.chip')).map((b) => [b.dataset.batch, b.getAttribute('aria-pressed'), text(b)]),
+    bodyText: document.body.innerText,
+    search: location.search,
+  };
+}
+"""
+
+
+def smoke_lens_pages(page, ctx, prefix, audit=True):
+    """Trends, funding and YC pages against their JSON files (smoke + parity)."""
+    api = Api(ctx.request)
+    trends = api.data("trends.json")
+    funding = api.data("funding.json")
+    yc = api.data("yc.json")
+    items = api.data("items.json")
+    feed_keys = set(item_key(it["url"]) for it in items)
+
+    # --- trends ------------------------------------------------------------
+    goto_lens(page, "trends")
+    s = page.evaluate(LENS_STATE_JS)
+    check("%s trends: one sparkline per sector (%d), role=img, 12 points each" % (prefix, len(trends["bySector"])), s["sparklines"] == len(trends["bySector"]) >= 1 and s["sparkRole"] and all(n == len(trends["weeks"]) for n in s["sparkPoints"]), "%d sparklines, points %s" % (s["sparklines"], sorted(set(s["sparkPoints"]))))
+    expected_labels = ["%s: items per ISO week, %s to %s (partial): %s. Maximum %d." % (r["label"], trends["weeks"][0], trends["weeks"][-1], ", ".join(str(c) for c in r["counts"]), max([0] + r["counts"])) for r in trends["bySector"]]
+    check("%s trends: sparkline aria-labels list the 12 real counts" % prefix, s["sparkLabels"] == expected_labels, (s["sparkLabels"][0] if s["sparkLabels"] else "-")[:120])
+    check("%s trends: axes label 0/max and first/last week (last marked partial)" % prefix, len(s["sparkAxes"]) == len(trends["bySector"]) and all(y == "%d 0" % max([0] + r["counts"]) and x == "%s %s · partial" % (trends["weeks"][0], trends["weeks"][-1]) for (y, x), r in zip(s["sparkAxes"], trends["bySector"])), str(s["sparkAxes"][:2]))
+    check("%s trends: rising-terms rows equal trends.json terms (%d) with <= 5 example buttons each" % (prefix, len(trends["terms"])), s["termRows"] == len(trends["terms"]) and s["examples"] == sum(min(5, len(t["examples"])) for t in trends["terms"]), "%d rows, %d example buttons" % (s["termRows"], s["examples"]))
+    check("%s trends: method sentence equals trends.method" % prefix, s["method"] == trends["method"], s["method"][:100])
+    check("%s trends: weekly tables show the 12 week ids and every kind/region row" % prefix, s["weekHeaders"][1:] == [w + (" (partial)" if w == trends["partialWeek"] else "") for w in trends["weeks"]] and s["kindRows"] == len(trends["byKind"]) and s["regionRows"] == len(trends["byRegion"]), "%d kinds, %d regions" % (s["kindRows"], s["regionRows"]))
+    if trends["terms"]:
+        first = page.evaluate("(() => { const tr = document.querySelector('#terms-table tbody tr.term-row'); return [tr.querySelector('th').textContent.trim(), ...Array.from(tr.querySelectorAll('td')).slice(0, 5).map((td) => td.textContent.trim())]; })()")
+        t = trends["terms"][0]
+        ratio = "new" if t["ratio"] is None else "%s×" % format(t["ratio"], ",")
+        check("%s trends: first row shows this week, prior weekly average, rise and ratio of the JSON" % prefix, first[0] == t["term"] and first[2] == format(t["thisWeek"], ",") and first[3] == format(t["priorWeeklyAvg"], ",") and first[4] == format(t["rise"], ",") and first[5] == ratio, str(first))
+        if s["examples"]:
+            page.click("#terms-table button.example")
+            page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+            key = page.evaluate("document.querySelector('#terms-table button.example').dataset.openKey")
+            title = page.evaluate("document.getElementById('detail-title').textContent")
+            check("%s trends: an example button opens the drawer for its item and the URL carries ?item=<key>" % prefix, bool(title) and ("item=" + key) in page.url and urlsplit(page.url).path == urlsplit(BASE + "/trends.html").path, "%s -> %s" % (key, title[:60]))
+            page.keyboard.press("Escape")
+            page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+            page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+            check("%s trends: Esc closes the drawer and focus returns to the example button" % prefix, page.evaluate("document.activeElement && document.activeElement.classList.contains('example')"))
+    if audit:
+        audit_page(page, "%s trends desktop" % prefix, want_controls=True, want_links=False)
+
+    # --- funding ------------------------------------------------------------
+    goto_lens(page, "funding")
+    s = page.evaluate(LENS_STATE_JS)
+    f_items = funding["items"]
+    check("%s funding: one row per funding.json item for the default filters (%d)" % (prefix, len(f_items)), len(s["fundingRows"]) == len(f_items) and set(r["key"] for r in s["fundingRows"]) == set(item_key(it["url"]) for it in f_items), "%d rows" % len(s["fundingRows"]))
+    by_key = dict((item_key(it["url"]), it) for it in f_items)
+    bad_amounts = [r for r in s["fundingRows"] if r["amount"] != ((by_key[r["key"]]["funding"].get("amountText") or "—"))]
+    check("%s funding: every amount is the headline's original text (amountText) or an em dash" % prefix, not bad_amounts, ("bad %s" % json.dumps(bad_amounts[:2])) if bad_amounts else "%d rows" % len(s["fundingRows"]))
+    bad_notes = [r for r in s["fundingRows"] if by_key[r["key"]]["funding"].get("amountText") and r["note"] not in ("parsed from headline", "parsed from summary")]
+    check("%s funding: every parsed amount is labelled parsed from headline / summary" % prefix, not bad_notes, "%d labelled" % len([r for r in s["fundingRows"] if r["note"]]))
+    cov = funding["coverage"]
+    expected_cov = "sum of parsed amounts: %s of %s funding items had a parseable amount (%s had a stage)" % (format(cov["withAmount"], ","), format(cov["items"], ","), format(cov["withStage"], ","))
+    check("%s funding: coverage sentence present" % prefix, s["coverage"].startswith(expected_cov), s["coverage"][:120])
+    check("%s funding: approx. USD column titled with the static-rates wording and the FX table shows asOf %s" % (prefix, funding["fx"]["asOf"]), "approx. USD at static rates" in s["usdHeaderTitle"] and funding["fx"]["asOf"] in s["fxNote"] and s["fxRows"] == [[k, str(v)] for k, v in funding["fx"]["rates"].items()], "%s | %s" % (s["usdHeaderTitle"], s["fxNote"][:80]))
+    check("%s funding: totals by sector (%d) and by stage (%d) rendered" % (prefix, len(funding["totals"]["bySector"]), len(funding["totals"]["byStage"])), s["sectorTotalRows"] == len(funding["totals"]["bySector"]) and s["stageTotalRows"] == len(funding["totals"]["byStage"]))
+    check("%s funding: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    stages = [o for o in s["stageOptions"] if o]
+    if stages:
+        stage = stages[0]
+        page.select_option("#stage", stage)
+        page.wait_for_function("(st) => new URLSearchParams(location.search).get('stage') === st", arg=stage, timeout=WAIT_MS)
+        s2 = page.evaluate(LENS_STATE_JS)
+        expected = [it for it in f_items if (it["funding"].get("stage") or "unknown") == stage]
+        check("%s funding: stage=%s filters the rows (%d) and the URL stays under the page path" % (prefix, stage, len(expected)), len(s2["fundingRows"]) == len(expected) and urlsplit(page.url).path == urlsplit(BASE + "/funding.html").path and s2["fundingCount"].startswith("%s of %s" % (format(len(expected), ","), format(len(f_items), ","))), "%d rows, %s" % (len(s2["fundingRows"]), s2["fundingCount"]))
+        page.select_option("#stage", "")
+        page.wait_for_function("() => !new URLSearchParams(location.search).has('stage')", timeout=WAIT_MS)
+    page.select_option("#sort", "usd")
+    page.wait_for_function("() => new URLSearchParams(location.search).get('sort') === 'usd'", timeout=WAIT_MS)
+    s3 = page.evaluate(LENS_STATE_JS)
+    usd_order = [by_key[r["key"]].get("usdApprox") for r in s3["fundingRows"]]
+    numeric = [u for u in usd_order if u is not None]
+    check("%s funding: sort=usd orders by approx. USD descending with unparsed amounts last" % prefix, numeric == sorted(numeric, reverse=True) and usd_order[len(numeric):].count(None) == len(usd_order) - len(numeric), "%d numeric of %d" % (len(numeric), len(usd_order)))
+    page.select_option("#sort", "date")
+    page.wait_for_function("() => !new URLSearchParams(location.search).has('sort')", timeout=WAIT_MS)
+    if s["fundingRows"]:
+        page.click("#funding-table tbody tr[data-key] th a")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        row = s["fundingRows"][0]
+        title = page.evaluate("document.getElementById('detail-title').textContent")
+        has_section = page.evaluate("!!document.querySelector('#detail .detail-funding')")
+        check("%s funding: the title opens the drawer with the funding rows" % prefix, title == row["title"] and has_section and ("item=" + row["key"]) in page.url, title[:60])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    if audit:
+        audit_page(page, "%s funding desktop" % prefix, want_controls=True, want_links=False)
+
+    # --- yc ------------------------------------------------------------
+    goto_lens(page, "yc")
+    s = page.evaluate(LENS_STATE_JS)
+    check("%s yc: industry group count equals byIndustry.length (%d) with the largest open" % (prefix, len(yc["byIndustry"])), len(s["industryGroups"]) == len(yc["byIndustry"]) and s["industryGroups"][0]["open"] and all(not g["open"] for g in s["industryGroups"][1:]), "%d groups" % len(s["industryGroups"]))
+    expected_groups = [(r["industry"], r["count"]) for r in yc["byIndustry"]]
+    check("%s yc: group labels and counts equal byIndustry, rows per group equal the counts" % prefix, [(g["industry"], int(g["n"].split()[0].replace(",", ""))) for g in s["industryGroups"]] == expected_groups and all(g["rows"] == c for g, (_, c) in zip(s["industryGroups"], expected_groups)), str(s["industryGroups"][:2])[:160])
+    check("%s yc: >= 400 companies rendered" % prefix, sum(g["rows"] for g in s["industryGroups"]) == len(yc["companies"]) >= 400, "%d companies" % sum(g["rows"] for g in s["industryGroups"]))
+    check("%s yc: attribution line verbatim" % prefix, s["attribution"] == "Source: yc-oss open API mirror of ycombinator.com, refreshed hourly" == yc["attribution"], s["attribution"])
+    expected_tags = [[r["tag"], format(r["count"], ",")] for r in yc["tagFrequency"]]
+    check("%s yc: tag list equals tagFrequency (top %d)" % (prefix, len(expected_tags)), s["tagRows"] == expected_tags, str(s["tagRows"][:3]))
+    expected_team = list(zip(yc["teamSize"]["buckets"], yc["teamSize"]["counts"]))
+    check("%s yc: team-size bars equal teamSize buckets/counts incl. unknown, widths proportional" % prefix, [(b[0].replace(" people", ""), int(b[1].replace(",", ""))) for b in s["teamBars"]] == expected_team and all(b[2].endswith("%") for b in s["teamBars"]) and sum(c for _, c in expected_team) == len(yc["companies"]), str(s["teamBars"])[:160])
+    in_feed = [l for l in s["companyLinks"] if l["openKey"]]
+    external = [l for l in s["companyLinks"] if not l["openKey"]]
+    check("%s yc: company names link in-app when the feed has the key, else to the YC page in a new tab" % prefix, all(l["openKey"] in feed_keys and l["href"] == "?item=" + l["openKey"] and l["target"] is None for l in in_feed) and all(l["target"] == "_blank" and l["href"].startswith("https://www.ycombinator.com/") for l in external) and len(in_feed) + len(external) == len(yc["companies"]), "%d in-app, %d external" % (len(in_feed), len(external)))
+    check("%s yc: batch chips = All + %d batches with All pressed" % (prefix, len(yc["batches"])), [c[0] for c in s["batchChips"]] == [""] + [b["batch"] for b in yc["batches"]] and s["batchChips"][0][1] == "true", str(s["batchChips"]))
+    batch = yc["batches"][0]["batch"]
+    page.click('#batch-chips button.chip[data-batch="%s"]' % batch)
+    page.wait_for_function("(b) => new URLSearchParams(location.search).get('batch') === b", arg=batch, timeout=WAIT_MS)
+    s2 = page.evaluate(LENS_STATE_JS)
+    subset = [c for c in yc["companies"] if c["batch"] == batch]
+    industries = set((c["industry"] or "unknown") for c in subset)
+    check("%s yc: ?batch=%s shows only that batch (%d companies in %d industries)" % (prefix, batch, len(subset), len(industries)), sum(g["rows"] for g in s2["industryGroups"]) == len(subset) and len(s2["industryGroups"]) == len(industries) and sum(int(b[1].replace(",", "")) for b in s2["teamBars"]) == len(subset), "%d rows, %d groups" % (sum(g["rows"] for g in s2["industryGroups"]), len(s2["industryGroups"])))
+    page.click('#batch-chips button.chip[data-batch=""]')
+    page.wait_for_function("() => !new URLSearchParams(location.search).has('batch')", timeout=WAIT_MS)
+    if in_feed:
+        page.click('#industry-groups h3 a[data-open-key]')
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        title = page.evaluate("document.getElementById('detail-title').textContent")
+        check("%s yc: an in-feed company opens the drawer for its feed item" % prefix, title == in_feed[0]["text"] and ("item=" + in_feed[0]["openKey"]) in page.url, title[:60])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    if audit:
+        audit_page(page, "%s yc desktop" % prefix, want_controls=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1443,7 +1633,7 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
         # a.href is the parsed URL (e.g. a bare origin gains its trailing slash): compare after the same WHATWG normalisation
         ext_ok = len(pairs) == len(lay["cardExt"]) and page.evaluate("(pairs) => pairs.every(([href, url]) => href === new URL(url).href)", pairs)
         check("%s: every a.card-ext points at item.url" % label, ext_ok, "%d cards" % len(lay["cardExt"]))
-    check("%s: static nav list equals NAV with aria-current on this page" % label, lay["navLinks"] is not None and [(l[0], l[1]) for l in lay["navLinks"]] == NAV and [l[2] for l in lay["navLinks"]].count("page") == 1 and lay["navLinks"][5 if kind == "sources" else 0][2] == "page", str(lay["navLinks"])[:160])
+    check("%s: static nav list equals NAV with aria-current on this page" % label, lay["navLinks"] is not None and [(l[0], l[1]) for l in lay["navLinks"]] == NAV and [l[2] for l in lay["navLinks"]].count("page") == 1 and lay["navLinks"][NAV_INDEX[kind]][2] == "page", str(lay["navLinks"])[:160])
     if kind == "sources" and lay["statN"]:
         texts = [s["text"] for s in lay["statN"]]
         src = data.sources["sources"]
@@ -1534,6 +1724,24 @@ def run_matrix(browser, scheme):
         page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
         goto_sources(page)
         audit_state(page, "sources %s" % tag, scheme, width, data, kind="sources")
+        # FEAT-003 lens pages: the same computed-style audit (font floor, controls, contrast, overflow, shell)
+        for kind, _, _ in LENS_PAGES:
+            goto_lens(page, kind)
+            audit_state(page, "%s %s" % (kind, tag), scheme, width, data, kind=kind)
+            if kind == "trends":
+                check("%s %s: sparklines present with HTML axis labels (no scaled SVG text)" % (kind, tag), page.evaluate("document.querySelectorAll('#sector-grid .sparkline').length >= 1 && document.querySelectorAll('#sector-grid svg text').length === 0"))
+            if kind == "yc" and width >= 1024:
+                page.click("#industry-groups details:nth-of-type(2) summary")
+                page.wait_for_function("() => document.querySelectorAll('#industry-groups details[open]').length >= 2", timeout=WAIT_MS)
+                audit_state(page, "%s %s second group open" % (kind, tag), scheme, width, data, kind=kind)
+            if kind == "funding" and width in (390, 1280):
+                key = page.evaluate("document.querySelector('#funding-table tbody tr[data-key]') && document.querySelector('#funding-table tbody tr[data-key]').dataset.key")
+                if key:
+                    goto_lens(page, kind, "?item=" + key)
+                    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+                    audit_state(page, "%s %s drawer open" % (kind, tag), scheme, width, data, kind=kind)
+                    page.keyboard.press("Escape")
+                    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
         errors.check("matrix %s" % tag)
         ctx.close()
 
@@ -1791,7 +1999,9 @@ def run_drawer(browser):
         check("AC 22 %dpx: dialog semantics (aria-modal, labelledby=detail-title, describedby=detail-summary present), badges, time, copy, prev/next" % width,
               d["modal"] == "true" and d["labelledby"] == "detail-title" and d["describedby"] == "detail-summary" and d["summaryExists"] and d["badges"] == 3 and d["time"] == bool(item.get("publishedAt")) and d["copy"] and d["prev"] and not d["next"],
               "pos %s, rows %s" % (d["pos"], d["rows"]))
-        check("AC 22 %dpx: primary action is item.url in a new tab, no duplicate hrefs, hostname row" % width, d["primary"] and d["primary"]["href"] == item["url"] and d["primary"]["target"] == "_blank" and d["primary"]["rel"] == "noopener noreferrer" and not d["dupHref"] and d["hostnameRow"], str(d["primary"]))
+        # a.href is the parsed URL (a bare origin gains its trailing slash): compare after the same WHATWG normalisation
+        item_href = page.evaluate("(u) => new URL(u).href", item["url"])
+        check("AC 22 %dpx: primary action is item.url in a new tab, no duplicate hrefs, hostname row" % width, d["primary"] and d["primary"]["href"] == item_href and d["primary"]["target"] == "_blank" and d["primary"]["rel"] == "noopener noreferrer" and not d["dupHref"] and d["hostnameRow"], str(d["primary"]))
         check("AC 22 %dpx: 'n of N' equals the filtered total" % width, d["pos"] == "1 of %d" % base["total"], d["pos"])
         check("AC 23 %dpx: open pushed one history entry with item=<key>, title swapped, focus on the title" % width, page.evaluate("history.length") == hist + 1 and "item=" + base["cards"][0]["key"] in page.evaluate("location.search") and d["activeId"] == "detail-title" and d["title2"].startswith(item["title"][:20]), "%s -> %s" % (hist, page.evaluate("history.length")))
         # D6: measured against the layout viewport's right edge (documentElement.getBoundingClientRect().right), never
