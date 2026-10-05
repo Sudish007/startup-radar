@@ -642,7 +642,7 @@ is the viewport only (1280 × 900 unless noted).
 
 ![Home page on a 390 px wide phone viewport: compact top bar with the Filters button, stat tiles two by two, single-column cards](docs/screenshots/home-mobile.png)
 
-![Phone viewport with the filter bottom sheet open: kind and region selects, scope and time chips, the sources list and the Apply button](docs/screenshots/home-mobile-sheet.png)
+![Phone viewport with the filter bottom sheet open: Kind and Region selects, Scope and Published chips, the collapsed Sources disclosure, Reset filters and the "Show 967 items" button](docs/screenshots/home-mobile-sheet.png)
 
 ![Sources page: configured / enabled / with-errors status strip, the table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
 
