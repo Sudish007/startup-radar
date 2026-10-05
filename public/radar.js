@@ -128,7 +128,8 @@ export function renderRadar(svg, items, now = Date.now(), openKey = null) {
     circle.setAttribute('cx', pos.x.toFixed(2));
     circle.setAttribute('cy', pos.y.toFixed(2));
     circle.setAttribute('r', open ? '5' : '3.5');
-    circle.setAttribute('fill', open ? 'var(--accent)' : `var(--region-${REGION_ORDER.includes(item.region) ? item.region : 'global'})`);
+    // --accent-fill (= --accent when dark) stays >= 3:1 on white at the 0.75 pulse trough
+    circle.setAttribute('fill', open ? 'var(--accent-fill)' : `var(--region-${REGION_ORDER.includes(item.region) ? item.region : 'global'})`);
     circle.setAttribute('stroke', open ? 'var(--fg-0)' : 'transparent');
     circle.setAttribute('stroke-width', open ? '1' : '9'); // transparent 9 px stroke = 16 px pointer target
   }
