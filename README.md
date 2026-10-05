@@ -627,10 +627,11 @@ refreshes); the 1 GB volume in `.railway/railway.ts` assumes the Hobby plan, so 
 
 ## 11. Screenshots
 
-Captured from a local run with real data by `scripts/screenshots.py` (parity mode); every image
-is the viewport only (1280 × 900 unless noted).
+Captured with real data by `scripts/screenshots.py` (parity mode against a local run); `home.png`,
+`detail.png`, `home-light.png`, `home-mobile.png` and `sources.png` were re-captured from the live
+GitHub Pages site. Every image is the viewport only (1280 × 900 unless noted).
 
-![Home page, dark theme: glass top bar with the Startup Radar wordmark, search field, grid/list toggle and theme button; hero with four stat tiles and the radar panel; the sticky filter bar; the first rows of startup cards in two columns](docs/screenshots/home.png)
+![Home page, dark theme: glass top bar with the Startup Radar wordmark, search field, grid/list toggle and theme button; hero with four stat tiles and the radar panel; the sticky filter bar; the first rows of startup cards in three columns](docs/screenshots/home.png)
 
 ![Home page filtered to kind=funding and region=USA: the result count and the cards show only USA funding items; the Kind and Region selects reflect the filter](docs/screenshots/home-filtered.png)
 
