@@ -53,7 +53,7 @@ describe('app without ADMIN_TOKEN', () => {
   });
 
   test('serves the HTML pages', async () => {
-    for (const p of ['/', '/sources']) {
+    for (const p of ['/', '/sources', '/trends', '/funding', '/yc']) {
       const res = await fetch(`${ctx.base}${p}`);
       assert.equal(res.status, 200, p);
       assert.match(res.headers.get('content-type'), /text\/html/);

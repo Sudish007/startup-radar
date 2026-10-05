@@ -13,14 +13,21 @@ const PRIMARY_MAX_ITEMS = 800; // EXPORT_LIMITS.primaryMaxItems
 const MIN_SOURCES = 21;
 const MIN_EXPLORE = 10;
 const REQUIRED_ITEM_FIELDS = ['id', 'title', 'url', 'source', 'kind', 'region', 'publishedAt'];
+const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html'];
+const CSS_FILES = ['styles.css', 'sources.css', 'pages.css'];
+const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'related.js', 'pwa.js', 'sw.js'];
+const TEXT_FILES = [...HTML_PAGES, ...CSS_FILES, ...JS_FILES, 'icons.svg', 'manifest.webmanifest'];
 const STATIC_FILES = [
-  'index.html', 'sources.html', 'app.js', 'filter.js', 'sources.js', 'styles.css', 'sources.css',
-  'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js', 'icons.svg', 'manifest.webmanifest',
+  ...TEXT_FILES,
   'fonts/geist-latin-wght-normal.woff2', 'fonts/geist-mono-latin-wght-normal.woff2',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon.svg',
 ];
-const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js'];
-const TEXT_FILES = ['index.html', 'sources.html', 'styles.css', 'sources.css', 'app.js', 'filter.js', 'sources.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js', 'icons.svg', 'manifest.webmanifest'];
+const TRENDS_WEEKS = 12; // src/trends.js TRENDS_WEEKS
+const SECTOR_COUNT = 15; // src/lib/sectors.js SECTORS
+const YC_JSON_MAX_BYTES = 300_000; // src/build-static.js YC_JSON_MAX_BYTES
+const YC_MIN_COMPANIES = 100;
+const YC_BATCHES = 3; // src/sources/yc.js BATCH_COUNT
+const YC_ATTRIBUTION = 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly';
 const ICON_FILES = ['icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const FETCH_TIMEOUT_MS = 20_000;
 
@@ -114,7 +121,12 @@ async function main() {
   check('index.html links the manifest, theme.js and viewport-fit=cover', index.includes('rel="manifest" href="./manifest.webmanifest"') && index.includes('src="./theme.js"') && index.includes('viewport-fit=cover'));
   const sourcesHtml = files['sources.html']?.text ?? '';
   check('sources.html references ./styles.css and ./sources.js', sourcesHtml.includes('href="./styles.css"') && sourcesHtml.includes('src="./sources.js"'));
-  for (const name of ['index.html', 'sources.html']) {
+  for (const name of ['trends.html', 'funding.html', 'yc.html']) {
+    const text = files[name]?.text ?? '';
+    const script = name.replace(/\.html$/, '.js');
+    check(`${name} references ./styles.css, ./pages.css and ./${script}, has one bare <h1>`, text.includes('href="./styles.css"') && text.includes('href="./pages.css"') && text.includes(`src="./${script}"`) && (text.match(/<h1[\s>]/g) || []).length === 1 && /<h1>/.test(text));
+  }
+  for (const name of HTML_PAGES) {
     const text = files[name]?.text ?? '';
     const m = HTML_ABSOLUTE_RE.exec(text);
     check(`${name} has no leading-slash href/src`, text.length > 0 && !m, m ? `found ${m[0]}` : '');
@@ -124,7 +136,7 @@ async function main() {
     const hit = JS_ABSOLUTE_RES.map((re) => re.exec(text)).find(Boolean);
     check(`${name} has no '/api/, '/data/ or fetch('/ patterns`, text.length > 0 && !hit, hit ? `found ${hit[0]}` : '');
   }
-  for (const name of ['styles.css', 'sources.css']) {
+  for (const name of CSS_FILES) {
     const css = files[name]?.text ?? '';
     check(`${name} has no url(/...) references`, css.length > 0 && !/url\(\s*['"]?\/(?!\/)/.test(css));
   }
@@ -248,6 +260,59 @@ async function main() {
     }
   } catch (err) {
     check('data/archive.json -> 404 or 200 array', false, err.message);
+  }
+
+  // --- data/trends.json (FEAT-003) ------------------------------------------------
+  try {
+    const res = await getJson(new URL('data/trends.json', base).href);
+    const body = res.body;
+    const ok = res.status === 200 && body && Array.isArray(body.terms) && Array.isArray(body.weeks) && Array.isArray(body.bySector);
+    check('data/trends.json -> 200 with terms[], weeks[], bySector[]', ok, `HTTP ${res.status}`);
+    if (ok) {
+      check(`data/trends.json has ${TRENDS_WEEKS} weeks and ${SECTOR_COUNT} sectors with ${TRENDS_WEEKS} counts each`, body.weeks.length === TRENDS_WEEKS && body.bySector.length === SECTOR_COUNT && body.bySector.every((s) => Array.isArray(s.counts) && s.counts.length === TRENDS_WEEKS && s.counts.every((n) => Number.isInteger(n) && n >= 0)), `${body.weeks.length} weeks, ${body.bySector.length} sectors`);
+      check('data/trends.json generatedAt is ISO and method is a sentence', isIso(body.generatedAt) && typeof body.method === 'string' && body.method.length > 40, `generatedAt ${body.generatedAt}`);
+      const badTerms = body.terms.filter((t) => typeof t.term !== 'string' || !Number.isInteger(t.thisWeek) || typeof t.priorWeeklyAvg !== 'number' || typeof t.rise !== 'number' || !Array.isArray(t.examples) || t.examples.length > 5);
+      check('data/trends.json terms carry term, thisWeek, priorWeeklyAvg, rise and <= 5 examples', badTerms.length === 0, `${body.terms.length} terms, ${badTerms.length} bad`);
+    }
+  } catch (err) {
+    check('data/trends.json -> 200 with terms[], weeks[], bySector[]', false, err.message);
+  }
+
+  // --- data/funding.json (FEAT-003) ------------------------------------------------
+  try {
+    const res = await getJson(new URL('data/funding.json', base).href);
+    const body = res.body;
+    const ok = res.status === 200 && body && Array.isArray(body.items) && body.totals && Array.isArray(body.totals.bySector) && Array.isArray(body.totals.byStage) && body.coverage && body.fx;
+    check('data/funding.json -> 200 with items[], totals.bySector[], totals.byStage[], coverage, fx', ok, `HTTP ${res.status}`);
+    if (ok) {
+      const c = body.coverage;
+      check('data/funding.json coverage.items >= coverage.withAmount >= 0 and items.length === coverage.items', Number.isInteger(c.items) && Number.isInteger(c.withAmount) && c.items >= c.withAmount && c.withAmount >= 0 && body.items.length === c.items, `${c.withAmount} of ${c.items} with an amount, ${c.withStage} with a stage`);
+      check('data/funding.json fx.asOf is a date and rates include USD = 1', typeof body.fx.asOf === 'string' && !Number.isNaN(Date.parse(body.fx.asOf)) && body.fx.rates && body.fx.rates.USD === 1, `asOf ${body.fx.asOf}, ${Object.keys(body.fx.rates || {}).length} currencies`);
+      const bad = body.items.filter((it) => it.kind !== 'funding' || !it.funding || typeof it.funding !== 'object' || !('usdApprox' in it));
+      check('every funding item is kind funding with funding{} and usdApprox', bad.length === 0, `${body.items.length} items, ${bad.length} bad`);
+    }
+  } catch (err) {
+    check('data/funding.json -> 200 with items[], totals.bySector[], totals.byStage[], coverage, fx', false, err.message);
+  }
+
+  // --- data/yc.json (FEAT-003) ------------------------------------------------
+  try {
+    const url = `${new URL('data/yc.json', base).href}?v=${Date.now()}`;
+    const res = await get(url, 'application/json');
+    let body = null;
+    try { body = JSON.parse(res.text); } catch { body = null; }
+    const bytes = Buffer.byteLength(res.text);
+    const ok = res.status === 200 && body && Array.isArray(body.companies) && Array.isArray(body.batches) && Array.isArray(body.byIndustry);
+    check('data/yc.json -> 200 with companies[], batches[], byIndustry[]', ok, `HTTP ${res.status}, ${bytes} bytes`);
+    if (ok) {
+      check(`data/yc.json <= ${YC_JSON_MAX_BYTES} bytes`, bytes <= YC_JSON_MAX_BYTES, `${bytes} bytes`);
+      check(`data/yc.json lists >= ${YC_MIN_COMPANIES} companies in ${YC_BATCHES} batches`, body.companies.length >= YC_MIN_COMPANIES && body.batches.length === YC_BATCHES, `${body.companies.length} companies, ${body.batches.length} batches`);
+      check('data/yc.json carries the verbatim attribution line', body.attribution === YC_ATTRIBUTION, String(body.attribution));
+      const industries = body.byIndustry.reduce((n, r) => n + (r.count || 0), 0);
+      check('data/yc.json byIndustry counts sum to companies.length and no company carries long_description', industries === body.companies.length && body.companies.every((c) => !('long_description' in c) && typeof c.key === 'string'), `${industries} vs ${body.companies.length}`);
+    }
+  } catch (err) {
+    check('data/yc.json -> 200 with companies[], batches[], byIndustry[]', false, err.message);
   }
 
   const failed = results.filter((r) => !r).length;

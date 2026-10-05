@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trends — Startup Radar</title>
+<meta name="description" content="Rising terms and weekly item counts per sector, kind and region, counted from the Startup Radar feed.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0B0F17">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Radar">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+<script src="./theme.js"></script>
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./pages.css">
+</head>
+<body class="page-trends">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+<div class="topbar">
+<div class="wrap">
+<p class="brand"><a class="brand-link" href="./index.html"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></a></p>
+<nav class="site-nav" aria-label="Main">
+<ul id="site-nav-list">
+<li><a href="./index.html">Feed</a></li>
+<li><a href="./trends.html" aria-current="page">Trends</a></li>
+<li><a href="./funding.html">Funding</a></li>
+<li><a href="./yc.html">YC</a></li>
+<li><a href="./notebook.html">Notebook</a></li>
+<li><a href="./sources.html">Sources</a></li>
+</ul>
+</nav>
+<button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use href="./icons.svg#sun"/></svg></button>
+<p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+<span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+<button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true"><use href="./icons.svg#keyboard"/></svg></button>
+</div>
+</div>
+</header>
+
+<main class="wrap" id="main" tabindex="-1">
+<h1>Trends</h1>
+<p class="intro">Which words are being mentioned more this week than before, and how many items each sector, kind and region produced per ISO week. Every number is a count of items in the 90-day feed window.</p>
+<p class="method" id="method">Loading method…</p>
+<p id="status" class="status-line" aria-live="polite">Loading trends…</p>
+
+<section class="lens-section" id="terms" aria-labelledby="terms-heading">
+<h2 id="terms-heading">Rising terms — last 7 days vs the weekly average of the 4 weeks before</h2>
+<p class="intro" id="terms-window"></p>
+<div class="table-scroll">
+<table class="data-table stack" id="terms-table">
+<caption id="terms-caption">Terms with at least 5 mentions this week, sorted by rise</caption>
+<thead>
+<tr>
+<th scope="col">Term</th>
+<th scope="col">Kind</th>
+<th scope="col" class="num">This week</th>
+<th scope="col" class="num">Avg/week before</th>
+<th scope="col" class="num">Rise</th>
+<th scope="col" class="num">Ratio</th>
+<th scope="col">Examples</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section class="lens-section" id="sectors" aria-labelledby="sectors-heading">
+<h2 id="sectors-heading">Items per sector per week (12 ISO weeks)</h2>
+<p class="intro">Sectors are keyword-tagged from title and summary; an item can count in several sectors. The current week is partial.</p>
+<div class="lens-grid" id="sector-grid"></div>
+</section>
+
+<section class="lens-section" id="kinds" aria-labelledby="kinds-heading">
+<h2 id="kinds-heading">Items per kind per week</h2>
+<div class="table-x">
+<table class="data-table" id="kind-table">
+<caption>Item counts by kind and ISO week (last column is the current, partial week)</caption>
+<thead><tr><th scope="col">Kind</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section class="lens-section" id="regions" aria-labelledby="regions-heading">
+<h2 id="regions-heading">Items per region per week</h2>
+<div class="table-x">
+<table class="data-table" id="region-table">
+<caption>Item counts by region and ISO week (last column is the current, partial week)</caption>
+<thead><tr><th scope="col">Region</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="wrap">
+<p>Counts come from the items in ./data/items.json; no number on this page is estimated. <a href="./index.html">Back to the feed</a>.</p>
+</div>
+</footer>
+
+<script src="./trends.js" type="module"></script>
+</body>
+</html>
