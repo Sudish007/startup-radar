@@ -66,9 +66,11 @@ step and no third-party script. What it does:
 - **Mission-control hero**: four stat tiles (items in the 90-day feed, last 24 hours, last
   7 days, sources OK / enabled) counted from the real data files, and a radar panel at 1024 px
   and wider on devices with a mouse or trackpad, with one blip per item published in the last
-  48 h: kind by quadrant, region by angle, age by distance from the centre. The caption counts
-  the blips before the 400 cap. Hovering a blip shows the item, clicking opens it. The feed list
-  is the keyboard and touch equivalent; the radar adds nothing you cannot reach there.
+  48 h: kind by quadrant, region by sub-wedge (items of one region fan out inside it, placed by a
+  hash of the item URL so a render is stable), age by distance from the centre; the ring captions
+  sit on the 9 o'clock half of the crosshair, which blips keep clear. The caption counts the
+  blips before the 400 cap. Hovering a blip shows the item, clicking opens it. The feed list is
+  the keyboard and touch equivalent; the radar adds nothing you cannot reach there.
 - **In-app detail drawer.** Clicking a card (or pressing `Enter` on a highlighted one) opens
   the item in a side drawer with every field the source actually provided (points, comments,
   votes, batch, round, amount, website...), a prev/next pair that walks the current result list,
@@ -627,9 +629,9 @@ refreshes); the 1 GB volume in `.railway/railway.ts` assumes the Hobby plan, so 
 
 ## 11. Screenshots
 
-Captured with real data by `scripts/screenshots.py` (parity mode against a local run); `home.png`,
-`detail.png`, `home-light.png`, `home-mobile.png` and `sources.png` were re-captured from the live
-GitHub Pages site. Every image is the viewport only (1280 × 900 unless noted).
+All eight images were captured from the live GitHub Pages site after the polish pass (Edge via
+Playwright, the same viewports and states as `scripts/screenshots.py` parity mode). Every image is
+the viewport only (1280 × 900 unless noted).
 
 ![Home page, dark theme: glass top bar with the Startup Radar wordmark, search field, grid/list toggle and theme button; hero with four stat tiles and the radar panel; the sticky filter bar; the first rows of startup cards in three columns](docs/screenshots/home.png)
 
@@ -643,7 +645,7 @@ GitHub Pages site. Every image is the viewport only (1280 × 900 unless noted).
 
 ![Home page on a 390 px wide phone viewport: compact top bar with the Filters button, stat tiles two by two, single-column cards](docs/screenshots/home-mobile.png)
 
-![Phone viewport with the filter bottom sheet open: Kind and Region selects, Scope and Published chips, the collapsed Sources disclosure, Reset filters and the "Show 967 items" button](docs/screenshots/home-mobile-sheet.png)
+![Phone viewport with the filter bottom sheet open: Kind and Region selects, Scope and Published chips, the collapsed Sources disclosure, Reset filters and the "Show 985 items" button](docs/screenshots/home-mobile-sheet.png)
 
 ![Sources page: configured / enabled / with-errors status strip, the table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
 
@@ -729,10 +731,12 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   the fields present (Discussion omitted when it equals the item URL, Website only for a valid
   http(s) URL that differs from it), `hostnameOf`, `safeHttpUrl` rejecting `javascript:`, `data:`
   and relative strings, `pluralize`.
-- `radar.test.js`: `public/radar.js` geometry: quadrant per kind, region slot order, radius
-  exactly 0.10 R / 0.55 R / R at 0 / 24 / 48 h, future dates clamped, items older than 48 h
-  excluded, jitter within ±4°, the 400 cap keeps the newest items while `radarCount` stays the
-  honest pre-cap count.
+- `radar.test.js`: `public/radar.js` geometry: quadrant per kind at every age, ordered and
+  contiguous region sub-wedges, radius exactly 0.10 R / 0.55 R / R at 0 / 24 / 48 h, future
+  dates clamped, items older than 48 h excluded, the deterministic spread inside [0.1, 0.9] of
+  the sub-wedge (150 identical launches give ≥ 5 distinct angles), blips clear of the crosshair
+  lines and of the ring-caption plates, the 400 cap keeps the newest items while `radarCount`
+  stays the honest pre-cap count.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
   clamping, `/api/refresh` 404/401/409/200, `/data/*.json` routes and `no-store`, HTML pages,
   security headers, `/sw.js` with the injected version and `Cache-Control: no-cache`, the
@@ -744,9 +748,9 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   `eval`, `new Function` or `window.open` in `public/*.js`; `'_blank'` appears only inside
   `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`.
 - `budget.test.js`: the home page set (`index.html`, `styles.css`, `theme.js`, `ui.js`,
-  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 120 000
-  bytes, `theme.js` under 1 024 bytes, `pwa.js` + `sw.js` under 10 000 bytes, no off-origin
-  `<script src>` and no Google Fonts references.
+  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 125 000
+  bytes as deployed (LF line endings), `theme.js` under 1 024 bytes, `pwa.js` + `sw.js` under
+  10 000 bytes, no off-origin `<script src>` and no Google Fonts references.
 
 `scripts/verify-pages.mjs <baseUrl> [--max-age-hours N]` (also `npm run verify:pages -- <baseUrl>`)
 checks a deployed site over HTTP without a browser: the HTML, CSS and JS use only relative URLs,
