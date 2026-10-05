@@ -5,43 +5,66 @@ Usage (from the repo root, server already running on BASE_URL):
     SMOKE_ONLY=1 python scripts/screenshots.py # smoke mode (static files only)
 
 Environment:
-    BASE_URL    default http://localhost:3000 (a sub-path such as
-                http://localhost:8080/startup-radar is fine)
-    PW_CHANNEL  chromium channel, default "msedge" (bundled browsers are not
-                installed on the dev machine; "chrome" also works)
-    SMOKE_ONLY  "1" = run_live_smoke only: browser checks that need nothing but
-                the static files (./data/*.json), usable against GitHub Pages.
-                Writes no PNGs.
+    BASE_URL      default http://localhost:3000 (a sub-path such as
+                  http://localhost:8080/startup-radar is fine)
+    PW_CHANNEL    chromium channel, default "msedge" (bundled browsers are not
+                  installed on the dev machine; "chrome" also works)
+    SMOKE_ONLY    "1" = static-file checks only (home + sources + mobile + the
+                  deep link + the service worker), usable against GitHub Pages
+                  or a dist/ preview. Writes no PNGs.
+    STATIC_ROOT   smoke mode only: the directory the server serves BASE_URL
+                  from. When set, the service-worker update flow is proven by
+                  really deploying a second sw.js version there (restored
+                  afterwards); otherwise the flow is attempted with a routed
+                  sw.js and recorded as such.
+    SCENARIOS     comma-separated scenario names to run instead of the full set
+                  (iteration aid), e.g. SCENARIOS=run_drawer,run_sw
 
 Parity mode writes VIEWPORT-ONLY screenshots (never full-page) to docs/screenshots/:
-    home.png           desktop 1280x900, unfiltered feed
-    home-filtered.png  desktop 1280x900, kind=funding + USA scope
-    sources.png        desktop 1280x900, /sources.html
-    home-mobile.png    mobile 390x844 at 2x (780x1688 px)
+    home.png              desktop 1280x900, dark, unfiltered feed
+    home-filtered.png     desktop 1280x900, dark, kind=funding + USA scope
+    sources.png           desktop 1280x900, dark, /sources.html
+    home-mobile.png       mobile 390x844 at 2x (780x1688 px), dark
+    home-dark.png         desktop 1920x1080, dark (three columns + radar panel)
+    home-light.png        desktop 1280x900, light theme
+    detail.png            desktop 1280x900, dark, detail drawer open
+    home-mobile-sheet.png mobile 390x844 at 2x, dark, filter sheet open
 
 Every check prints "PASS  <name>  (<detail>)" or "FAIL ...". Exit code is 1
 when any check fails. Parity filter checks compare what the page renders
 (client-side filtering of ./data/items.json) against what /api/items returns
-for the same query, with the export window (last 90 days) applied to the API,
-so a filter that silently does nothing is caught even when the URL changes.
+for the same query, with the export window (last 90 days) applied to the API.
+The audit matrix (design.md section 20) runs every page x width x theme x state
+through computed-style checks: font floor, control heights, composited WCAG
+contrast against the nearest opaque surface (glass bars against the glass
+extreme, body against the dot composite, radar text against its plate), no
+horizontal overflow, honest numbers and the review findings of
+.agents/tasks/ui-redesign/design-review.md.
 """
 
+import json
 import os
 import re
 import struct
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE_URL", "http://localhost:3000").rstrip("/")
+ORIGIN = "%s://%s" % (urlsplit(BASE).scheme, urlsplit(BASE).netloc)
 OUT = Path(__file__).resolve().parents[1] / "docs" / "screenshots"
 CHANNEL = os.environ.get("PW_CHANNEL", "msedge")
 SMOKE_ONLY = os.environ.get("SMOKE_ONLY") == "1"
+STATIC_ROOT = os.environ.get("STATIC_ROOT", "").strip()
+SCENARIOS = [s.strip() for s in os.environ.get("SCENARIOS", "").split(",") if s.strip()]
 WAIT_MS = 30000
 DESKTOP = {"width": 1280, "height": 900}
+WIDE = {"width": 1920, "height": 1080}
+TABLET = {"width": 768, "height": 1024}
 MOBILE = {"width": 390, "height": 844}
 MOBILE_SCALE = 2
 PAGE_SIZE = 30
@@ -57,6 +80,10 @@ CONTROL_MIN_PX = 40
 CONTROL_MAX_PX = 44
 MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
+GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
+DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
+SHELL = ["./", "./index.html", "./sources.html", "./styles.css", "./sources.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192"]
 
 KIND_LABELS = [
     ("launch", "Launch"),
@@ -73,6 +100,8 @@ REGION_LABELS = [
     ("africa", "Africa"),
     ("global", "Global"),
 ]
+REGION_ORDER = [r for r, _ in REGION_LABELS]
+KIND_ORDER = [k for k, _ in KIND_LABELS]
 
 results = []
 
@@ -87,9 +116,88 @@ def check(name, ok, detail=""):
     return bool(ok)
 
 
+def item_key(url):
+    """Same as itemKey() in public/filter.js: 64-bit FNV-1a of the UTF-8 url, base 36."""
+    h = 0xCBF29CE484222325
+    for b in str(url if url is not None else "").encode("utf-8"):
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    if h == 0:
+        return "0"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while h:
+        out = digits[h % 36] + out
+        h //= 36
+    return out
+
+
 # ---------------------------------------------------------------------------
 # JavaScript evaluated in the page. Each snippet returns plain JSON data only.
+# wait_for_function snippets must be arrow functions (the CSP forbids eval).
 # ---------------------------------------------------------------------------
+
+# Shared colour / geometry helpers, prepended to the audit snippets.
+JS_PRELUDE = r"""
+  const px = (v) => parseFloat(v) || 0;
+  const rect = (el) => el.getBoundingClientRect();
+  // checkVisibility() also excludes closed <details> content, which Chromium keeps in layout under content-visibility: hidden.
+  const visible = (el) => { const r = rect(el); return r.width > 0 && r.height > 0 && (!el.checkVisibility || el.checkVisibility({ visibilityProperty: true })); };
+  const describe = (el) => { let d = el.tagName.toLowerCase(); if (el.id) d += '#' + el.id; else if (el.classList && el.classList.length) d += '.' + el.classList[0]; return d; };
+  const parseColor = (s) => {
+    if (!s || s === 'none' || s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
+    const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(s);
+    if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] };
+    const h = /^#([0-9a-f]{6})$/i.exec(s.trim());
+    if (h) { const n = parseInt(h[1], 16); return { r: n >> 16, g: (n >> 8) & 255, b: n & 255, a: 1 }; }
+    const h3 = /^#([0-9a-f]{3})$/i.exec(s.trim());
+    if (h3) { const n = parseInt(h3[1].split('').map((c) => c + c).join(''), 16); return { r: n >> 16, g: (n >> 8) & 255, b: n & 255, a: 1 }; }
+    const m2 = /^rgba?\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*(?:\/\s*([\d.%]+)\s*)?\)$/.exec(s);
+    if (m2) return { r: +m2[1], g: +m2[2], b: +m2[3], a: m2[4] === undefined ? 1 : (m2[4].endsWith('%') ? parseFloat(m2[4]) / 100 : +m2[4]) };
+    return null;
+  };
+  const rootStyle = getComputedStyle(document.documentElement);
+  const token = (name) => parseColor(rootStyle.getPropertyValue(name).trim());
+  const chan = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const lum = (c) => 0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b);
+  const ratio = (a, b) => { const la = lum(a), lb = lum(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
+  const over = (fg, bg) => ({ r: fg.r * fg.a + bg.r * (1 - fg.a), g: fg.g * fg.a + bg.g * (1 - fg.a), b: fg.b * fg.a + bg.b * (1 - fg.a), a: 1 });
+  const hex = (c) => '#' + [c.r, c.g, c.b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('').toUpperCase();
+  const same = (a, b, tol = 1.5) => !!a && !!b && Math.abs(a.r - b.r) <= tol && Math.abs(a.g - b.g) <= tol && Math.abs(a.b - b.b) <= tol;
+  const BG0 = token('--bg-0'), FG0 = token('--fg-0'), FG1 = token('--fg-1'), FG2 = token('--fg-2');
+  const GLASS = over({ ...FG0, a: 0.10 }, BG0);
+  const DOT = over(token('--dot'), BG0);
+  const isGlass = (node) => node.matches && (node.matches('.topbar, header.site-header') || (node.id === 'filter-panel' && getComputedStyle(node).position === 'sticky'));
+  const isSvgText = (el) => el.namespaceURI === 'http://www.w3.org/2000/svg' && el.tagName === 'text';
+  const surfaceOf = (el) => {
+    if (!el) return { color: DOT, glass: false, note: 'root' };
+    const layers = [];
+    let base = null, glass = false, note = '';
+    if (el.closest('#new-items')) { base = parseColor(getComputedStyle(document.getElementById('new-items')).backgroundColor); note = 'pill'; }
+    else if (el.closest('.alert')) { base = parseColor(getComputedStyle(el.closest('.alert')).backgroundColor); note = 'alert'; }
+    else if (isSvgText(el) && el.closest('svg.radar')) {
+      const p = el.previousElementSibling;
+      if (!p || !p.matches('rect.radar-plate')) return { error: 'radar text without a plate: ' + el.textContent };
+      base = parseColor(getComputedStyle(p).fill); note = 'plate';
+    } else if (el.tagName === 'CAPTION') { base = DOT; note = 'caption-on-body'; }
+    else {
+      let node = el;
+      while (node && node !== document.documentElement) {
+        if (isGlass(node)) { base = GLASS; glass = true; note = 'glass'; break; }
+        if (node === document.body) { base = DOT; note = 'body'; break; }
+        const bg = parseColor(getComputedStyle(node).backgroundColor);
+        if (!bg) return { error: 'unparsable background ' + getComputedStyle(node).backgroundColor + ' on ' + describe(node) };
+        if (bg.a >= 0.999) { base = bg; break; }
+        if (bg.a > 0) layers.unshift(bg);
+        node = node.parentElement;
+      }
+      if (!base) base = DOT;
+    }
+    let c = base;
+    for (const l of layers) c = over(l, c);
+    return { color: c, glass, note };
+  };
+"""
 
 # Current result list as rendered.
 SNAPSHOT_JS = r"""
@@ -108,6 +216,7 @@ SNAPSHOT_JS = r"""
       region: text(a.querySelector('.badge-region')),
       time: t ? t.getAttribute('datetime') : null,
       text: text(a),
+      key: a.dataset.key || null,
     };
   });
   const lm = document.querySelector('#load-more');
@@ -142,14 +251,19 @@ WAIT_STATE_JS = r"""
 }
 """
 
-# Computed-style audit over every visible element.
+# Nothing but the intentional loops (sweeps, live dot, fresh blips, skeleton) is animating.
+SETTLED_JS = r"""
+() => document.getAnimations().filter((a) => a.playState === 'running' && !(a.effect && a.effect.target && a.effect.target.closest && a.effect.target.closest('.radar-mark, .radar-sweep, .live-dot, .blip.is-fresh, .skeleton'))).length === 0
+"""
+
+# Computed-style audit over every visible element (the original harness contract).
 UI_AUDIT_JS = r"""
 () => {
   const px = (v) => parseFloat(v) || 0;
   const rect = (el) => el.getBoundingClientRect();
   const visible = (el) => {
     const r = rect(el);
-    return r.width > 0 && r.height > 0;
+    return r.width > 0 && r.height > 0 && (!el.checkVisibility || el.checkVisibility({ visibilityProperty: true }));
   };
   const describe = (el) => {
     let d = el.tagName.toLowerCase();
@@ -248,12 +362,336 @@ SOURCES_PAGE_JS = r"""
 }
 """
 
+# Composited WCAG contrast audit (design.md 5.2 / 19 / AC 4). Returns counts, worst pairs and failures.
+CONTRAST_AUDIT_JS = r"""
+(theme) => {
+""" + JS_PRELUDE + r"""
+  const expectGlass = parseColor(theme === 'light' ? '#DDE0E5' : '#21252D');
+  const expectDot = parseColor(theme === 'light' ? '#E6E9ED' : '#161A21');
+  const failures = [];
+  const textPairs = [];
+  const nonText = [];
+  const opaqueOk = (el) => {
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      if (getComputedStyle(n).opacity !== '1' && !(n.closest && n.closest('.skeleton'))) return false;
+    }
+    return true;
+  };
+  const hasText = (el) => Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim() !== '');
+  const pushText = (el, fg, surf, label) => {
+    if (!surf || surf.error) { failures.push((surf && surf.error) || ('no surface for ' + describe(el))); return; }
+    const r = ratio(fg, surf.color);
+    textPairs.push({ sel: label || describe(el), fg: hex(fg), bg: hex(surf.color), ratio: +r.toFixed(2), glass: surf.glass, note: surf.note });
+    if (r < 4.5) failures.push('text ' + (label || describe(el)) + ' ' + hex(fg) + ' on ' + hex(surf.color) + ' (' + surf.note + ') = ' + r.toFixed(2));
+    if (surf.glass && !(same(fg, FG0) || same(fg, FG1))) failures.push('glass text ' + (label || describe(el)) + ' uses ' + hex(fg) + ' (only --fg-0/--fg-1 allowed on the bars)');
+  };
+  for (const el of document.body.querySelectorAll('*')) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    if (el.tagName === 'SELECT') { pushText(el, parseColor(cs.color), surfaceOf(el), describe(el) + '(select)'); continue; }
+    if (el.tagName === 'INPUT' && (el.type === 'search' || el.type === 'text')) {
+      pushText(el, parseColor(cs.color), surfaceOf(el), describe(el) + '(value)');
+      const ph = parseColor(getComputedStyle(el, '::placeholder').color);
+      if (ph && ph.a > 0 && el.placeholder) pushText(el, { ...ph, a: 1 }, surfaceOf(el), describe(el) + '(placeholder)');
+      continue;
+    }
+    if (!hasText(el)) continue;
+    const fg = parseColor(cs.color);
+    if (!fg) { failures.push('unparsable color ' + cs.color + ' on ' + describe(el)); continue; }
+    if (fg.a < 1) { failures.push('alpha text colour on ' + describe(el)); continue; }
+    if (!opaqueOk(el)) { failures.push('opacity < 1 above text ' + describe(el)); continue; }
+    pushText(el, fg, surfaceOf(el));
+  }
+  const pushNonText = (label, fg, surfColor, min = 3.0) => {
+    const r = ratio(fg, surfColor);
+    nonText.push({ sel: label, fg: hex(fg), bg: hex(surfColor), ratio: +r.toFixed(2) });
+    if (r < min) failures.push('non-text ' + label + ' ' + hex(fg) + ' on ' + hex(surfColor) + ' = ' + r.toFixed(2));
+  };
+  for (const el of document.querySelectorAll('button, input, select, summary, .btn')) {
+    if (!visible(el) || el.disabled) continue;
+    const cs = getComputedStyle(el);
+    const bc = parseColor(cs.borderTopColor);
+    if (!bc || bc.a <= 0 || px(cs.borderTopWidth) <= 0) continue;
+    const surf = surfaceOf(el.parentElement);
+    if (surf.error) { failures.push(surf.error); continue; }
+    const fg = bc.a < 1 ? over(bc, surf.color) : bc;
+    pushNonText('border ' + describe(el), fg, surf.color);
+  }
+  for (const el of document.querySelectorAll('[aria-pressed="true"].chip, [aria-pressed="true"].scope')) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    pushNonText('pressed chip border ' + describe(el), parseColor(cs.borderTopColor), parseColor(cs.backgroundColor));
+  }
+  for (const el of document.querySelectorAll('.live-dot, .badge-region .dot, .health-dot')) {
+    if (!visible(el)) continue;
+    const surf = surfaceOf(el.parentElement);
+    if (!surf.error) pushNonText('dot ' + describe(el.parentElement) + ' > ' + describe(el), parseColor(getComputedStyle(el).backgroundColor), surf.color);
+  }
+  const bg1 = token('--bg-1');
+  for (const c of document.querySelectorAll('circle.blip')) {
+    if (!visible(c)) continue;
+    const fill = parseColor(getComputedStyle(c).fill);
+    if (!fill) continue;
+    pushNonText('blip ' + c.getAttribute('fill'), fill, bg1);
+    if (c.classList.contains('is-fresh')) pushNonText('fresh blip trough ' + c.getAttribute('fill'), over({ ...fill, a: 0.75 }, bg1), bg1);
+  }
+  const openCard = document.querySelector('.card.is-open');
+  if (openCard && visible(openCard)) {
+    const m = /rgba?\([^)]*\)/.exec(getComputedStyle(openCard).boxShadow);
+    if (m) pushNonText('.card.is-open inset edge', parseColor(m[0]), parseColor(getComputedStyle(openCard).backgroundColor));
+  }
+  const nav = document.querySelector('nav.site-nav a[aria-current]');
+  if (nav && visible(nav)) pushNonText('nav underline', parseColor(getComputedStyle(nav).textDecorationColor), GLASS);
+  for (const id of ['retry-items', 'retry-archive']) {
+    const b = document.getElementById(id);
+    if (!b || !visible(b)) continue;
+    const bg = parseColor(getComputedStyle(b).backgroundColor);
+    if (!same(bg, token('--accent-fill'))) failures.push('#' + id + ' background is ' + hex(bg) + ', not --accent-fill');
+    pushNonText('#' + id + ' block', bg, token('--danger-tint'));
+  }
+  const worst = (arr) => arr.reduce((w, p) => (!w || p.ratio < w.ratio ? p : w), null);
+  return {
+    theme,
+    textCount: textPairs.length,
+    nonTextCount: nonText.length,
+    worstText: worst(textPairs),
+    worstNonText: worst(nonText),
+    glassTextCount: textPairs.filter((p) => p.glass).length,
+    glassExtreme: hex(GLASS),
+    glassExpected: hex(expectGlass),
+    glassOk: same(GLASS, expectGlass, 1.01),
+    dotComposite: hex(DOT),
+    dotExpected: hex(expectDot),
+    dotOk: same(DOT, expectDot, 1.01),
+    failures,
+  };
+}
+"""
+
+# Premise behind the glass extreme (AC 4): no composited paint in the document is more extreme than --fg-0.
+PREMISE_JS = r"""
+(theme) => {
+""" + JS_PRELUDE + r"""
+  const limit = lum(FG0);
+  const offenders = [];
+  const props = ['color', 'background-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'outline-color', 'fill', 'stroke'];
+  const isSvg = (el) => el.namespaceURI === 'http://www.w3.org/2000/svg';
+  // text-like controls draw their value/placeholder in `color`; checkboxes, radios and ranges draw nothing with it
+  const ownText = (el) => Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim() !== '') || (el.tagName === 'INPUT' && !['checkbox', 'radio', 'range'].includes(el.type)) || el.tagName === 'SELECT';
+  // Only paint that is actually drawn counts: text colour needs own text, border colours need a border width,
+  // outline-color an outline, fill/stroke an SVG shape (the UA defaults on <html> etc. are never painted;
+  // <line> has no fill area). Elements that are not rendered (<head> children, hidden dialogs) paint nothing.
+  const drawn = (el, cs, p) => {
+    if (p === 'color') return ownText(el);
+    if (p.startsWith('border-')) { const side = p.split('-')[1]; return px(cs.getPropertyValue('border-' + side + '-width')) > 0 && cs.getPropertyValue('border-' + side + '-style') !== 'none'; }
+    if (p === 'outline-color') return px(cs.outlineWidth) > 0 && cs.outlineStyle !== 'none';
+    if (p === 'fill') return isSvg(el) && !['svg', 'g', 'line'].includes(el.tagName);
+    if (p === 'stroke') return isSvg(el) && px(cs.strokeWidth) > 0;
+    return true;
+  };
+  let checked = 0;
+  for (const el of document.querySelectorAll('*')) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    for (const p of props) {
+      if (!drawn(el, cs, p)) continue;
+      const c = parseColor(cs.getPropertyValue(p));
+      if (!c || c.a <= 0) continue;
+      const surf = surfaceOf(el.parentElement);
+      const composed = c.a < 1 ? over(c, surf.error ? BG0 : surf.color) : c;
+      const L = lum(composed);
+      checked += 1;
+      const bad = theme === 'light' ? L < limit - 1e-6 : L > limit + 1e-6;
+      if (bad && offenders.length < 12) offenders.push(describe(el) + ' ' + p + ' ' + hex(composed) + ' L=' + L.toFixed(4));
+    }
+  }
+  return { checked, limit: +limit.toFixed(4), offenders };
+}
+"""
+
+# Layout / structure assertions per state (AC 1-3, 7, 9, 10, 14, 16, 17, 19; C8, C14, C15, C17).
+LAYOUT_JS = r"""
+(opts) => {
+""" + JS_PRELUDE + r"""
+  const out = { problems: [] };
+  const problem = (s) => out.problems.push(s);
+  out.bodyFont = px(getComputedStyle(document.body).fontSize);
+  let minFont = Infinity, minDesc = '', visibleEls = 0;
+  for (const el of document.body.querySelectorAll('*')) {
+    if (!visible(el)) continue;
+    visibleEls += 1;
+    const size = px(getComputedStyle(el).fontSize);
+    if (size < minFont) { minFont = size; minDesc = describe(el); }
+  }
+  out.visibleEls = visibleEls; out.minFont = minFont; out.minFontDesc = minDesc;
+  const controlH = px(rootStyle.getPropertyValue('--control-h'));
+  out.controlH = controlH;
+  const controls = [];
+  for (const el of document.querySelectorAll('button, input, select, summary')) {
+    if (!visible(el)) continue;
+    if (el instanceof HTMLInputElement && el.type === 'checkbox') {
+      const label = el.closest('label');
+      const h = rect(label || el).height;
+      if (h < 44) problem('checkbox target ' + describe(el) + ' ' + h.toFixed(1) + 'px < 44');
+      continue;
+    }
+    const h = rect(el).height;
+    controls.push({ desc: describe(el), h });
+    if (Math.abs(h - controlH) > 0.5) problem('control ' + describe(el) + ' ' + h.toFixed(1) + 'px != --control-h ' + controlH);
+  }
+  out.controls = controls.length;
+  out.controlMin = controls.length ? Math.min(...controls.map((c) => c.h)) : 0;
+  out.controlMax = controls.length ? Math.max(...controls.map((c) => c.h)) : 0;
+  for (const a of document.querySelectorAll('a.btn, a.card-ext')) {
+    if (!visible(a)) continue;
+    const r = rect(a);
+    if (r.height < controlH - 0.5 || r.width < controlH - 0.5) problem('link box ' + describe(a) + ' ' + r.width.toFixed(1) + 'x' + r.height.toFixed(1) + ' < ' + controlH);
+  }
+  const reset = document.getElementById('reset');
+  if (reset && reset.disabled) problem('#reset is disabled');
+  out.scrollWidth = document.documentElement.scrollWidth; out.innerWidth = innerWidth; out.clientWidth = document.documentElement.clientWidth;
+  // The layout viewport's right edge: clientWidth minus the gutter that `scrollbar-gutter: stable` reserves for a
+  // classic scrollbar. Headless Chromium hides scrollbars but still reserves it, so fixed boxes end here, not at clientWidth.
+  out.layoutRight = document.documentElement.getBoundingClientRect().right;
+  if (out.scrollWidth > out.innerWidth) problem('horizontal overflow ' + out.scrollWidth + ' > ' + out.innerWidth);
+  const sl = document.getElementById('source-list');
+  const sf = document.getElementById('sources-filter');
+  if (sf && sf.open && sl && visible(sl)) {
+    out.popoverRight = rect(sl).right;
+    if (rect(sl).right > out.innerWidth + 0.5) problem('#source-list right ' + rect(sl).right + ' > innerWidth');
+    const tracks = getComputedStyle(sl.querySelector('.source-grid')).gridTemplateColumns.split(' ').filter(Boolean).length;
+    out.gridTracks = tracks;
+    if (!sl.querySelector(':scope > legend')) problem('#source-list has no legend child');
+    if (getComputedStyle(sl.querySelector('.source-grid')).display !== 'grid') problem('.source-grid is not a grid');
+    for (const box of sl.querySelectorAll('input[type="checkbox"]')) {
+      const cs = getComputedStyle(box);
+      const r = rect(box);
+      if (cs.appearance !== 'none') problem('checkbox appearance ' + cs.appearance);
+      if (Math.abs(r.width - 24) > 0.5 || Math.abs(r.height - 24) > 0.5) problem('checkbox box ' + r.width + 'x' + r.height);
+      if (box.checked) { if (!same(parseColor(cs.backgroundColor), token('--accent-fill'))) problem('checked box background ' + cs.backgroundColor); }
+      else if (!same(parseColor(cs.borderTopColor), token('--control-border'))) problem('unchecked box border ' + cs.borderTopColor);
+    }
+  }
+  const panel = document.getElementById('filter-panel');
+  if (panel && panel.getAttribute('role') === 'dialog') {
+    const r = rect(panel);
+    out.sheet = { left: r.left, width: r.width };
+    if (r.left !== 0 || Math.abs(r.width - out.layoutRight) > 0.5) problem('sheet geometry left ' + r.left + ' width ' + r.width + ' vs layout viewport ' + out.layoutRight + ' (clientWidth ' + out.clientWidth + ')');
+    if (getComputedStyle(document.documentElement).overflow !== 'hidden') problem('html overflow not hidden while the sheet is open');
+    const scrim = document.querySelector('.scrim');
+    if (!scrim || getComputedStyle(scrim).touchAction !== 'none') problem('scrim touch-action');
+    if (getComputedStyle(panel.querySelector('.sheet-body')).overscrollBehavior !== 'contain' && getComputedStyle(panel.querySelector('.sheet-body')).overscrollBehaviorY !== 'contain') problem('sheet-body overscroll-behavior');
+    for (const id of ['scope-label', 'since-label']) { const l = document.getElementById(id); if (!l || rect(l).width <= 1) problem('#' + id + ' not visible in the sheet'); }
+    const apply = document.getElementById('filters-apply');
+    if (!/^(Show \d+ items|No items match)$/.test(apply.textContent.trim())) problem('#filters-apply reads ' + apply.textContent);
+  } else if (panel && visible(panel)) {
+    for (const id of ['scope-label', 'since-label']) { const l = document.getElementById(id); const r = l ? rect(l) : null; if (!r || r.width > 1) problem('#' + id + ' visible on the bar'); }
+  }
+  // AC 10 visual rules
+  for (const el of document.body.querySelectorAll('*')) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.backgroundImage.includes('gradient') && !el.matches('.radar-sweep, body')) problem('gradient on ' + describe(el));
+    if ((cs.maskImage && cs.maskImage !== 'none') || (cs.webkitMaskImage && cs.webkitMaskImage !== 'none')) problem('mask on ' + describe(el));
+    if (cs.filter !== 'none') problem('filter on ' + describe(el));
+    const bf = cs.backdropFilter || cs.webkitBackdropFilter;
+    if (bf && bf !== 'none' && !(el.matches('.topbar') || (el.id === 'filter-panel' && cs.position === 'sticky'))) problem('backdrop-filter on ' + describe(el));
+    if (el.matches('.card') && cs.boxShadow !== 'none' && !cs.boxShadow.includes('inset')) problem('card shadow ' + cs.boxShadow);
+  }
+  if (getComputedStyle(document.body).backgroundImage.indexOf('radial-gradient') < 0) problem('body dot grid missing');
+  // AC 14 columns
+  const cards = Array.from(document.querySelectorAll('#results article.card'));
+  out.cardCount = cards.length;
+  out.columns = new Set(cards.map((c) => Math.round(c.offsetLeft))).size;
+  // AC 16 sticky bars
+  const header = document.querySelector('header.site-header');
+  const topbar = document.querySelector('.topbar');
+  out.headerSticky = getComputedStyle(header).position;
+  out.topbarBackdrop = getComputedStyle(topbar).backdropFilter || getComputedStyle(topbar).webkitBackdropFilter;
+  out.topbarH = rootStyle.getPropertyValue('--topbar-h').trim();
+  out.headerOffsetHeight = header.offsetHeight;
+  if (Math.abs(px(out.topbarH) - header.offsetHeight) > 0.5) problem('--topbar-h ' + out.topbarH + ' vs header ' + header.offsetHeight);
+  if (panel && innerWidth >= 1024) {
+    const cs = getComputedStyle(panel);
+    if (cs.position !== 'sticky') problem('#filter-panel not sticky at >= 1024');
+    if (Math.abs(px(cs.top) - header.offsetHeight) > 0.5) problem('#filter-panel top ' + cs.top + ' vs header ' + header.offsetHeight);
+    if (panel.scrollWidth > panel.clientWidth) problem('#filter-panel overflows ' + panel.scrollWidth + ' > ' + panel.clientWidth);
+  }
+  const fo = document.querySelectorAll('#filters-open');
+  if (fo.length) {
+    if (fo.length !== 1 || !fo[0].closest('.topbar')) problem('#filters-open count ' + fo.length);
+    if (visible(fo[0]) !== (innerWidth < 640)) problem('#filters-open visibility at ' + innerWidth);
+  }
+  const toolbar = document.querySelector('.toolbar');
+  if (toolbar && innerWidth < 640 && toolbar.querySelector('button')) problem('toolbar has a button on a phone');
+  // AC 17 card structure
+  const kindRe = /^badge-(launch|funding|news|accelerator)$/;
+  out.cardIssues = [];
+  for (const c of cards) {
+    const links = c.querySelectorAll('h2 a');
+    if (links.length !== 1 || !links[0].getAttribute('href').startsWith('?item=')) out.cardIssues.push(describe(c) + ' h2 a');
+    if (c.querySelectorAll('.badge-source').length !== 1) out.cardIssues.push('badge-source');
+    const kinds = Array.from(c.querySelectorAll('.badge')).filter((b) => Array.from(b.classList).some((k) => kindRe.test(k)));
+    if (kinds.length !== 1) out.cardIssues.push('kind badge x' + kinds.length);
+    if (c.querySelectorAll('.badge-region').length !== 1) out.cardIssues.push('badge-region');
+    if (c.querySelectorAll('time[datetime]').length !== 1) out.cardIssues.push('time');
+    const ext = c.querySelectorAll('a.card-ext');
+    if (ext.length !== 1 || ext[0].target !== '_blank' || !/\bnoopener\b/.test(ext[0].rel) || !/\bnoreferrer\b/.test(ext[0].rel)) out.cardIssues.push('card-ext');
+    if (getComputedStyle(links[0], '::after').content !== 'none') out.cardIssues.push('card-link ::after overlay');
+  }
+  out.cardExt = cards.map((c) => ({ key: c.dataset.key, href: c.querySelector('a.card-ext') ? c.querySelector('a.card-ext').href : null }));
+  out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region), #detail .badge:not(.badge-region)')).map((b) => b.textContent.trim());
+  out.regionBadges = Array.from(document.querySelectorAll('#results .badge-region, #detail .badge-region')).map((b) => b.textContent.trim());
+  // AC 19 stat tiles
+  out.statN = Array.from(document.querySelectorAll('.stat-n')).map((n) => ({ text: n.textContent.trim(), lines: n.getClientRects().length, ws: getComputedStyle(n).whiteSpace, overflow: n.scrollWidth > n.clientWidth }));
+  const tiles = Array.from(document.querySelectorAll('ul.stats > li'));
+  out.tileColumns = new Set(tiles.map((t) => Math.round(t.offsetLeft))).size;
+  out.tileMinWidth = tiles.length ? Math.min(...tiles.map((t) => rect(t).width)) : 0;
+  const radar = document.getElementById('radar-panel');
+  out.radarDisplay = radar ? getComputedStyle(radar).display : null;
+  if (radar && getComputedStyle(radar).display !== 'none') {
+    const heroMain = document.querySelector('.hero-main');
+    out.radarInSecondColumn = rect(radar).left >= rect(heroMain).right - 1;
+    out.radarTitle = document.getElementById('radar-title').textContent;
+    out.radarTitleTransform = getComputedStyle(document.getElementById('radar-title')).textTransform;
+    out.blips = document.querySelectorAll('circle.blip').length;
+  }
+  // AC 9 honesty
+  const sort = document.getElementById('sort');
+  out.sortOptions = sort ? Array.from(sort.options).map((o) => o.value) : null;
+  const lm = document.getElementById('load-more');
+  if (lm && !lm.hidden) { if (lm.disabled) problem('#load-more disabled'); if (!/^(Load more|Load older items)$/.test(lm.textContent.trim())) problem('#load-more reads ' + lm.textContent); }
+  // C14 logo layering
+  const mark = document.querySelector('.radar-mark');
+  if (mark) {
+    if (getComputedStyle(mark, '::before').zIndex !== '1') problem('.radar-mark::before z-index ' + getComputedStyle(mark, '::before').zIndex);
+    const cross = mark.querySelector('.radar-cross');
+    if (getComputedStyle(cross).zIndex !== '1') problem('.radar-cross z-index');
+    if (getComputedStyle(cross).backgroundImage !== 'none') problem('.radar-cross has a background image');
+  }
+  // dialogs
+  const detail = document.getElementById('detail');
+  if (detail && detail.open) {
+    const p = detail.querySelector('.detail-panel');
+    const r = rect(p);
+    out.drawer = { right: r.right, width: r.width, bottom: r.bottom, left: r.left, innerHeight, layoutRight: out.layoutRight, clientWidth: out.clientWidth };
+    if (innerWidth >= 1024) { if (Math.abs(r.right - out.layoutRight) > 0.5 || r.width > 520.5) problem('drawer geometry ' + JSON.stringify(out.drawer)); }
+    else if (Math.abs(r.bottom - innerHeight) > 0.5 || r.left !== 0 || Math.abs(r.width - out.layoutRight) > 0.5) problem('sheet geometry ' + JSON.stringify(out.drawer));
+    if (getComputedStyle(detail).paddingTop !== '0px') problem('dialog padding ' + getComputedStyle(detail).paddingTop);
+    if (getComputedStyle(document.documentElement).overflow !== 'hidden') problem('body scroll not locked behind the drawer');
+  }
+  if (document.querySelector('iframe, embed, object')) problem('iframe/embed/object present');
+  return out;
+}
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 ABSENT = ""  # marker for "this query key must be absent" (None would be dropped by the Python binding)
+WIDTHS = [320, 390, 768, 1024, 1280, 1920]
 
 
 def wait_state(page, expected):
@@ -261,6 +699,15 @@ def wait_state(page, expected):
     if any(v is None for v in expected.values()):
         raise ValueError("use ABSENT, not None, in wait_state expectations")
     page.wait_for_function(WAIT_STATE_JS, arg=expected, timeout=WAIT_MS)
+
+
+def wait_cards(page):
+    page.wait_for_function("() => document.querySelector('#results') && document.querySelector('#results').getAttribute('aria-busy') === 'false' && document.querySelectorAll('#results article').length >= 1", timeout=WAIT_MS)
+
+
+def settle(page):
+    """Wait until nothing but the intentional loops is animating (called before every screenshot/audit)."""
+    page.wait_for_function(SETTLED_JS, timeout=WAIT_MS)
 
 
 def snapshot(page):
@@ -301,14 +748,73 @@ class RequestLog:
     def __init__(self, page):
         self.data_items = []
         self.api_items = []
+        self.all = []
         page.on("request", self._on_request)
 
     def _on_request(self, req):
         path = req.url.split("?", 1)[0]
+        self.all.append(req.url)
         if path.endswith(ITEMS_PATH):
             self.data_items.append(req.url)
         if API_ITEMS_PATH in req.url:
             self.api_items.append(req.url)
+
+
+class ErrorLog:
+    """Collects console errors and page errors of a page."""
+
+    def __init__(self, page, ignore_urls=()):
+        self.errors = []
+        page.on("pageerror", lambda err: self.errors.append("pageerror: " + str(err)))
+
+        def on_console(msg):
+            url = (msg.location or {}).get("url", "")
+            if msg.type == "error" and not any(url.endswith(s) for s in ignore_urls):
+                self.errors.append("console: %s (%s)" % (msg.text, url))
+
+        page.on("console", on_console)
+
+    def check(self, label):
+        check("%s: no console errors or page errors" % label, len(self.errors) == 0, "; ".join(self.errors)[:300])
+
+
+def new_ctx(browser, *, viewport=None, scheme="dark", mobile=False, sw=False, reduced_motion=None):
+    """One browser context per scenario: explicit colour scheme, service workers blocked unless `sw`."""
+    opts = {
+        "viewport": viewport or DESKTOP,
+        "color_scheme": scheme,
+        "service_workers": "allow" if sw else "block",
+    }
+    if mobile:
+        opts.update({"is_mobile": True, "has_touch": True, "device_scale_factor": MOBILE_SCALE})
+    if reduced_motion:
+        opts["reduced_motion"] = reduced_motion
+    ctx = browser.new_context(**opts)
+    ctx.set_default_timeout(WAIT_MS)
+    ctx.set_default_navigation_timeout(WAIT_MS)
+    return ctx
+
+
+def goto_home(page, query=""):
+    page.goto(BASE + "/" + query, wait_until="domcontentloaded")
+    wait_cards(page)
+
+
+def goto_sources(page):
+    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
+    page.wait_for_selector("#sources-table tbody tr:not(.skeleton)", timeout=WAIT_MS)
+    page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
+
+
+def open_sheet(page):
+    """Phone contexts: open the filter sheet (the sources disclosure lives inside it)."""
+    page.click("#filters-open")
+    page.wait_for_selector('#filter-panel[role="dialog"]', timeout=WAIT_MS)
+
+
+def close_sheet(page):
+    page.click("#filters-close")
+    page.wait_for_function("() => document.getElementById('filter-panel').hidden === true", timeout=WAIT_MS)
 
 
 def png_size(path):
@@ -317,6 +823,20 @@ def png_size(path):
     if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
         return (0, 0)
     return struct.unpack(">II", head[16:24])
+
+
+def shot(page, name):
+    settle(page)
+    # the 600 ms stat count-ups are requestAnimationFrame-driven (invisible to getAnimations): wait until the numbers stop changing
+    stats_js = "[...document.querySelectorAll('.stat-n')].map((n) => n.textContent).join('|')"
+    for _ in range(5):
+        before = page.evaluate(stats_js)
+        page.wait_for_timeout(700)
+        if page.evaluate(stats_js) == before:
+            break
+    page.screenshot(path=str(OUT / name), full_page=False)
+    vp = page.viewport_size
+    print("wrote %s (viewport %dx%d)" % (name, vp["width"], vp["height"]))
 
 
 def first_title(snap_or_api):
@@ -362,10 +882,40 @@ class Api:
         return res.json()
 
     def sources(self):
-        res = self.request.get(BASE + "/data/sources.json")
+        return self.data("sources.json")
+
+    def data(self, name):
+        res = self.request.get(BASE + "/data/" + name)
         if not res.ok:
-            raise RuntimeError("GET /data/sources.json -> %d" % res.status)
+            raise RuntimeError("GET /data/%s -> %d" % (name, res.status))
         return res.json()
+
+
+class Data:
+    """The static data files as the page sees them (fetched once per scenario)."""
+
+    def __init__(self, request):
+        api = Api(request)
+        self.items = api.data("items.json")
+        self.sources = api.data("sources.json")
+        self.stats = api.data("stats.json")
+        self.by_key = {item_key(it["url"]): it for it in self.items}
+        self.allowed_badges = set(s["name"] for s in self.sources["sources"]) | set(l for _, l in KIND_LABELS)
+        self.region_labels = set(l for _, l in REGION_LABELS)
+        enabled = [s for s in self.sources["sources"] if s["enabled"]]
+        self.sources_tile = "%d/%d" % (len([s for s in enabled if not s.get("lastError")]), len(enabled))
+        self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
+
+    def within_48h(self, now, slack_s=0):
+        n = 0
+        for it in self.items:
+            try:
+                age = (now - parse_iso(it["publishedAt"])).total_seconds()
+            except (KeyError, ValueError, TypeError):
+                continue
+            if age <= 48 * 3600 + slack_s:
+                n += 1
+        return n
 
 
 def ui_matches_api(snap, api_data):
@@ -377,14 +927,18 @@ def ui_matches_api(snap, api_data):
     return first_title(snap) == first_title(api_data)
 
 
-def audit_page(page, label, want_controls=True, open_details=False):
+def audit_page(page, label, want_controls=True, open_details=False, sheet=False):
     """Font-size, control-height, link-rel and overflow audit for the current page."""
+    if sheet:
+        open_sheet(page)
     if open_details and page.locator("#sources-filter").count():
         page.click("#sources-filter summary")
         page.wait_for_selector("#source-list input", state="visible", timeout=WAIT_MS)
     a = page.evaluate(UI_AUDIT_JS)
     if open_details and page.locator("#sources-filter").count():
         page.click("#sources-filter summary")
+    if sheet:
+        close_sheet(page)
 
     check("%s: body font-size >= %dpx" % (label, MIN_BODY_FONT_PX), a["bodyFontSize"] >= MIN_BODY_FONT_PX, "%.2fpx" % a["bodyFontSize"])
     check(
@@ -435,19 +989,17 @@ def pick_search_term(api, base_titles, base_total):
 
 
 # ---------------------------------------------------------------------------
-# Scenarios
+# Parity / smoke scenarios (the original harness, adapted to the redesign)
 # ---------------------------------------------------------------------------
 
 def run_home_desktop(browser):
-    ctx = browser.new_context(viewport=DESKTOP)
+    ctx = new_ctx(browser, viewport=DESKTOP)
     page = ctx.new_page()
     api = Api(ctx.request)
-    console_errors = []
-    page.on("pageerror", lambda err: console_errors.append(str(err)))
-    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+    errors = ErrorLog(page)
     reqs = RequestLog(page)
 
-    page.goto(BASE + "/", wait_until="domcontentloaded")
+    goto_home(page)
     wait_state(page, {})
     base = snapshot(page)
     api_base = api.items({})
@@ -466,9 +1018,7 @@ def run_home_desktop(browser):
     check("home: 'Last refreshed' text present", page.evaluate("/Last refreshed/.test(document.body.innerText)"))
     check("home: has source, kind and region badges on every card", all(c["source"] and c["kind"] and c["region"] for c in base["cards"]))
 
-    page.screenshot(path=str(OUT / "home.png"), full_page=False)
-    print("wrote home.png (viewport %dx%d)" % (DESKTOP["width"], DESKTOP["height"]))
-
+    shot(page, "home.png")
     audit_page(page, "home desktop", want_controls=True, open_details=True)
 
     changed_flags = []
@@ -527,8 +1077,6 @@ def run_home_desktop(browser):
         page.click('button.chip[data-since="%s"]' % value)
         wait_state(page, {"since": value})
         snap = snapshot(page)
-        # Same cutoff formula as filter.js; the page computes it at render time, so
-        # the two clocks differ by milliseconds only.
         cutoff = since_cutoff(value)
         since_iso = to_iso(cutoff)
         exp = api.items({"since": since_iso})
@@ -566,7 +1114,6 @@ def run_home_desktop(browser):
 
     # --- sources checklist ----------------------------------------------
     src = api.sources()["sources"]
-    # itemCount counts the whole DB; make sure the candidate has items inside the export window.
     candidates = [
         s for s in src
         if s["enabled"] and s["itemCount"] > 0 and s["itemCount"] < base["total"] and api.items({"source": s["id"]})["total"] >= 1
@@ -617,8 +1164,8 @@ def run_home_desktop(browser):
         "UI %s / API %s" % (snap["total"], exp["total"]),
     )
     check("filtered view: URL query reflects both filters", "kind=funding" in page.url and "region=usa" in page.url, page.url)
-    page.screenshot(path=str(OUT / "home-filtered.png"), full_page=False)
-    print("wrote home-filtered.png (viewport %dx%d, url %s)" % (DESKTOP["width"], DESKTOP["height"], page.url))
+    page.evaluate("window.scrollTo(0, 0)")
+    shot(page, "home-filtered.png")
 
     # --- reset -----------------------------------------------------------
     page.click("#reset")
@@ -642,23 +1189,19 @@ def run_home_desktop(browser):
         "%d of %d filters changed the set%s" % (changed_count, len(changed_flags), ("; unchanged: " + ", ".join(unchanged)) if unchanged else ""),
     )
     check("home: still exactly one ./data/items.json request after all filters, none to /api/items", len(reqs.data_items) == 1 and len(reqs.api_items) == 0, "%d data, %d api" % (len(reqs.data_items), len(reqs.api_items)))
-    check("home: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+    errors.check("home")
 
     ctx.close()
     return base
 
 
 def run_sources_desktop(browser):
-    ctx = browser.new_context(viewport=DESKTOP)
+    ctx = new_ctx(browser, viewport=DESKTOP)
     page = ctx.new_page()
     api = Api(ctx.request)
-    console_errors = []
-    page.on("pageerror", lambda err: console_errors.append(str(err)))
-    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+    errors = ErrorLog(page)
 
-    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
-    page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
-    page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
+    goto_sources(page)
     data = page.evaluate(SOURCES_PAGE_JS)
     api_data = api.sources()
     api_sources = api_data["sources"]
@@ -690,10 +1233,9 @@ def run_sources_desktop(browser):
     check("sources: explore list has every API link and is labelled links only", len(data["explore"]) == len(api_data["exploreMore"]) and "links only" in data["exploreHeading"].lower(), "%d links; heading '%s'" % (len(data["explore"]), data["exploreHeading"]))
     check("sources: explore links use target=_blank rel=noopener noreferrer", all(e["target"] == "_blank" and "noopener" in (e["rel"] or "") and "noreferrer" in (e["rel"] or "") for e in data["explore"]))
 
-    audit_page(page, "sources desktop", want_controls=False)
-    page.screenshot(path=str(OUT / "sources.png"), full_page=False)
-    print("wrote sources.png (viewport %dx%d)" % (DESKTOP["width"], DESKTOP["height"]))
-    check("sources: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+    audit_page(page, "sources desktop", want_controls=True)
+    shot(page, "sources.png")
+    errors.check("sources")
 
     per_source = ["%s=%d" % (s["id"], s["itemCount"]) for s in api_sources]
     print("per-source item counts: " + ", ".join(per_source))
@@ -701,40 +1243,37 @@ def run_sources_desktop(browser):
 
 
 def run_mobile(browser):
-    ctx = browser.new_context(viewport=MOBILE, device_scale_factor=MOBILE_SCALE, is_mobile=True, has_touch=True)
+    ctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     page = ctx.new_page()
-    console_errors = []
-    page.on("pageerror", lambda err: console_errors.append(str(err)))
-    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+    errors = ErrorLog(page)
 
-    page.goto(BASE + "/", wait_until="domcontentloaded")
+    goto_home(page)
     wait_state(page, {})
     snap = snapshot(page)
     check("mobile home: at least 1 article rendered", snap["shown"] >= 1, "%d articles" % snap["shown"])
-    page.screenshot(path=str(OUT / "home-mobile.png"), full_page=False)
-    print("wrote home-mobile.png (viewport %dx%d at %dx)" % (MOBILE["width"], MOBILE["height"], MOBILE_SCALE))
-    a = audit_page(page, "home mobile 390px", want_controls=True, open_details=True)
+    shot(page, "home-mobile.png")
+    a = audit_page(page, "home mobile 390px", want_controls=True, open_details=True, sheet=True)
     check("mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
+    open_sheet(page)
+    shot(page, "home-mobile-sheet.png")
+    close_sheet(page)
 
-    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
-    page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
-    b = audit_page(page, "sources mobile 390px", want_controls=False)
+    goto_sources(page)
+    b = audit_page(page, "sources mobile 390px", want_controls=True)
     check("mobile sources: document.documentElement.scrollWidth <= 390", b["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % b["scrollWidth"])
-    check("mobile: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+    errors.check("mobile")
     ctx.close()
 
 
 def run_live_smoke(browser):
     """SMOKE_ONLY mode: browser checks that need only the static files, usable on GitHub Pages."""
-    ctx = browser.new_context(viewport=DESKTOP)
+    ctx = new_ctx(browser, viewport=DESKTOP)
     page = ctx.new_page()
-    console_errors = []
-    page.on("pageerror", lambda err: console_errors.append(str(err)))
-    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+    errors = ErrorLog(page)
     reqs = RequestLog(page)
 
     # --- home ------------------------------------------------------------
-    page.goto(BASE + "/", wait_until="domcontentloaded")
+    goto_home(page)
     wait_state(page, {})
     base = snapshot(page)
     check("smoke home: at least 1 article rendered", base["shown"] >= 1, "%d articles, total %s" % (base["shown"], base["total"]))
@@ -753,6 +1292,7 @@ def run_live_smoke(browser):
     wait_state(page, {"kind": "funding"})
     snap = snapshot(page)
     check("smoke kind=funding: every card is Funding and the URL carries kind=funding", all(c["kind"] == "Funding" for c in snap["cards"]) and "kind=funding" in page.url, "%d cards, url %s" % (snap["shown"], page.url))
+    check("smoke: URL writes stay under the sub-path (pathname unchanged, no leading-slash rewrite)", page.url.startswith(BASE + "/?") and urlsplit(page.url).path == urlsplit(BASE + "/").path, page.url)
     page.select_option("#kind", "")
     wait_state(page, {"kind": ABSENT})
 
@@ -785,16 +1325,29 @@ def run_live_smoke(browser):
         snap = snapshot(page)
         check("smoke search '%s': first card contains the term and URL carries q" % term, bool(snap["cards"]) and term.lower() in snap["cards"][0]["text"].lower() and "q=" in page.url, "%d matches" % (snap["total"] if snap["total"] is not None else -1))
 
+    page.select_option("#sort", "points")
+    wait_state(page, {"sort": "points"})
+    check("smoke sort=points: URL carries sort=points and the note is visible", "sort=points" in page.url and page.evaluate("!document.querySelector('.sort-note').hidden"))
+
     page.click("#reset")
-    wait_state(page, {"kind": ABSENT, "region": ABSENT, "since": ABSENT, "q": ABSENT, "source": ABSENT})
+    wait_state(page, {"kind": ABSENT, "region": ABSENT, "since": ABSENT, "q": ABSENT, "source": ABSENT, "sort": ABSENT})
     snap = snapshot(page)
     check("smoke reset: empty query and unfiltered total", snap["search"] == "" and snap["total"] == base["total"], "UI %s / baseline %s" % (snap["total"], base["total"]))
-    check("smoke home: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+
+    # --- deep link under the sub-path -----------------------------------------
+    key = base["cards"][0]["key"]
+    page.goto(BASE + "/?item=" + key, wait_until="domcontentloaded")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    title = page.evaluate("document.getElementById('detail-title').textContent")
+    check("smoke deep link ?item=<key>: opens the drawer for the first card", title == base["cards"][0]["title"], title[:80])
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+    check("smoke deep link: Esc closes and removes the param under the sub-path", page.url == BASE + "/" or page.url == BASE + "/index.html", page.url)
+    errors.check("smoke home")
 
     # --- sources.html ------------------------------------------------------
-    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
-    page.wait_for_selector("#sources-table tbody tr", timeout=WAIT_MS)
-    page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
+    goto_sources(page)
     data = page.evaluate(SOURCES_PAGE_JS)
     res = ctx.request.get(BASE + "/data/sources.json")
     n_sources = len(res.json()["sources"]) if res.ok else -1
@@ -802,24 +1355,1146 @@ def run_live_smoke(browser):
     check("smoke sources: at least 10 explore links", len(data["explore"]) >= 10, "%d links" % len(data["explore"]))
     refreshed = page.evaluate(LAST_REFRESHED_JS)
     check("smoke sources: 'Last refreshed' shows a real time", refreshed.startswith("Last refreshed") and "unknown" not in refreshed and "never" not in refreshed and "loading" not in refreshed, refreshed)
-    audit_page(page, "smoke sources desktop", want_controls=False)
-    check("smoke sources: no console errors or page errors", len(console_errors) == 0, "; ".join(console_errors)[:300])
+    audit_page(page, "smoke sources desktop", want_controls=True)
+    errors.check("smoke sources")
     ctx.close()
 
     # --- mobile ------------------------------------------------------------
-    mctx = browser.new_context(viewport=MOBILE, device_scale_factor=MOBILE_SCALE, is_mobile=True, has_touch=True)
+    mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     mpage = mctx.new_page()
-    merrors = []
-    mpage.on("pageerror", lambda err: merrors.append(str(err)))
-    mpage.on("console", lambda msg: merrors.append(msg.text) if msg.type == "error" else None)
-    mpage.goto(BASE + "/", wait_until="domcontentloaded")
+    merrors = ErrorLog(mpage)
+    goto_home(mpage)
     wait_state(mpage, {})
     snap = snapshot(mpage)
     check("smoke mobile home: at least 1 article rendered", snap["shown"] >= 1, "%d articles" % snap["shown"])
-    a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True)
+    a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True, sheet=True)
     check("smoke mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
-    check("smoke mobile: no console errors or page errors", len(merrors) == 0, "; ".join(merrors)[:300])
+    merrors.check("smoke mobile")
     mctx.close()
+
+
+# ---------------------------------------------------------------------------
+# Audit matrix (design.md section 20; plan 3.5): page x width x theme x state
+# ---------------------------------------------------------------------------
+
+def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open=False, kind="home"):
+    """Run LAYOUT_JS + CONTRAST_AUDIT_JS + PREMISE_JS on the current state and assert the ACs."""
+    settle(page)
+    if kind == "home":
+        # the 600 ms count-up is requestAnimationFrame-driven (not a WAAPI animation): wait for the final numbers
+        try:
+            page.wait_for_function("(exp) => [...document.querySelectorAll('.stat-n')].map((n) => n.textContent.trim()).join('|') === exp", arg="|".join([data.feed_tile, str(data.stats["last24h"]), str(data.stats["last7d"]), data.sources_tile]), timeout=5000)
+        except Exception:  # noqa: BLE001 - the assertion below reports the mismatch
+            pass
+    lay = page.evaluate(LAYOUT_JS, {"width": width})
+    con = page.evaluate(CONTRAST_AUDIT_JS, theme)
+    pre = page.evaluate(PREMISE_JS, theme)
+    mobile = width < 640 and page.viewport_size["width"] < 640
+    check("%s: body 16px, no text < 12px" % label, lay["bodyFont"] >= MIN_BODY_FONT_PX and lay["minFont"] >= MIN_FONT_PX,
+          "%d visible, body %.1fpx, min %.2fpx at %s" % (lay["visibleEls"], lay["bodyFont"], lay["minFont"], lay["minFontDesc"]))
+    expect_h = 40 if (width >= 1024 and not mobile) else 44
+    check("%s: controls = --control-h (%dpx)" % (label, expect_h), lay["controls"] >= 1 and lay["controlH"] == expect_h and abs(lay["controlMin"] - expect_h) <= 0.5 and abs(lay["controlMax"] - expect_h) <= 0.5,
+          "%d controls, min %.1f max %.1f, --control-h %s" % (lay["controls"], lay["controlMin"], lay["controlMax"], lay["controlH"]))
+    check("%s: scrollWidth <= innerWidth" % label, lay["scrollWidth"] <= lay["innerWidth"], "%d <= %d" % (lay["scrollWidth"], lay["innerWidth"]))
+    worst_t = con["worstText"] or {}
+    worst_n = con["worstNonText"] or {}
+    check("%s: composited contrast (text >= 4.5, non-text >= 3.0, glass text only fg-0/fg-1)" % label, len(con["failures"]) == 0 and con["textCount"] > 0,
+          "%d text pairs, worst %s %s->%s %.2f; %d non-text, worst %s %s->%s %.2f; %d glass texts%s" % (
+              con["textCount"], worst_t.get("sel"), worst_t.get("fg"), worst_t.get("bg"), worst_t.get("ratio") or 0,
+              con["nonTextCount"], worst_n.get("sel"), worst_n.get("fg"), worst_n.get("bg"), worst_n.get("ratio") or 0,
+              con["glassTextCount"], ("; " + "; ".join(con["failures"][:4])) if con["failures"] else ""))
+    check("%s: glass extreme %s and dot composite %s match the live tokens" % (label, con["glassExpected"], con["dotExpected"]), con["glassOk"] and con["dotOk"],
+          "glass %s, dot %s" % (con["glassExtreme"], con["dotComposite"]))
+    check("%s: premise (no paint more extreme than --fg-0)" % label, len(pre["offenders"]) == 0, "%d paints checked, L(fg-0)=%s%s" % (pre["checked"], pre["limit"], ("; " + "; ".join(pre["offenders"][:3])) if pre["offenders"] else ""))
+    check("%s: layout/structure rules (AC 3, 10, 16, 17, 19; C8, C14)" % label, len(lay["problems"]) == 0 and len(lay["cardIssues"]) == 0,
+          ("; ".join(lay["problems"][:5] + lay["cardIssues"][:3]) or "ok") + "; --topbar-h %s vs header %s" % (lay["topbarH"], lay["headerOffsetHeight"]))
+    if expect_columns is not None and lay["cardCount"] >= expect_columns * 2:
+        check("%s: %d card column(s)" % (label, expect_columns), lay["columns"] == expect_columns, "%d columns from %d cards" % (lay["columns"], lay["cardCount"]))
+    if lay["cardCount"]:
+        bad_badges = [b for b in lay["badges"] if b not in data.allowed_badges]
+        bad_regions = [r for r in lay["regionBadges"] if r not in data.region_labels]
+        check("%s: honest badges (sources, kinds, regions only) and sort options ['', 'points']" % label, not bad_badges and not bad_regions and lay["sortOptions"] == ["", "points"],
+              "%d badges%s" % (len(lay["badges"]), ("; bad " + ", ".join((bad_badges + bad_regions)[:3])) if (bad_badges or bad_regions) else ""))
+        pairs = [[e["href"], data.by_key[e["key"]]["url"]] for e in lay["cardExt"] if e["key"] in data.by_key and e["href"]]
+        # a.href is the parsed URL (e.g. a bare origin gains its trailing slash): compare after the same WHATWG normalisation
+        ext_ok = len(pairs) == len(lay["cardExt"]) and page.evaluate("(pairs) => pairs.every(([href, url]) => href === new URL(url).href)", pairs)
+        check("%s: every a.card-ext points at item.url" % label, ext_ok, "%d cards" % len(lay["cardExt"]))
+    if kind == "sources" and lay["statN"]:
+        texts = [s["text"] for s in lay["statN"]]
+        src = data.sources["sources"]
+        enabled = [s for s in src if s["enabled"]]
+        expected = [str(len(src)), str(len(enabled)), str(len([s for s in enabled if s.get("lastError")]))]
+        check("%s: status strip honest (%s) and single-line" % (label, " / ".join(texts)), texts == expected and all(s["lines"] == 1 and not s["overflow"] for s in lay["statN"]), "expected %s" % " / ".join(expected))
+    elif lay["statN"] and not sheet_open:
+        texts = [s["text"] for s in lay["statN"]]
+        single = all(s["lines"] == 1 and s["ws"] == "nowrap" and not s["overflow"] for s in lay["statN"])
+        honest = texts[0] == data.feed_tile and texts[1] == str(data.stats["last24h"]) and texts[2] == str(data.stats["last7d"]) and texts[3] == data.sources_tile
+        check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s / %s / %s / %s" % (data.feed_tile, data.stats["last24h"], data.stats["last7d"], data.sources_tile))
+        if width >= 1024 and not mobile:
+            if width < 1280:
+                # 268 px tiles at a 976 px content width; headless reserves a 15 px scrollbar gutter at 1024, so the content is 961 px and the tiles 259.5 px
+                check("%s: stats 2x2 beside the radar (tiles >= 259px)" % label, lay["tileColumns"] == 2 and lay["tileMinWidth"] >= 259 and lay["radarDisplay"] != "none" and lay.get("radarInSecondColumn"), "%d columns, min %.1fpx, radar %s, layout viewport %s" % (lay["tileColumns"], lay["tileMinWidth"], lay["radarDisplay"], lay["layoutRight"]))
+            else:
+                check("%s: stats 4x1 and radar panel shown" % label, lay["tileColumns"] == 4 and lay["radarDisplay"] != "none", "%d columns, radar %s" % (lay["tileColumns"], lay["radarDisplay"]))
+            if lay.get("radarTitle") is not None:
+                m = re.search(r"(\d+) items?", lay["radarTitle"], re.I)
+                now = datetime.now(timezone.utc)
+                n48 = data.within_48h(now)
+                check("%s: radar title honest 48h count (%s)" % (label, lay["radarTitle"]), m is not None and abs(int(m.group(1)) - n48) <= 2 and lay["radarTitleTransform"] == "uppercase" and lay["blips"] == min(int(m.group(1)), 400), "expected ~%d, %d blips" % (n48, lay["blips"]))
+        else:
+            check("%s: radar panel hidden" % label, lay["radarDisplay"] in (None, "none"), str(lay["radarDisplay"]))
+    return lay
+
+
+def worker_offline(ctx, on):
+    """Playwright's set_offline() does not reach service-worker fetches: make the worker's global fetch fail instead."""
+    for w in ctx.service_workers:
+        try:
+            if on:
+                w.evaluate("() => { if (!self.__realFetch) { self.__realFetch = self.fetch; self.fetch = () => Promise.reject(new TypeError('Failed to fetch')); } }")
+            else:
+                w.evaluate("() => { if (self.__realFetch) { self.fetch = self.__realFetch; delete self.__realFetch; } }")
+        except Exception:  # noqa: BLE001 - a redundant/stopped worker
+            pass
+
+
+def run_matrix(browser, scheme):
+    """Every page x width x state for one colour scheme (parity mode)."""
+    data = Data(browser.new_context().request)
+    for width in WIDTHS:
+        mobile = width < 640
+        vp = {"width": width, "height": 844 if mobile else 900}
+        ctx = new_ctx(browser, viewport=vp, scheme=scheme, mobile=mobile)
+        page = ctx.new_page()
+        errors = ErrorLog(page)
+        tag = "%s %dpx" % (scheme, width)
+        goto_home(page)
+        cols = 1 if width < 640 else (2 if width < 1280 else 3)
+        audit_state(page, "home %s default" % tag, scheme, width, data, expect_columns=cols)
+        goto_home(page, "?kind=funding&region=usa")
+        wait_state(page, {"kind": "funding", "region": "usa"})
+        audit_state(page, "home %s filtered" % tag, scheme, width, data, expect_columns=cols)
+        goto_home(page)
+        if mobile:
+            open_sheet(page)
+            page.click("#sources-filter summary")
+            page.wait_for_selector("#source-list input", state="visible", timeout=WAIT_MS)
+            audit_state(page, "home %s sheet+sources open" % tag, scheme, width, data, sheet_open=True)
+            close_sheet(page)
+        else:
+            page.click("#sources-filter summary")
+            page.wait_for_selector("#source-list input", state="visible", timeout=WAIT_MS)
+            lay = audit_state(page, "home %s sources popover open" % tag, scheme, width, data, expect_columns=cols)
+            if width >= 1024:
+                check("home %s: popover inside the viewport with >= 2 grid tracks (C15)" % tag, lay.get("popoverRight", 1e9) <= width and lay.get("gridTracks", 0) >= 2, "right %s, tracks %s" % (lay.get("popoverRight"), lay.get("gridTracks")))
+            page.click("#sources-filter summary")
+        if width in (768, 1280):
+            page.click("#view-list")
+            page.wait_for_function("() => document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
+            audit_state(page, "home %s list view" % tag, scheme, width, data, expect_columns=1)
+            page.click("#view-grid")
+            page.wait_for_function("() => !document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
+        key = page.evaluate("document.querySelector('#results article').dataset.key")
+        goto_home(page, "?item=" + key)
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        audit_state(page, "home %s drawer open" % tag, scheme, width, data)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.keyboard.press("Escape")
+        page.keyboard.press("?")
+        page.wait_for_selector("dialog#help[open]", timeout=WAIT_MS)
+        audit_state(page, "home %s help open" % tag, scheme, width, data)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
+        goto_sources(page)
+        audit_state(page, "sources %s" % tag, scheme, width, data, kind="sources")
+        errors.check("matrix %s" % tag)
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding-specific checks (plan 3.6) and scenario checks (plan 3.7)
+# ---------------------------------------------------------------------------
+
+STICKY_JS = r"""
+(dy) => {
+  window.scrollBy(0, dy);
+  const h = document.querySelector('header.site-header');
+  const tb = document.querySelector('.topbar');
+  const fp = document.getElementById('filter-panel');
+  const th = document.querySelector('#sources-table thead');
+  const tw = document.getElementById('table-wrap');
+  const cs = (el, p) => (el ? getComputedStyle(el)[p] : null);
+  return {
+    scrollY: window.scrollY,
+    headerTop: h.getBoundingClientRect().top,
+    topbarTop: tb.getBoundingClientRect().top,
+    headerH: h.offsetHeight,
+    topbarVar: getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim(),
+    panelTop: fp && getComputedStyle(fp).position === 'sticky' ? fp.getBoundingClientRect().top : null,
+    theadTop: th && getComputedStyle(th).position === 'sticky' ? th.getBoundingClientRect().top : null,
+    theadBackdrop: th ? (cs(th, 'backdropFilter') || cs(th, 'webkitBackdropFilter')) : null,
+    wrapOverflow: tw ? [cs(tw, 'overflowX'), cs(tw, 'overflowY')] : null,
+  };
+}
+"""
+
+
+def run_sticky(browser):
+    """S1 (HIGH): the top bar really sticks; the desktop filter bar and the sources thead sit under it."""
+    for width in (1280, 390):
+        mobile = width < 640
+        ctx = new_ctx(browser, viewport={"width": width, "height": 844 if mobile else 900}, mobile=mobile)
+        page = ctx.new_page()
+        goto_home(page)
+        s = page.evaluate(STICKY_JS, 1200)
+        check("S1 home %dpx: header.site-header and .topbar stay at top 0 after scrollBy(0, 1200)" % width, s["scrollY"] > 0 and s["headerTop"] == 0 and s["topbarTop"] == 0, "scrollY %d, header top %s, topbar top %s" % (s["scrollY"], s["headerTop"], s["topbarTop"]))
+        check("S1 home %dpx: --topbar-h equals header.offsetHeight" % width, s["topbarVar"] == "%dpx" % s["headerH"], "%s vs %dpx" % (s["topbarVar"], s["headerH"]))
+        if width >= 1024:
+            check("S1 home %dpx: #filter-panel top == header.offsetHeight while scrolled" % width, s["panelTop"] is not None and abs(s["panelTop"] - s["headerH"]) <= 0.5, "panel top %s, header %s" % (s["panelTop"], s["headerH"]))
+        goto_sources(page)
+        s = page.evaluate(STICKY_JS, 600 if width >= 1024 else 1200)
+        check("S1 sources %dpx: header stays at top 0 after scrolling" % width, s["scrollY"] > 0 and s["headerTop"] == 0 and s["topbarTop"] == 0, "scrollY %d, header top %s" % (s["scrollY"], s["headerTop"]))
+        check("S1 sources %dpx: #table-wrap overflow visible on both axes" % width, s["wrapOverflow"] == ["visible", "visible"], str(s["wrapOverflow"]))
+        if width >= 1024:
+            check("S1 sources %dpx: solid sticky thead top == header.offsetHeight after scrollBy(0, 600)" % width, s["theadTop"] is not None and abs(s["theadTop"] - s["headerH"]) <= 0.5 and s["theadBackdrop"] == "none", "thead top %s, header %s, backdrop %s" % (s["theadTop"], s["headerH"], s["theadBackdrop"]))
+        ctx.close()
+
+
+BUDGET_JS = r"""
+() => {
+  const w = document.querySelector('.topbar .wrap');
+  const lr = document.getElementById('last-refreshed');
+  const q = document.getElementById('q');
+  const h = document.querySelector('header.site-header');
+  const text = lr.querySelector('.status-text');
+  const before = text.textContent;
+  text.textContent = 'Last refreshed 12 min ago \u00b7 update check failed';
+  const r = {
+    scroll: w.scrollWidth, client: w.clientWidth, docScroll: document.documentElement.scrollWidth, inner: innerWidth,
+    statusH: lr.getBoundingClientRect().height, qW: q ? q.getBoundingClientRect().width : null,
+    headerH: h.offsetHeight, topbarVar: getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim(),
+  };
+  text.textContent = before;
+  return r;
+}
+"""
+
+
+def run_topbar_budget(browser):
+    """S4 (MEDIUM): the top bar never overflows with the longest status text at every width."""
+    for width in (320, 640, 768, 1024, 1280, 1920):
+        mobile = width < 640
+        ctx = new_ctx(browser, viewport={"width": width, "height": 844 if mobile else 900}, mobile=mobile)
+        page = ctx.new_page()
+        for path, label in (("home", "home"), ("sources", "sources")):
+            if path == "home":
+                goto_home(page)
+            else:
+                goto_sources(page)
+            r = page.evaluate(BUDGET_JS)
+            # 13 px mono (7.8 px/char) wraps by words. At 320 the status gets 288 - 28 (mark) - 44 (toggle) - 65 (nav link)
+            # - 24 (gaps) = 127 px, i.e. 14 characters: "Last refreshed" / "12 min ago" (2 lines) and the failure suffix in
+            # 4 lines (72.8 px). The bar grows (rows use min-height, --topbar-h is measured) and never overflows.
+            max_status = 73 if width < 640 else 37
+            q_ok = r["qW"] is None or width < 640 or r["qW"] >= 160
+            check("S4 %s %dpx: top bar fits the longest status (wrap scroll <= client, doc scroll <= inner, status <= %dpx, #q >= 160px)" % (label, width, max_status),
+                  r["scroll"] <= r["client"] and r["docScroll"] <= r["inner"] and r["statusH"] <= max_status and q_ok,
+                  "wrap %d/%d, doc %d/%d, status %.1fpx, q %s, header %dpx" % (r["scroll"], r["client"], r["docScroll"], r["inner"], r["statusH"], r["qW"], r["headerH"]))
+        ctx.close()
+
+
+def active(page):
+    return page.evaluate("(() => { const a = document.activeElement; return a ? (a.id || (a.tagName.toLowerCase() + '.' + a.className)) : null; })()")
+
+
+def run_keyboard(browser):
+    """K3 (MEDIUM, the Esc rule), C9 (focus targets) and AC 28 (the key map never hijacks typing)."""
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    goto_home(page)
+    # popover + Esc on a checked checkbox
+    page.click("#sources-filter summary")
+    page.wait_for_selector("#source-list input", state="visible", timeout=WAIT_MS)
+    box = page.evaluate("document.querySelector('#source-list input').id")
+    page.check("#" + box)
+    wait_state(page, {"source": box[4:]})
+    page.keyboard.press("Escape")
+    check("K3: Esc on a checked source checkbox closes the popover, focuses summary, keeps the filter", page.evaluate("!document.getElementById('sources-filter').open") and page.evaluate("document.activeElement === document.querySelector('#sources-filter summary')") and "source=" in page.evaluate("location.search"), "active %s, search %s" % (active(page), page.evaluate("location.search")))
+    # popover open + #q focused + Esc
+    page.click("#sources-filter summary")
+    page.wait_for_selector("#source-list input", state="visible", timeout=WAIT_MS)
+    page.fill("#q", "abc")
+    wait_state(page, {"q": "abc"})
+    page.focus("#q")
+    page.keyboard.press("Escape")
+    check("K3: Esc in #q while the popover is open closes the popover (focus -> summary) and leaves #q.value alone", page.evaluate("!document.getElementById('sources-filter').open") and page.evaluate("document.getElementById('q').value") == "abc" and active(page) == "summary.", "value %r, active %s" % (page.evaluate("document.getElementById('q').value"), active(page)))
+    page.focus("#q")
+    page.keyboard.press("Escape")
+    check("K3: Esc in #q with nothing open is left to the browser (native clears the search field)", page.evaluate("document.getElementById('q').value") == "" and "source=" in page.evaluate("location.search"), "value %r" % page.evaluate("document.getElementById('q').value"))
+    page.click("#reset")
+    wait_state(page, {"source": ABSENT, "q": ABSENT})
+    # typing never triggers shortcuts
+    page.focus("#q")
+    page.keyboard.type("jkto/?")
+    check("AC 28: typing j k t o / ? into #q only inserts characters", page.evaluate("document.getElementById('q').value") == "jkto/?" and page.evaluate("document.documentElement.dataset.theme") == "dark" and not page.evaluate("document.querySelector('dialog#help').open"), page.evaluate("document.getElementById('q').value"))
+    page.fill("#q", "")
+    wait_state(page, {"q": ABSENT})
+    page.evaluate("document.activeElement.blur()")
+    # / and Shift+/ focus #q without a slash; Enter applies without navigation
+    page.keyboard.press("/")
+    check("AC 28: / focuses #q and inserts nothing", active(page) == "q" and page.evaluate("document.getElementById('q').value") == "")
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.press("Shift+/")  # key '/' with shiftKey (a de-DE Shift+7 style layout): shift is ignored for / and ?
+    check("AC 28: Shift+/ (key '/' with Shift held) still focuses #q without inserting a slash", active(page) == "q" and page.evaluate("document.getElementById('q').value") == "", active(page))
+    page.evaluate("document.activeElement.blur()")
+    base = snapshot(page)
+    words = re.findall(WORD_RE, base["cards"][0]["title"])
+    term = words[0]
+    page.focus("#q")
+    page.keyboard.type(term)
+    page.keyboard.press("Enter")
+    wait_state(page, {"q": term})
+    check("AC 28: Enter in #q applies the query without a navigation", page.evaluate("performance.getEntriesByType('navigation').length") == 1 and "q=" in page.evaluate("location.search"), page.evaluate("location.search"))
+    page.fill("#q", "")
+    wait_state(page, {"q": ABSENT})
+    page.evaluate("document.activeElement.blur()")
+    # j/k/arrows/Home/End move focus between card links and keep the card below the sticky bars
+    page.keyboard.press("j")
+    idx = lambda: page.evaluate("[...document.querySelectorAll('#results article')].indexOf(document.activeElement.closest('article'))")
+    check("AC 28: j focuses the first card link with .is-active", active(page) == "a.card-link" and idx() == 0 and page.evaluate("document.activeElement.closest('article').classList.contains('is-active')"))
+    page.keyboard.press("ArrowDown")
+    check("AC 28: ArrowDown moves to the second card", idx() == 1)
+    page.keyboard.press("k")
+    check("AC 28: k moves back to the first card", idx() == 0)
+    page.keyboard.press("End")
+    last = page.evaluate("document.querySelectorAll('#results article').length - 1")
+    top_ok = page.evaluate("document.activeElement.closest('article').getBoundingClientRect().top >= parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sticky-h')) - 0.5")
+    check("AC 28: End jumps to the last rendered card, kept below the sticky bars", idx() == last and top_ok, "index %d of %d" % (idx(), last))
+    page.keyboard.press("Home")
+    check("AC 28: Home jumps to the first card", idx() == 0)
+    page.keyboard.press("ArrowUp")
+    check("AC 28: ArrowUp at the first card is a no-op", idx() == 0)
+    scroll_before = page.evaluate("window.scrollY")
+    page.keyboard.press("Escape")
+    check("K3: Esc with only a highlight clears it and blurs", page.evaluate("document.querySelectorAll('#results .is-active').length") == 0 and page.evaluate("document.activeElement === document.body") and page.evaluate("window.scrollY") == scroll_before)
+    # Enter opens; Esc twice closes once; drawer keys
+    page.keyboard.press("j")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    check("AC 28: Enter on a focused card link opens the drawer (delegated click, no navigation)", page.evaluate("performance.getEntriesByType('navigation').length") == 1 and active(page) == "detail-title")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    page.wait_for_timeout(200)
+    url_after = page.evaluate("location.search")
+    page.keyboard.press("Escape")
+    check("K3: Esc closes the drawer; a second Esc only clears the highlight", url_after == "" and not page.evaluate("document.querySelector('dialog#detail').open") and page.evaluate("document.querySelectorAll('#results .is-active').length") == 0)
+    # t and ?
+    page.keyboard.press("t")
+    check("AC 28: t toggles the theme", page.evaluate("document.documentElement.dataset.theme") == "light")
+    page.keyboard.press("t")
+    page.keyboard.press("?")
+    page.wait_for_selector("dialog#help[open]", timeout=WAIT_MS)
+    keys = page.evaluate("[...document.querySelectorAll('#help dl.help-list kbd')].map((k) => k.textContent)")
+    check("C9/AC 28: ? opens dialog#help labelled by #help-title with focus on it, listing every shortcut", page.evaluate("document.querySelector('dialog#help').getAttribute('aria-labelledby') === 'help-title'") and active(page) == "help-title" and all(k in keys for k in SHORTCUT_KEYS), "missing %s" % [k for k in SHORTCUT_KEYS if k not in keys])
+    page.keyboard.press("t")
+    check("AC 28: t works inside the help dialog", page.evaluate("document.documentElement.dataset.theme") == "light")
+    page.keyboard.press("t")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
+    check("K3: Esc closes help and returns focus to the opener", not page.evaluate("document.querySelector('dialog#help').open"))
+    # select keeps native keys
+    page.focus("#kind")
+    page.keyboard.press("ArrowDown")
+    page.wait_for_timeout(400)
+    check("AC 28: ArrowDown on #kind keeps native select behaviour (value changes, no card focus)", page.evaluate("document.getElementById('kind').value") != "" and active(page) == "kind", page.evaluate("document.getElementById('kind').value"))
+    errors.check("keyboard")
+    ctx.close()
+    # phone sheet: Esc from a select inside the sheet
+    mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
+    mpage = mctx.new_page()
+    goto_home(mpage)
+    open_sheet(mpage)
+    check("C9: opening the sheet focuses #filter-panel-title", active(mpage) == "filter-panel-title", active(mpage))
+    mpage.focus("#kind")
+    mpage.keyboard.press("Escape")
+    check("K3 390px: Esc on #kind inside the sheet closes it (hidden, no role), focuses #filters-open, restores overflow", mpage.evaluate("document.getElementById('filter-panel').hidden") and mpage.evaluate("document.getElementById('filter-panel').getAttribute('role')") is None and active(mpage) == "filters-open" and mpage.evaluate("getComputedStyle(document.documentElement).overflow") == "visible", active(mpage))
+    mctx.close()
+
+
+DRAWER_JS = r"""
+() => {
+  const d = document.getElementById('detail');
+  const p = d.querySelector('.detail-panel');
+  const r = p.getBoundingClientRect();
+  const primary = d.querySelector('a.btn-primary');
+  const hrefs = [...d.querySelectorAll('a[href]')].map((a) => a.href);
+  const rows = [...d.querySelectorAll('dl.detail-meta dt')].map((t) => t.textContent);
+  return {
+    open: d.open, modal: d.getAttribute('aria-modal'), labelledby: d.getAttribute('aria-labelledby'), describedby: d.getAttribute('aria-describedby'),
+    summaryExists: !!document.getElementById('detail-summary'), title: document.getElementById('detail-title').textContent,
+    badges: [...d.querySelectorAll('.detail-badges .badge')].length, time: !!d.querySelector('p.detail-time'), rows,
+    primary: primary ? { href: primary.href, target: primary.target, rel: primary.rel, text: primary.textContent.trim() } : null,
+    dupHref: hrefs.length !== new Set(hrefs).size, copy: !!document.getElementById('detail-copy'),
+    prev: document.getElementById('detail-prev').disabled, next: document.getElementById('detail-next').disabled, pos: d.querySelector('.detail-pos').textContent,
+    right: r.right, width: r.width, bottom: r.bottom, left: r.left, clientWidth: document.documentElement.clientWidth, layoutRight: document.documentElement.getBoundingClientRect().right, innerHeight,
+    toastsInDialog: document.getElementById('toasts').parentElement === d, activeId: document.activeElement.id, title2: document.title,
+    hostnameRow: rows.includes('Destination'), scrollTop: p.scrollTop, iframes: document.querySelectorAll('iframe, embed, object').length,
+  };
+}
+"""
+
+
+def run_drawer(browser):
+    """AC 22-27 + D6 (clientWidth geometry) + T7 (toast placement) + C10 (Enter with a stale selection) + C11 + C20 (`o`)."""
+    for width in (1280, 390, 768):
+        mobile = width < 640
+        ctx = new_ctx(browser, viewport={"width": width, "height": 844 if mobile else (1024 if width == 768 else 900)}, mobile=mobile)
+        page = ctx.new_page()
+        errors = ErrorLog(page)
+        data = Data(ctx.request)
+        goto_home(page)
+        base = snapshot(page)
+        item = data.by_key[base["cards"][0]["key"]]
+        hist = page.evaluate("history.length")
+        page.click("#results article h2 a")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        settle(page)
+        d = page.evaluate(DRAWER_JS)
+        check("AC 22 %dpx: dialog semantics (aria-modal, labelledby=detail-title, describedby=detail-summary present), badges, time, copy, prev/next" % width,
+              d["modal"] == "true" and d["labelledby"] == "detail-title" and d["describedby"] == "detail-summary" and d["summaryExists"] and d["badges"] == 3 and d["time"] == bool(item.get("publishedAt")) and d["copy"] and d["prev"] and not d["next"],
+              "pos %s, rows %s" % (d["pos"], d["rows"]))
+        check("AC 22 %dpx: primary action is item.url in a new tab, no duplicate hrefs, hostname row" % width, d["primary"] and d["primary"]["href"] == item["url"] and d["primary"]["target"] == "_blank" and d["primary"]["rel"] == "noopener noreferrer" and not d["dupHref"] and d["hostnameRow"], str(d["primary"]))
+        check("AC 22 %dpx: 'n of N' equals the filtered total" % width, d["pos"] == "1 of %d" % base["total"], d["pos"])
+        check("AC 23 %dpx: open pushed one history entry with item=<key>, title swapped, focus on the title" % width, page.evaluate("history.length") == hist + 1 and "item=" + base["cards"][0]["key"] in page.evaluate("location.search") and d["activeId"] == "detail-title" and d["title2"].startswith(item["title"][:20]), "%s -> %s" % (hist, page.evaluate("history.length")))
+        # D6: measured against the layout viewport's right edge (documentElement.getBoundingClientRect().right), never
+        # innerWidth. It equals documentElement.clientWidth in a real browser; headless Chromium hides scrollbars yet
+        # `scrollbar-gutter: stable` still reserves 15 px, so clientWidth is reported alongside.
+        if width >= 1024:
+            check("D6/AC 27 %dpx: right drawer flush with the layout viewport (documentElement right edge), width <= 520" % width, abs(d["right"] - d["layoutRight"]) <= 0.5 and d["width"] <= 520.5, "right %s, layout viewport %s, clientWidth %s, width %s" % (d["right"], d["layoutRight"], d["clientWidth"], d["width"]))
+        else:
+            check("D6/AC 27 %dpx: bottom sheet (bottom == innerHeight, left 0, width == layout viewport)" % width, abs(d["bottom"] - d["innerHeight"]) <= 0.5 and d["left"] == 0 and abs(d["width"] - d["layoutRight"]) <= 0.5, "bottom %s/%s, left %s, width %s, layout viewport %s, clientWidth %s" % (d["bottom"], d["innerHeight"], d["left"], d["width"], d["layoutRight"], d["clientWidth"]))
+        check("AC 22 %dpx: #toasts is a child of the open dialog" % width, d["toastsInDialog"])
+        # toast placement (T7)
+        page.evaluate("navigator.clipboard.writeText = () => Promise.resolve()")
+        page.click("#detail-copy")
+        page.wait_for_selector("#toasts .toast", timeout=WAIT_MS)
+        t = page.evaluate("(() => { const t = document.querySelector('#toasts .toast').getBoundingClientRect(); const f = document.querySelector('footer.detail-nav').getBoundingClientRect(); const hit = !(t.right <= f.left || t.left >= f.right || t.bottom <= f.top || t.top >= f.bottom); return { top: t.top, bottom: t.bottom, left: t.left, right: t.right, text: document.querySelector('#toasts .toast p').textContent, hit, visible: t.width > 0 && t.bottom <= innerHeight && t.top >= 0 }; })()")
+        if width >= 1024:
+            check("T7/AC 22 %dpx: 'Link copied' toast bottom-left, visible, not over footer.detail-nav" % width, t["text"] == "Link copied" and t["visible"] and not t["hit"] and t["left"] < 100, "top %.0f left %.0f hit %s" % (t["top"], t["left"], t["hit"]))
+        else:
+            check("T7 %dpx: toast top-centre above the sheet (top < innerHeight/2), not over footer.detail-nav" % width, t["text"] == "Link copied" and t["visible"] and not t["hit"] and t["top"] < page.viewport_size["height"] / 2, "top %.0f hit %s" % (t["top"], t["hit"]))
+        # prev/next + keys use replaceState
+        page.click("#detail-next")
+        page.wait_for_function("() => document.querySelector('.detail-pos').textContent.startsWith('2 of')", timeout=WAIT_MS)
+        key2 = page.evaluate("new URLSearchParams(location.search).get('item')")
+        check("AC 25 %dpx: Next shows item 2 via replaceState (history unchanged), .is-open moved" % width, key2 == base["cards"][1]["key"] and page.evaluate("history.length") == hist + 1 and page.evaluate("document.querySelector('.card.is-open').dataset.key") == key2, key2)
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_function("() => document.querySelector('.detail-pos').textContent.startsWith('1 of')", timeout=WAIT_MS)
+        check("AC 25 %dpx: ArrowLeft goes back to item 1 and Previous is disabled there" % width, page.evaluate("document.getElementById('detail-prev').disabled") is True)
+        page.keyboard.press("j")
+        page.wait_for_function("() => document.querySelector('.detail-pos').textContent.startsWith('2 of')", timeout=WAIT_MS)
+        page.keyboard.press("k")
+        page.wait_for_function("() => document.querySelector('.detail-pos').textContent.startsWith('1 of')", timeout=WAIT_MS)
+        check("AC 25 %dpx: j / k step inside the drawer" % width, True)
+        page.focus("#detail-title")
+        scrolled = page.evaluate("(() => { const p = document.querySelector('.detail-panel'); p.scrollTop = 0; return { canScroll: p.scrollHeight > p.clientHeight, before: p.scrollTop }; })()")
+        if scrolled["canScroll"]:
+            page.keyboard.press("ArrowDown")
+            page.wait_for_timeout(300)
+            check("AC 25 %dpx: ArrowDown scrolls .detail-panel without changing the item" % width, page.evaluate("document.querySelector('.detail-panel').scrollTop") > scrolled["before"] and page.evaluate("document.querySelector('.detail-pos').textContent").startswith("1 of"), "scrollTop %s" % page.evaluate("document.querySelector('.detail-panel').scrollTop"))
+        # C11: a debounced search behind the modal keeps item=
+        page.evaluate("(() => { const q = document.getElementById('q'); q.value = 'a'; q.dispatchEvent(new Event('input', { bubbles: true })); })()")
+        page.wait_for_timeout(450)
+        check("C11 %dpx: a re-render behind the modal keeps ?item= and .is-open" % width, "item=" in page.evaluate("location.search") and page.evaluate("document.querySelector('dialog#detail').open"), page.evaluate("location.search"))
+        page.evaluate("(() => { const q = document.getElementById('q'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true })); })()")
+        page.wait_for_timeout(450)
+        # C20: `o` opens a new page, no toast, no leftover anchor
+        page.evaluate("document.querySelectorAll('#toasts .toast').forEach((t) => t.remove())")
+        current_item = data.by_key[page.evaluate("new URLSearchParams(location.search).get('item')")]
+        with ctx.expect_page() as popup_info:
+            page.keyboard.press("o")
+        popup = popup_info.value
+        popup_url = popup.url
+        if popup_url in ("", "about:blank"):
+            try:
+                popup.wait_for_url(lambda u: u not in ("", "about:blank"), timeout=5000)
+            except Exception:
+                pass
+            popup_url = popup.url
+        popup.close()
+        check("C20/AC 25 %dpx: `o` opens item.url in a new tab, current URL unchanged" % width, popup_url.split("#")[0].rstrip("/") == current_item["url"].split("#")[0].rstrip("/") and "item=" in page.evaluate("location.search"), "popup %s" % popup_url[:80])
+        check("C20 %dpx: no hidden anchor left behind and no toast" % width, page.evaluate("document.querySelectorAll('dialog#detail a[hidden], body > a[hidden]').length") == 0 and page.evaluate("document.querySelectorAll('#toasts .toast').length") == 0 and "item=" in page.evaluate("location.search"))
+        # close routes: Esc -> focus return; Back / Forward
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+        check("AC 23 %dpx: Esc closes, URL restored, title restored, focus on the originating card link, toasts back in body" % width,
+              page.evaluate("location.search") == "" and page.evaluate("document.title").startswith("Startup Radar") and page.evaluate("document.activeElement.classList.contains('card-link')") and page.evaluate("document.getElementById('toasts').parentElement.tagName") == "BODY" and page.evaluate("history.length") == hist + 1,
+              "active %s, history %s" % (active(page), page.evaluate("history.length")))
+        page.go_forward()
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        check("AC 23 %dpx: Forward re-opens the drawer" % width, "item=" in page.evaluate("location.search"))
+        page.go_back()
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        check("AC 23 %dpx: Back closes the drawer and restores the URL" % width, page.evaluate("location.search") == "" and page.evaluate("document.activeElement.classList.contains('card-link')"), active(page))
+        # close button and backdrop click
+        page.click("#results article h2 a")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        page.click("#detail-close")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        page.click("#results article h2 a")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        settle(page)
+        page.mouse.click(10, 10 if width >= 1024 else 60)
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        check("AC 23 %dpx: close button and backdrop click both close with the URL restored" % width, page.evaluate("location.search") == "" and page.evaluate("history.length") == hist + 1, "history %s" % page.evaluate("history.length"))
+        # C10: Enter with a stale text selection
+        page.evaluate("getSelection().selectAllChildren(document.querySelector('p.lede'))")
+        page.focus("#results article h2 a")
+        page.keyboard.press("Enter")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        check("C10 %dpx: Enter with a stale selection opens the drawer without navigating" % width, page.evaluate("performance.getEntriesByType('navigation').length") == 1 and page.evaluate("document.querySelector('dialog#detail').open"))
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        # deep link (no push) and unknown key
+        hl = page.evaluate("history.length")
+        goto_home(page, "?item=" + base["cards"][2]["key"])
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        check("AC 24 %dpx: ./?item=<key> opens the drawer on load without pushState state" % width, page.evaluate("history.state") is None and page.evaluate("document.getElementById('detail-title').textContent") == base["cards"][2]["title"])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+        goto_home(page, "?item=zzzzzzzz")
+        page.wait_for_selector("#toasts .toast", timeout=WAIT_MS)
+        check("AC 24 %dpx: unknown key -> toast and the param is removed, no drawer" % width, page.evaluate("document.querySelector('#toasts .toast p').textContent") == "That item is no longer in the feed" and page.evaluate("location.search") == "" and not page.evaluate("document.querySelector('dialog#detail').open"))
+        check("AC 26 %dpx: no iframe/embed/object" % width, page.evaluate("document.querySelectorAll('iframe, embed, object').length") == 0)
+        if width == 1280:
+            goto_home(page, "?item=" + base["cards"][0]["key"])
+            page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+            shot(page, "detail.png")
+        errors.check("drawer %dpx" % width)
+        ctx.close()
+
+
+class Served:
+    """Mutable JSON bodies for routed data files (page.route reads the current value per request)."""
+
+    def __init__(self, ctx, data):
+        self.items = list(data.items)
+        self.stats = dict(data.stats)
+        self.archive = None  # None -> 404
+        self.counts = {"stats": 0, "items": 0, "archive": 0}
+        self.delay_ms = {"archive": 0, "items": 0}
+        self.hold = set()  # names whose responses are parked until release()
+        self.held = []
+        ctx.route("**/data/stats.json", lambda route: self._fulfil(route, "stats", self.stats))
+        ctx.route("**/data/items.json", lambda route: self._fulfil(route, "items", self.items))
+        ctx.route("**/data/archive.json", lambda route: self._fulfil(route, "archive", self.archive))
+
+    def release(self):
+        held, self.held = self.held, []
+        for route, name, body in held:
+            self._send(route, body)
+
+    def _fulfil(self, route, name, body):
+        self.counts[name] += 1
+        if name in self.hold:
+            self.held.append((route, name, body))
+            return
+        if self.delay_ms.get(name):
+            time.sleep(self.delay_ms[name] / 1000)
+        self._send(route, body)
+
+    def _send(self, route, body):
+        if body is None:
+            route.fulfill(status=404, content_type="application/json", body=json.dumps({"error": "not found"}))
+        else:
+            route.fulfill(status=200, content_type="application/json", headers={"Cache-Control": "no-store"}, body=json.dumps(body))
+
+
+def fake_item(data, n, hours_ago):
+    base = dict(data.items[0])
+    when = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    if hours_ago < 1:
+        # feeds sometimes publish future-dated entries: a "just now" harness item must still sort first
+        newest = max((parse_iso(i["publishedAt"]) for i in data.items if i.get("publishedAt")), default=when)
+        when = max(when, newest + timedelta(seconds=n))
+    base.update({
+        "id": 900000 + n, "title": "Harness item %d" % n, "url": "https://harness.test/item-%d" % n,
+        "publishedAt": to_iso(when), "summary": "Injected by scripts/screenshots.py.", "extra": {},
+    })
+    return base
+
+
+def run_live_data(browser):
+    """AC 29-31 + C17 + C18: 5-minute polling, the real new-items diff, the archive merge, the ticker, honest sort."""
+    data = Data(browser.new_context().request)
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    served = Served(ctx, data)
+    page.clock.install()
+    goto_home(page)
+    base = snapshot(page)
+    check("AC 29: stats.json requested once at load", served.counts["stats"] == 1, "%d" % served.counts["stats"])
+    page.clock.fast_forward(60_000)
+    page.wait_for_timeout(200)
+    check("AC 29: no stats poll after 60 s", served.counts["stats"] == 1, "%d" % served.counts["stats"])
+    # ticker + no live-region churn
+    # every card time, not just the first: a future-dated feed entry renders as a fixed date and never ticks
+    times_js = "[...document.querySelectorAll('#results time[data-rel]')].map((t) => t.textContent).join('|')"
+    first_time = page.evaluate(times_js)
+    announce_before = page.evaluate("document.getElementById('refresh-announce').textContent")
+    served.items = [fake_item(data, 1, 0.02)] + served.items  # one unknown key, published 'just now'
+    served.stats = dict(served.stats, lastRefresh=to_iso(datetime.now(timezone.utc)), generatedAt=to_iso(datetime.now(timezone.utc)), archiveItems=0)
+    page.clock.fast_forward(240_000)
+    page.wait_for_function("() => !document.getElementById('new-items').hidden", timeout=WAIT_MS)
+    check("AC 29: exactly one more stats.json request after fast_forward(300000) and a re-fetch of items.json", served.counts["stats"] == 2 and served.counts["items"] == 2, "stats %d, items %d" % (served.counts["stats"], served.counts["items"]))
+    pill = page.evaluate("document.querySelector('#new-items .pill-text').textContent")
+    check("AC 29: pill reads '1 new item - Refresh' and the list is unchanged until pressed", pill == "1 new item \u00b7 Refresh" and snapshot(page)["cards"][0]["title"] == base["cards"][0]["title"], pill)
+    check("AC 30: after 5 minutes relative times ticked and #last-refreshed changed, #refresh-announce changed only because lastRefresh changed, #last-refreshed has no aria-live",
+          page.evaluate(times_js) != first_time and page.evaluate("document.getElementById('last-refreshed').getAttribute('aria-live')") is None and page.evaluate("document.getElementById('refresh-announce').textContent") != announce_before,
+          "%s -> %s" % (first_time[:40], page.evaluate(times_js)[:40]))
+    page.click("#new-items-btn")
+    wait_state(page, {})
+    snap = snapshot(page)
+    check("AC 29: pressing the pill merges: first card is the new item, count +1, pill hidden", snap["cards"][0]["title"] == "Harness item 1" and snap["total"] == base["total"] + 1 and page.evaluate("document.getElementById('new-items').hidden"), "%s / %s" % (snap["total"], base["total"]))
+    check("AC 19: Feed tile follows the merged count", page.evaluate("document.querySelector('#stat-feed .stat-n').textContent") == str(len(served.items)), page.evaluate("document.querySelector('#stat-feed .stat-n').textContent"))
+    # archive split appears in a later build: served archive + archiveItems: 1
+    served.archive = [fake_item(data, 2, 30 * 24)]
+    served.stats = dict(served.stats, lastRefresh=to_iso(datetime.now(timezone.utc) + timedelta(seconds=1)), archiveItems=1)
+    served.items = [fake_item(data, 3, 0.01)] + served.items
+    page.clock.fast_forward(300_000)
+    page.wait_for_function("() => !document.getElementById('new-items').hidden", timeout=WAIT_MS)
+    page.click("#new-items-btn")
+    wait_state(page, {})
+    page.click('button.chip[data-since=""]')
+    page.wait_for_function("() => document.querySelector('#results').getAttribute('aria-busy') === 'false' && document.getElementById('result-count').textContent.indexOf('recent') < 0", timeout=WAIT_MS)
+    snap = snapshot(page)
+    check("AC 29: archive.json served with archiveItems: 1 -> the archived item is reachable after the merge (All time)", served.counts["archive"] >= 1 and snap["total"] == base["total"] + 3, "archive requests %d, total %s" % (served.counts["archive"], snap["total"]))
+    # shrink without new keys -> tile updates, no pill
+    served.items = served.items[:-5]
+    served.stats = dict(served.stats, lastRefresh=to_iso(datetime.now(timezone.utc) + timedelta(seconds=2)))
+    page.clock.fast_forward(300_000)
+    page.wait_for_function("(n) => document.querySelector('#stat-feed .stat-n').textContent === String(n)", arg=len(served.items) + 1, timeout=WAIT_MS)
+    check("AC 19: a shrunken items.json with no new keys updates the Feed tile silently (length + archiveItems) and the pill stays hidden", page.evaluate("document.getElementById('new-items').hidden") is True)
+    # honest sort
+    page.select_option("#sort", "points")
+    wait_state(page, {"sort": "points"})
+    pts = page.evaluate("[...document.querySelectorAll('#results article p.meta')].map((m) => { const x = /(\\d+) (points|votes)/.exec(m.textContent); return x ? +x[1] : null; })")
+    valued = [p for p in pts if p is not None]
+    tail_ok = all(p is None for p in pts[len(valued):]) if valued else True
+    check("AC 31: sort=points orders valued items descending first, URL + note + count suffix", valued == sorted(valued, reverse=True) and tail_ok and len(valued) >= 1 and page.evaluate("!document.querySelector('.sort-note').hidden") and page.evaluate("document.getElementById('result-count').textContent").endswith("sorted by points/votes"), "first values %s" % pts[:6])
+    page.select_option("#sort", "")
+    wait_state(page, {"sort": ABSENT})
+    check("AC 31: Newest restores newest-first and removes the param", page.evaluate("location.search") == "" and snapshot(page)["cards"][0]["title"] == "Harness item 3")
+    page.select_option("#sort", "points")
+    wait_state(page, {"sort": "points"})
+    page.click("#reset")
+    wait_state(page, {"sort": ABSENT})
+    check("AC 31: #reset clears sort too", page.evaluate("location.search") == "")
+    # C17: #load-more disabled only while the archive loads
+    goto_home(page)
+    served.archive = [fake_item(data, 4, 20 * 24)]
+    served.stats = dict(served.stats, archiveItems=1)
+    served.delay_ms["archive"] = 300
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    labels = set()
+    while page.evaluate("document.getElementById('load-more').textContent.trim()") == "Load more" and not page.evaluate("document.getElementById('load-more').hidden"):
+        labels.add("Load more")
+        page.click("#load-more")
+        page.wait_for_function(WAIT_STATE_JS, arg={}, timeout=WAIT_MS)
+    lm = page.evaluate("(() => { const b = document.getElementById('load-more'); return { hidden: b.hidden, text: b.textContent.trim(), disabled: b.disabled }; })()")
+    check("C17: #load-more reads 'Load older items' when the recent items are exhausted and an archive exists, never disabled at rest", lm["text"] == "Load older items" and not lm["hidden"] and not lm["disabled"], str(lm))
+    page.evaluate("document.getElementById('load-more').click()")
+    disabled_sync = page.evaluate("document.getElementById('load-more').disabled")
+    page.wait_for_function("() => document.getElementById('load-more').disabled === false && document.querySelector('#results').getAttribute('aria-busy') === 'false'", timeout=WAIT_MS)
+    check("C17: clicking 'Load older items' disables the button synchronously and re-enables it after archive.json", disabled_sync is True and page.evaluate("document.getElementById('load-more').disabled") is False)
+    errors.check("live data")
+    ctx.close()
+    # C18: the sources page polls the same way and renders rows only after stats settled
+    sctx = new_ctx(browser, viewport=DESKTOP)
+    spage = sctx.new_page()
+    sserved = Served(sctx, data)
+    spage.add_init_script("""
+      new MutationObserver(() => {
+        if (document.querySelector('#sources-table tbody tr:not(.skeleton)') && !window.__rowsAt) { window.__rowsAt = document.getElementById('last-refreshed').textContent; }
+      }).observe(document, { childList: true, subtree: true });
+    """)
+    spage.clock.install()
+    goto_sources(spage)
+    check("C18: sources.html requests stats.json once at load", sserved.counts["stats"] == 1, "%d" % sserved.counts["stats"])
+    spage.clock.fast_forward(300_000)
+    spage.wait_for_timeout(300)
+    check("C18: exactly one more stats.json request after 300 s", sserved.counts["stats"] == 2, "%d" % sserved.counts["stats"])
+    spage.clock.fast_forward(60_000)
+    spage.wait_for_timeout(300)
+    check("C18: none after a further 60 s", sserved.counts["stats"] == 2, "%d" % sserved.counts["stats"])
+    rows_at = spage.evaluate("window.__rowsAt")
+    check("C18: #last-refreshed was final when the first table row appeared", rows_at is not None and rows_at.startswith("Last refreshed") and "loading" not in rows_at, repr(rows_at))
+    sctx.close()
+
+
+def run_sort_view(browser):
+    """AC 15 (list/grid persisted, hidden on phones) + C5 (#sort wrapper + chevron)."""
+    for width in (768, 1280):
+        ctx = new_ctx(browser, viewport={"width": width, "height": 1024 if width == 768 else 900})
+        page = ctx.new_page()
+        goto_home(page)
+        c5 = page.evaluate("(() => { const s = document.getElementById('sort'); const w = s.closest('.select'); const use = w ? w.querySelector('svg use') : null; return { wrap: !!w, appearance: getComputedStyle(s).appearance, chevron: use ? use.getAttribute('href') : null }; })()")
+        check("C5 %dpx: #sort sits in a div.select wrapper with appearance:none and the chevron-down icon" % width, c5["wrap"] and c5["appearance"] == "none" and (c5["chevron"] or "").endswith("#chevron-down"), str(c5))
+        page.click("#view-list")
+        page.wait_for_function("() => document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
+        rows = page.evaluate("(() => { const cards = [...document.querySelectorAll('#results article.card')]; return { n: cards.length, rows: cards.filter((c) => c.classList.contains('card-row')).length, cols: new Set(cards.map((c) => Math.round(c.offsetLeft))).size, ellipsis: [...document.querySelectorAll('.meta-line')].every((m) => m.scrollWidth <= m.clientWidth), selectors: cards.every((a) => a.querySelector('h2 a') && a.querySelector('.badge-source') && a.querySelector('.badge:not(.badge-source):not(.badge-region)') && a.querySelector('.badge-region') && a.querySelector('time[datetime]')), stored: localStorage.getItem('sr:view') }; })()")
+        check("AC 15 %dpx: list view = single column of article.card.card-row, ellipsised meta line, snapshot selectors intact, sr:view=list" % width, rows["n"] >= 1 and rows["rows"] == rows["n"] and rows["cols"] == 1 and rows["ellipsis"] and rows["selectors"] and rows["stored"] == "list", str(rows))
+        page.reload(wait_until="domcontentloaded")
+        wait_cards(page)
+        check("AC 15 %dpx: the list choice survives a reload" % width, page.evaluate("document.getElementById('results').classList.contains('view-list')") and page.evaluate("document.getElementById('view-list').getAttribute('aria-pressed')") == "true")
+        page.click("#view-grid")
+        page.wait_for_function("() => !document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
+        ctx.close()
+    mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
+    mpage = mctx.new_page()
+    mpage.add_init_script("try { localStorage.setItem('sr:view', 'list'); } catch (e) {}")
+    goto_home(mpage)
+    m = mpage.evaluate("(() => ({ toggleVisible: document.getElementById('view-list').getBoundingClientRect().width > 0, listClass: document.getElementById('results').classList.contains('view-list'), rows: document.querySelectorAll('#results .card-row').length, stored: localStorage.getItem('sr:view') }))()")
+    check("AC 15 390px: the toggle is hidden and the grid card renders although sr:view=list is stored (never rewritten)", not m["toggleVisible"] and not m["listClass"] and m["rows"] == 0 and m["stored"] == "list", str(m))
+    mctx.close()
+
+
+def run_states(browser):
+    """AC 18-19: skeletons while loading, empty state, load error + Retry, stats failure tiles, sheet apply label (C17)."""
+    data = Data(browser.new_context().request)
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    served = Served(ctx, data)
+    served.hold.add("items")  # park items.json so the loading state is observable
+    page.goto(BASE + "/", wait_until="domcontentloaded")
+    page.wait_for_function("() => document.fonts.status === 'loaded'", timeout=WAIT_MS)
+    sk = page.evaluate("(() => ({ busy: document.getElementById('results').getAttribute('aria-busy'), skeletons: [...document.querySelectorAll('#results .card.skeleton')].filter((s) => s.getBoundingClientRect().height > 0).length, count: document.getElementById('result-count').textContent, pulsing: document.getAnimations().some((a) => a.effect.target.closest && a.effect.target.closest('.skeleton')) }))()")
+    check("AC 18: six skeleton cards visible while #results[aria-busy=true] and the count reads Loading", sk["busy"] == "true" and sk["skeletons"] == 6 and sk["count"].startswith("Loading") and sk["pulsing"], str(sk))
+    served.hold.discard("items")
+    served.release()
+    wait_cards(page)
+    check("AC 18: skeletons replaced by the first render", page.evaluate("document.querySelectorAll('#results .skeleton').length") == 0)
+    page.fill("#q", "zqxjkvwpyq")
+    wait_state(page, {"q": "zqxjkvwpyq"})
+    check("AC 18: empty state with #empty-reset", page.evaluate("!!document.querySelector('#results div.empty') && !!document.getElementById('empty-reset')") and page.evaluate("document.getElementById('result-count').textContent") == "No items match these filters.")
+    page.click("#empty-reset")
+    wait_state(page, {"q": ABSENT})
+    # items.json -> 500
+    ctx.unroute("**/data/items.json")
+    ctx.route("**/data/items.json", lambda route: route.fulfill(status=500, content_type="application/json", body=json.dumps({"error": "boom"})))
+    ctx.unroute("**/data/stats.json")
+    ctx.route("**/data/stats.json", lambda route: route.fulfill(status=500, content_type="application/json", body=json.dumps({"error": "boom"})))
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#results div.alert[role=alert]", timeout=WAIT_MS)
+    al = page.evaluate("(() => { const a = document.querySelector('#results .alert'); const b = document.getElementById('retry-items'); const bg = getComputedStyle(b).backgroundColor; const fill = getComputedStyle(document.documentElement).getPropertyValue('--accent-fill').trim(); const n = (h) => { const x = parseInt(h.slice(1), 16); return 'rgb(' + (x >> 16) + ', ' + ((x >> 8) & 255) + ', ' + (x & 255) + ')'; }; return { text: a.textContent, retry: !!b, bg, fill: n(fill), tiles: [...document.querySelectorAll('.stat-n')].map((t) => t.textContent), labels: [...document.querySelectorAll('.stat-l')].map((t) => t.textContent), status: document.getElementById('last-refreshed').textContent }; })()")
+    check("AC 18: items.json 500 -> div.alert 'Could not load items:' with a btn-primary #retry-items (--accent-fill)", al["text"].startswith("Could not load items:") and al["retry"] and al["bg"] == al["fill"], "%s | %s vs %s" % (al["text"][:60], al["bg"], al["fill"]))
+    check("AC 19: stats.json 500 -> the three stats tiles read an em dash with ' - unavailable', status 'Last refreshed: unknown'", al["tiles"][:3] == ["\u2014"] * 3 and all(l.endswith("\u00b7 unavailable") for l in al["labels"][:3]) and al["status"] == "Last refreshed: unknown", "%s %s %s" % (al["tiles"], al["labels"], al["status"]))
+    ctx.unroute("**/data/items.json")
+    ctx.route("**/data/items.json", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(data.items)))
+    page.click("#retry-items")
+    wait_cards(page)
+    check("AC 18: Retry recovers once items.json answers again", snapshot(page)["shown"] >= 1 and page.evaluate("document.querySelectorAll('#results .alert').length") == 0)
+    # The browser itself logs "Failed to load resource ... 500" for the routed failures; the app must not add console.error.
+    app_errors = [e for e in errors.errors if "Failed to load resource" not in e]
+    check("states: no page errors and no app console.error (browser resource-failure lines for the routed 500s excluded)", len(app_errors) == 0, "; ".join(app_errors)[:300] or "%d browser resource-failure lines ignored" % len(errors.errors))
+    ctx.close()
+    # C17 on the phone sheet: apply label
+    mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
+    mpage = mctx.new_page()
+    goto_home(mpage)
+    open_sheet(mpage)
+    label = mpage.evaluate("document.getElementById('filters-apply').textContent")
+    check("C17 390px: #filters-apply reads 'Show N items'", re.match(r"^Show \d+ items$", label) is not None, label)
+    mpage.evaluate("(() => { const q = document.getElementById('q'); q.value = 'zqxjkvwpyq'; q.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    mpage.wait_for_function("() => document.getElementById('filters-apply').textContent === 'No items match'", timeout=WAIT_MS)
+    check("C17 390px: #filters-apply reads 'No items match' when N = 0", True)
+    mpage.click("#filters-apply")
+    check("C17 390px: pressing Apply closes the sheet and returns focus to #filters-open", mpage.evaluate("document.getElementById('filter-panel').hidden") and active(mpage) == "filters-open", active(mpage))
+    mctx.close()
+
+
+def run_theme(browser):
+    """AC 11: dark default, light from the OS, toggle persisted, applied before the stylesheet on reload."""
+    for scheme, expect in (("dark", "dark"), ("light", "light"), ("no-preference", "dark")):
+        ctx = new_ctx(browser, viewport=DESKTOP, scheme=scheme)
+        page = ctx.new_page()
+        goto_home(page)
+        check("AC 11: color_scheme=%s with no stored preference -> html[data-theme=%s], theme-color meta matches" % (scheme, expect), page.evaluate("document.documentElement.dataset.theme") == expect and page.evaluate("document.querySelector('meta[name=theme-color]').content") == ("#F4F6FA" if expect == "light" else "#0B0F17"))
+        ctx.close()
+    ctx = new_ctx(browser, viewport=DESKTOP, scheme="dark")
+    page = ctx.new_page()
+    page.add_init_script("""
+      window.__themeAtFirstStyle = null;
+      new MutationObserver(() => {
+        if (window.__themeAtFirstStyle === null && document.querySelector('link[rel=stylesheet]')) window.__themeAtFirstStyle = document.documentElement.dataset.theme || 'unset';
+      }).observe(document, { childList: true, subtree: true, attributes: true });
+    """)
+    goto_home(page)
+    label_before = page.evaluate("document.getElementById('theme-toggle').getAttribute('aria-label')")
+    page.click("#theme-toggle")
+    t = page.evaluate("(() => ({ theme: document.documentElement.dataset.theme, stored: localStorage.getItem('sr:theme'), label: document.getElementById('theme-toggle').getAttribute('aria-label'), icon: document.querySelector('#theme-toggle use').getAttribute('href'), meta: document.querySelector('meta[name=theme-color]').content }))()")
+    check("AC 11: #theme-toggle flips to light, persists sr:theme, swaps icon + aria-label", t["theme"] == "light" and t["stored"] == "light" and t["label"] != label_before and t["icon"].endswith("#moon") and t["meta"] == "#F4F6FA", str(t))
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    check("AC 11: the stored theme is applied before the stylesheet on reload (no flash) and survives", page.evaluate("document.documentElement.dataset.theme") == "light" and page.evaluate("window.__themeAtFirstStyle") == "light", "theme at first stylesheet: %s" % page.evaluate("window.__themeAtFirstStyle"))
+    page.click("#theme-toggle")
+    check("AC 11: toggling back stores dark", page.evaluate("localStorage.getItem('sr:theme')") == "dark")
+    ctx.close()
+
+
+def run_fonts(browser):
+    """AC 12: both Geist families load from ./fonts/, nothing from a third-party origin."""
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    reqs = RequestLog(page)
+    for path, label in (("/", "home"), ("/sources.html", "sources")):
+        if path == "/":
+            goto_home(page)
+        else:
+            goto_sources(page)
+        f = page.evaluate("""async () => {
+          await document.fonts.load('16px "Geist Variable"'); await document.fonts.load('13px "Geist Mono Variable"'); await document.fonts.ready;
+          const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, '').startsWith('Geist')).map((f) => f.family.replace(/"/g, '') + ':' + f.status);
+          return { status: document.fonts.status, faces };
+        }""")
+        fonts_req = [u for u in reqs.all if "/fonts/" in u and u.endswith(".woff2")]
+        third = [u for u in reqs.all if not u.startswith(ORIGIN)]
+        check("AC 12 %s: document.fonts loaded, a loaded FontFace per Geist family, both woff2 requested, no third-party request" % label,
+              f["status"] == "loaded" and "Geist Variable:loaded" in f["faces"] and "Geist Mono Variable:loaded" in f["faces"] and any("geist-latin" in u for u in fonts_req) and any("geist-mono-latin" in u for u in fonts_req) and not third,
+              "%s; %d font requests; third-party %s" % (f["faces"], len(fonts_req), third[:2]))
+    ctx.close()
+
+
+def run_reduced_motion(browser):
+    """AC 8 + 13: with prefers-reduced-motion no animation runs; sweeps are paused, not removed; count-ups are instant."""
+    ctx = new_ctx(browser, viewport=DESKTOP, reduced_motion="reduce")
+    page = ctx.new_page()
+    running = lambda: page.evaluate("document.getAnimations().filter((a) => a.playState === 'running').length")
+    goto_home(page)
+    settle(page)
+    data = Data(ctx.request)
+    check("AC 8: no running animation after load under reduced motion; count-ups show the final values at once", running() == 0 and page.evaluate("document.querySelector('#stat-feed .stat-n').textContent") == data.feed_tile, "%d running" % running())
+    sweep = page.evaluate("(() => { const s = getComputedStyle(document.querySelector('.radar-mark .radar-sweep')); const p = getComputedStyle(document.querySelector('.radar-stage .radar-sweep')); return [s.animationName, s.animationPlayState, p.animationName, p.animationPlayState]; })()")
+    check("AC 13: the sweeps keep their keyframes but are paused", sweep[0] == "sweep" and sweep[1] == "paused" and sweep[2] == "sweep" and sweep[3] == "paused", str(sweep))
+    page.select_option("#kind", "funding")
+    wait_state(page, {"kind": "funding"})
+    check("AC 8: no running animation after a filter change", running() == 0, "%d" % running())
+    page.click("#results article h2 a")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    check("AC 8: no running animation with the drawer open", running() == 0, "%d" % running())
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    check("AC 8: no running animation after closing the drawer", running() == 0, "%d" % running())
+    page.evaluate("document.getElementById('new-items').hidden = false")
+    check("AC 8: no running animation when the pill appears", running() == 0, "%d" % running())
+    ctx.close()
+    ctx2 = new_ctx(browser, viewport=DESKTOP)
+    page2 = ctx2.new_page()
+    goto_home(page2)
+    sweep = page2.evaluate("(() => [getComputedStyle(document.querySelector('.radar-mark .radar-sweep')).animationPlayState, getComputedStyle(document.querySelector('.radar-stage .radar-sweep')).animationPlayState])()")
+    check("AC 13: without reduced motion both sweeps run", sweep == ["running", "running"], str(sweep))
+    cross = page2.evaluate("(() => { const c = document.querySelector('.radar-cross'); return [getComputedStyle(c).backgroundImage, getComputedStyle(c, '::before').borderTopWidth, getComputedStyle(c, '::after').borderLeftWidth]; })()")
+    check("AC 13: crosshairs are pseudo-element borders, no background image", cross[0] == "none" and cross[1] == "1px" and cross[2] == "1px", str(cross))
+    ctx2.close()
+
+
+RADAR_JS = r"""
+() => {
+  const px = (v) => parseFloat(v) || 0;
+  const svg = document.querySelector('svg.radar');
+  const plates = [];
+  for (const t of svg.querySelectorAll('text')) {
+    const p = t.previousElementSibling;
+    const bb = t.getBBox();
+    const ok = !!p && p.matches('rect.radar-plate');
+    const x = ok ? +p.getAttribute('x') : NaN, y = ok ? +p.getAttribute('y') : NaN, w = ok ? +p.getAttribute('width') : NaN, h = ok ? +p.getAttribute('height') : NaN;
+    plates.push({ text: t.textContent, ok, contains: ok && x <= bb.x + 0.5 && y <= bb.y + 0.5 && x + w >= bb.x + bb.width - 0.5 && y + h >= bb.y + bb.height - 0.5, inside: ok && x >= 0 && y >= 0 && x + w <= 360 && y + h <= 360, fill: ok ? getComputedStyle(p).fill : null });
+  }
+  const bg1 = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim();
+  const outside = [...svg.querySelectorAll('*')].filter((el) => el.getBBox && (() => { const b = el.getBBox(); return b.width > 0 && (b.x < -0.01 || b.y < -0.01 || b.x + b.width > 360.01 || b.y + b.height > 360.01); })()).map((el) => el.tagName + ':' + (el.textContent || el.getAttribute('class')));
+  const blips = [...svg.querySelectorAll('circle.blip')].map((c) => ({ key: c.dataset.key, cx: +c.getAttribute('cx'), cy: +c.getAttribute('cy'), r: +c.getAttribute('r'), fresh: c.classList.contains('is-fresh'), fill: c.getAttribute('fill') }));
+  let trough = null;
+  for (const sheet of document.styleSheets) { try { for (const rule of sheet.cssRules) { if (rule.type === CSSRule.KEYFRAMES_RULE && rule.name === 'pulse') { for (const k of rule.cssRules) { const o = parseFloat(k.style.opacity); if (!Number.isNaN(o)) trough = trough === null ? o : Math.min(trough, o); } } } } catch (e) {} }
+  return { display: getComputedStyle(document.getElementById('radar-panel')).display, plates, bg1, outside, blips, trough, title: document.getElementById('radar-title').textContent, transform: getComputedStyle(document.getElementById('radar-title')).textTransform };
+}
+"""
+
+
+def quadrant_of(kind):
+    return KIND_ORDER.index(kind) if kind in KIND_ORDER else 2
+
+
+def run_radar(browser):
+    """AC 20 + R2 (plates survive a hidden-panel load) + C19 (plates inside the viewBox)."""
+    data = Data(browser.new_context().request)
+    ctx = new_ctx(browser, viewport=MOBILE)  # desktop context (fine pointer) at a phone width: the panel is hidden
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    goto_home(page)
+    r0 = page.evaluate("getComputedStyle(document.getElementById('radar-panel')).display")
+    check("R2: #radar-panel is display:none at 390px", r0 == "none", r0)
+    page.set_viewport_size(DESKTOP)
+    page.wait_for_function("() => getComputedStyle(document.getElementById('radar-panel')).display !== 'none' && document.querySelectorAll('circle.blip').length > 0", timeout=WAIT_MS)
+    page.wait_for_timeout(300)
+    r = page.evaluate(RADAR_JS)
+    plate_ok = all(p["ok"] and p["contains"] and p["inside"] for p in r["plates"]) and len(r["plates"]) == 7
+    check("R2: after growing 390 -> 1280 every svg.radar text sits on a plate that contains its bbox, inside 0-360", plate_ok and not r["outside"], "%d plates; outside %s; %s" % (len(r["plates"]), r["outside"][:3], [(p["text"], p["contains"], p["inside"]) for p in r["plates"] if not (p["contains"] and p["inside"])]))
+    ctx.close()
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    goto_home(page)
+    page.wait_for_function("() => document.querySelectorAll('circle.blip').length > 0", timeout=WAIT_MS)
+    r = page.evaluate(RADAR_JS)
+    now = datetime.now(timezone.utc)
+    n48 = data.within_48h(now)
+    bad_geo = []
+    ages = []
+    for b in r["blips"]:
+        it = data.by_key.get(b["key"])
+        if not it:
+            bad_geo.append("unknown key " + b["key"])
+            continue
+        dx, dy = b["cx"] - 180, b["cy"] - 180
+        dist = (dx * dx + dy * dy) ** 0.5
+        ang = (180 / 3.141592653589793) * __import__("math").atan2(dx, -dy)
+        if ang < 0:
+            ang += 360
+        q = int(ang // 90)
+        if not (14.9 <= dist <= 150.1):
+            bad_geo.append("%s dist %.1f" % (b["key"], dist))
+        if q != quadrant_of(it["kind"]) and abs(ang - (quadrant_of(it["kind"]) * 90 + 45)) > 48:
+            bad_geo.append("%s quadrant %d for %s" % (b["key"], q, it["kind"]))
+        try:
+            ages.append(((now - parse_iso(it["publishedAt"])).total_seconds() / 3600, dist))
+        except Exception:
+            pass
+    ages.sort()
+    monotonic = all(ages[i][1] <= ages[i + 1][1] + 0.6 for i in range(len(ages) - 1))
+    m = re.search(r"(\d+) items?", r["title"], re.I)
+    check("AC 20 1280px: one blip per item within 48 h (<= 400), radii 15-150, quadrant by kind, radius monotonic with age", len(r["blips"]) == min(n48, 400) and not bad_geo and monotonic, "%d blips vs %d within 48 h; %s" % (len(r["blips"]), n48, bad_geo[:3]))
+    check("AC 20: #radar-title counts the 48 h items (text-transform uppercase, DOM text sentence case)", m is not None and abs(int(m.group(1)) - n48) <= 2 and r["transform"] == "uppercase" and r["title"].startswith("Last 48 h"), r["title"])
+    plates_contain = all(p["ok"] and p["contains"] and p["inside"] and p["fill"] for p in r["plates"])
+    fill_ok = all(p["fill"].replace(" ", "") == page.evaluate("(() => { const c = document.createElement('div'); c.style.color = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim(); document.body.append(c); const v = getComputedStyle(c).color; c.remove(); return v; })()").replace(" ", "") for p in r["plates"])
+    check("AC 20/C19: every svg.radar text is preceded by rect.radar-plate (fill --bg-1) containing its bbox; nothing outside the viewBox", plates_contain and fill_ok and not r["outside"], "%d plates, fill %s, outside %s" % (len(r["plates"]), r["plates"][0]["fill"] if r["plates"] else None, r["outside"][:3]))
+    check("AC 20: fresh-blip pulse trough is 0.75", r["trough"] == 0.75, str(r["trough"]))
+    page.keyboard.press("t")
+    page.wait_for_timeout(200)
+    r2 = page.evaluate(RADAR_JS)
+    check("R2: plates survive the theme toggle (still contain their text, fill follows --bg-1)", all(p["contains"] and p["inside"] for p in r2["plates"]) and r2["plates"][0]["fill"] != r["plates"][0]["fill"], "%s -> %s" % (r["plates"][0]["fill"], r2["plates"][0]["fill"]))
+    page.keyboard.press("t")
+    # hover + click + focus return (blips overlap: the target is whatever blip is topmost at the pointer)
+    blip = r["blips"][0]
+    box = page.evaluate("document.querySelector('svg.radar').getBoundingClientRect().toJSON()")
+    scale = box["width"] / 360
+    x, y = box["x"] + blip["cx"] * scale, box["y"] + blip["cy"] * scale
+    hit_key = page.evaluate("([x, y]) => { const el = document.elementFromPoint(x, y); return el && el.classList.contains('blip') ? el.dataset.key : null; }", [x, y])
+    page.mouse.move(x, y)
+    page.wait_for_function("() => !document.querySelector('.radar-tip').hidden", timeout=WAIT_MS)
+    tip = page.evaluate("(() => { const t = document.querySelector('.radar-tip'); const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg-2').trim(); const c = document.createElement('div'); c.style.color = bg2; document.body.append(c); const v = getComputedStyle(c).color; c.remove(); return { bg: getComputedStyle(t).backgroundColor, bg2: v, title: t.querySelector('.tip-title').textContent, role: t.getAttribute('role') }; })()")
+    check("AC 20: hovering a blip shows .radar-tip on --bg-2 with that item's title", hit_key in data.by_key and tip["bg"] == tip["bg2"] and tip["title"] == data.by_key[hit_key]["title"] and tip["role"] == "tooltip", "%s | %s" % (tip["title"][:50], data.by_key.get(hit_key, {}).get("title", "?")[:50]))
+    page.mouse.click(x, y)
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    check("AC 20: clicking a blip opens the drawer for that item (open blip highlighted r=5)", page.evaluate("new URLSearchParams(location.search).get('item')") == hit_key and page.evaluate("document.querySelector('circle.blip.is-open').getAttribute('r')") == "5", "%s vs %s" % (page.evaluate("new URLSearchParams(location.search).get('item')"), hit_key))
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    page.wait_for_timeout(300)
+    check("AC 20: after Esc focus returns to #radar-panel (returnTo = radar)", active(page) == "radar-panel", active(page))
+    errors.check("radar")
+    ctx.close()
+
+
+def run_sources_layout(browser):
+    """AC 21: table semantics at 1280, stacked cards with td::before labels at 390, values equal sources.json."""
+    data = Data(browser.new_context().request)
+    by_name = {s["name"]: s for s in data.sources["sources"]}
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    goto_sources(page)
+    t = page.evaluate("(() => ({ role: document.getElementById('sources-table').getAttribute('role'), rowheaders: document.querySelectorAll('#sources-table tbody th[role=rowheader]').length, rows: document.querySelectorAll('#sources-table tbody tr').length, strip: document.querySelectorAll('ul.status-strip li').length, status: document.getElementById('status').textContent, explore: [...document.querySelectorAll('#explore-list li a')].every((a) => a.target === '_blank' && a.rel === 'noopener noreferrer'), caption: document.querySelector('#sources-table caption').textContent }))()")
+    check("AC 21 1280px: role=table with a rowheader per row, caption, 3 status tiles, status text, explore links rel", t["role"] == "table" and t["rowheaders"] == t["rows"] == len(data.sources["sources"]) and t["strip"] == 3 and re.match(r"^\d+ configured, \d+ enabled\.$", t["status"]) and t["explore"] and t["caption"] == "Configured sources", str(t))
+    ctx.close()
+    mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
+    mpage = mctx.new_page()
+    goto_sources(mpage)
+    m = mpage.evaluate("(() => { const rows = [...document.querySelectorAll('#sources-table tbody tr')]; return rows.map((tr) => ({ name: tr.querySelector('th').textContent.trim(), display: getComputedStyle(tr).display, cells: [...tr.querySelectorAll('td')].map((td) => ({ label: td.dataset.label, before: getComputedStyle(td, '::before').content, text: td.textContent.trim(), display: getComputedStyle(td).display })) })); })()")
+    labels_ok = all(r["display"] == "block" and all(c["display"] == "flex" and c["before"] == '"%s"' % c["label"] for c in r["cells"]) for r in m)
+    values_ok = all(r["cells"][0]["text"].endswith("Yes") == bool(by_name[r["name"]]["enabled"]) and r["cells"][5]["text"] == str(by_name[r["name"]]["itemCount"]) for r in m if r["name"] in by_name)
+    check("AC 21 390px: every row is a stacked card, td::before shows data-label, Enabled/Items textContent equal sources.json", labels_ok and values_ok and len(m) == len(data.sources["sources"]), "%d rows" % len(m))
+    mctx.close()
+
+
+SW_STATE_JS = r"""
+async () => {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const keys = await caches.keys();
+  const shell = keys.filter((k) => k.startsWith('sr-shell-'));
+  let cached = [];
+  if (shell.length) { const c = await caches.open(shell[0]); cached = (await c.keys()).map((r) => r.url); }
+  return { scope: reg ? reg.scope : null, controlled: !!navigator.serviceWorker.controller, keys, shell, cached, waiting: !!(reg && reg.waiting) };
+}
+"""
+
+
+def run_sw(browser, parity):
+    """AC 32-36: registration under the real scope, versioned precache, data navigations untouched, offline shell, update flow."""
+    mode = "parity" if parity else "smoke"
+    ctx = new_ctx(browser, viewport=DESKTOP, sw=True)
+    page = ctx.new_page()
+    # both pages declare <link rel="icon">; the /favicon.ico probe (404 on every host) only comes from this
+    # scenario's own top-level navigations to ./data/items.json and ./manifest.webmanifest
+    errors = ErrorLog(page, ignore_urls=("/favicon.ico",))
+    loads = []
+    page.on("load", lambda: loads.append(page.url))
+    goto_home(page)
+    base = snapshot(page)
+    page.wait_for_function("() => navigator.serviceWorker.controller !== null", timeout=WAIT_MS)
+    page.wait_for_function("async () => (await caches.keys()).some((k) => k.startsWith('sr-shell-'))", timeout=WAIT_MS)
+    page.wait_for_function("async () => { const k = (await caches.keys()).find((x) => x.startsWith('sr-shell-')); if (!k) return false; const c = await caches.open(k); return (await c.keys()).length >= %d; }" % len(SHELL), timeout=WAIT_MS)
+    s = page.evaluate(SW_STATE_JS)
+    scope_path = urlsplit(BASE + "/").path
+    version = s["shell"][0][len("sr-shell-"):] if s["shell"] else None
+    check("AC 34 %s: registration scope ends with %s, exactly one sr-shell-<v> cache, v != __BUILD_VERSION__" % (mode, scope_path), s["scope"] is not None and s["scope"].endswith(scope_path) and len(s["shell"]) == 1 and version and not version.startswith("__"), "scope %s, caches %s" % (s["scope"], s["keys"]))
+    expected_urls = set(BASE + "/" + u[2:] if u != "./" else BASE + "/" for u in SHELL)
+    cached = set(s["cached"])
+    check("AC 34 %s: every SHELL url is precached" % mode, expected_urls <= cached, "missing %s" % sorted(expected_urls - cached)[:4])
+    check("AC 34 %s: the page did not reload after the first install" % mode, len(loads) <= 1, "%d loads" % len(loads))
+    sw_text = ctx.request.get(BASE + "/sw.js").text()
+    check("AC 33/36 %s: sw.js served with the version, no forbidden literals, no importScripts/Workbox import, cache:'reload' precache" % mode, "__BUILD_VERSION__" not in sw_text and not re.search(r"""['"]/(api|data)/""", sw_text) and "importScripts" not in sw_text and not re.search(r"workbox[-./]", sw_text, re.I) and "cache: 'reload'" in sw_text and ("'%s'" % version) in sw_text, "version %s" % version)
+    # top-level navigations to data / manifest are not intercepted
+    resp = page.goto(BASE + "/data/items.json", wait_until="domcontentloaded")
+    body_is_array = page.evaluate("(() => { try { return Array.isArray(JSON.parse(document.body.textContent)); } catch (e) { return false; } })()")
+    check("AC 34 %s: navigating to ./data/items.json returns application/json (an array), not the shell" % mode, resp is not None and "application/json" in (resp.headers.get("content-type") or "") and body_is_array, resp.headers.get("content-type") if resp else None)
+    resp = page.goto(BASE + "/manifest.webmanifest", wait_until="domcontentloaded")
+    check("AC 34 %s: navigating to ./manifest.webmanifest returns the manifest" % mode, resp is not None and "manifest" in (resp.headers.get("content-type") or "") and '"start_url": "./"' in page.evaluate("document.body.textContent"), resp.headers.get("content-type") if resp else None)
+    page.goto(BASE + "/?item=" + base["cards"][0]["key"], wait_until="domcontentloaded")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    check("AC 34 %s: ?item=<key> opens the drawer under service-worker control" % mode, True)
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    if parity:
+        api = page.evaluate("async () => { const before = (await (await caches.open('sr-data')).keys()).length; const r = await fetch('./api/stats'); const j = await r.json(); const after = (await (await caches.open('sr-data')).keys()).length; return { ok: r.ok, items: typeof j.items, hdr: r.headers.get('X-Startup-Radar-Cache'), hdr2: r.headers.get('X-Startup-Radar-Cached-At'), before, after }; }")
+        check("AC 36 parity: fetch('./api/stats') is not intercepted (no X-Startup-Radar-Cache* headers, sr-data unchanged)", api["ok"] and api["items"] == "number" and api["hdr"] is None and api["hdr2"] is None and api["before"] == api["after"], str(api))
+    # offline: the page goes offline through Playwright, the worker's own fetch is made to fail (set_offline does not reach it)
+    worker_offline(ctx, True)
+    ctx.set_offline(True)
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    off = page.evaluate("(() => ({ note: document.getElementById('offline-note').hidden ? null : document.getElementById('offline-note').textContent, toasts: document.querySelectorAll('#toasts .toast').length, cards: document.querySelectorAll('#results article').length }))()")
+    check("AC 34 %s: offline reload renders the cached shell + cached data with #offline-note and no toast" % mode, off["cards"] >= 1 and off["note"] is not None and off["note"].startswith("Offline \u2014 showing data cached") and off["toasts"] == 0, str(off))
+    page.goto(BASE + "/sources.html", wait_until="domcontentloaded")
+    page.wait_for_selector("#sources-table tbody tr:not(.skeleton)", timeout=WAIT_MS)
+    check("AC 34 %s: ./sources.html renders offline from the precache" % mode, page.evaluate("document.querySelectorAll('#sources-table tbody tr:not(.skeleton)').length") >= 1)
+    ctx.set_offline(False)
+    worker_offline(ctx, False)
+    page.goto(BASE + "/", wait_until="load")
+    wait_cards(page)
+    check("AC 34 %s: back online the offline note disappears" % mode, page.evaluate("document.getElementById('offline-note').hidden") is True)
+    # update flow: a new sw.js version must yield the toast; Reload activates it exactly once.
+    # Browsers fetch sw.js outside page routing, so the new version is really deployed: on disk in smoke mode
+    # (STATIC_ROOT, the cache name changes), or in parity mode by registering the same script under a query string
+    # (a new URL is a new version to the browser; Express serves one sw.js version per process, so the cache name
+    # cannot change there). In both modes the running worker is marked first, so "a new, unmarked worker instance
+    # controls the page and the marked one is gone" proves the activation independently of the cache name.
+    new_version = "harness-%d" % int(time.time())
+    restore = None
+    for w in ctx.service_workers:
+        try:
+            w.evaluate("() => { self.__harnessOld = true; }")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def live_workers():
+        out = []
+        for w in ctx.service_workers:
+            try:
+                out.append((w.url, w.evaluate("() => self.__harnessOld === true")))
+            except Exception:  # noqa: BLE001 - a redundant/stopped worker
+                pass
+        return out
+    if not parity and STATIC_ROOT:
+        sw_path = Path(STATIC_ROOT) / "sw.js"
+        restore = sw_path.read_text(encoding="utf-8")
+        sw_path.write_text(sw_text.replace("'%s'" % version, "'%s'" % new_version), encoding="utf-8")
+        trigger = lambda: page.reload(wait_until="domcontentloaded")
+        expect_cache = "sr-shell-" + new_version
+    else:
+        trigger = lambda: page.evaluate("() => navigator.serviceWorker.register('./sw.js?harness=%s', { scope: './' })" % new_version)
+        expect_cache = "sr-shell-" + version
+    try:
+        trigger()
+        page.wait_for_selector("#toasts .toast.update", timeout=WAIT_MS)
+        txt = page.evaluate("document.querySelector('#toasts .toast.update p').textContent")
+        check("AC 35 %s: a new sw.js version yields the persistent 'Update available' toast" % mode, txt == "Update available \u2014 Reload", txt)
+        page.click("#toasts .toast.update .toast-close")
+        page.wait_for_timeout(500)
+        check("AC 35 %s: dismissing does not reload" % mode, page.evaluate("performance.getEntriesByType('navigation').length") == 1 and page.evaluate("document.querySelectorAll('#toasts .toast').length") == 0)
+        page.reload(wait_until="domcontentloaded")
+        wait_cards(page)
+        page.wait_for_selector("#toasts .toast.update", timeout=WAIT_MS)
+        check("AC 35 %s: the toast comes back on the next load while the worker is waiting" % mode, page.evaluate("(async () => !!(await navigator.serviceWorker.getRegistration()).waiting)()"))
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=WAIT_MS):
+            page.click("#toasts .toast.update .toast-action")
+        wait_cards(page)
+        page.wait_for_function("async () => { const k = await caches.keys(); return k.filter((x) => x.startsWith('sr-shell-')).length === 1 && k.includes('%s'); }" % expect_cache, timeout=WAIT_MS)
+        deadline = time.time() + WAIT_MS / 1000
+        workers = live_workers()
+        while time.time() < deadline and (any(old for _, old in workers) or len(workers) != 1):
+            page.wait_for_timeout(250)
+            workers = live_workers()
+        s2 = page.evaluate(SW_STATE_JS)
+        active_url = page.evaluate("async () => (await navigator.serviceWorker.getRegistration()).active.scriptURL")
+        controlled = page.evaluate("() => navigator.serviceWorker.controller !== null && navigator.serviceWorker.controller.scriptURL.endsWith('/sw.js')")
+        how = "cache swapped to " + expect_cache if restore is not None else "same version " + version + ", a new worker instance took over"
+        check("AC 35 %s: Reload activates the new worker exactly once (%s); shell caches: %s" % (mode, how, s2["shell"]), s2["shell"] == [expect_cache] and controlled and len(workers) == 1 and not workers[0][1] and page.evaluate("performance.getEntriesByType('navigation').length") == 1 and not s2["waiting"], "active %s, running workers %s" % (active_url, workers))
+    finally:
+        if restore is not None:
+            Path(STATIC_ROOT, "sw.js").write_text(restore, encoding="utf-8")
+    errors.check("service worker %s" % mode)
+    ctx.close()
+    # installability (Lighthouse 13 has no PWA category; CDP is the substitute). Incognito-like contexts always report
+    # "in-incognito", so this runs in a persistent (non-incognito) profile.
+    import tempfile
+    with tempfile.TemporaryDirectory() as profile:
+        pctx = browser_type_launch_persistent(profile)
+        try:
+            ppage = pctx.pages[0] if pctx.pages else pctx.new_page()
+            ppage.goto(BASE + "/", wait_until="load")
+            wait_cards(ppage)
+            ppage.wait_for_function("() => navigator.serviceWorker.controller !== null", timeout=WAIT_MS)
+            cdp = pctx.new_cdp_session(ppage)
+            errs = cdp.send("Page.getInstallabilityErrors").get("installabilityErrors", [])
+            print("installabilityErrors (%s, persistent profile): %s" % (mode, json.dumps(errs)))
+            check("AC 32 %s: CDP Page.getInstallabilityErrors is empty in a persistent profile" % mode, errs == [], json.dumps(errs)[:300])
+        except Exception as e:  # noqa: BLE001
+            check("AC 32 %s: CDP Page.getInstallabilityErrors" % mode, False, str(e)[:200])
+        finally:
+            pctx.close()
+
+
+def run_wide_light_shots(browser):
+    """home-dark.png (1920x1080, dark) and home-light.png (1280x900, light)."""
+    ctx = new_ctx(browser, viewport=WIDE)
+    page = ctx.new_page()
+    goto_home(page)
+    shot(page, "home-dark.png")
+    ctx.close()
+    ctx = new_ctx(browser, viewport=DESKTOP, scheme="light")
+    page = ctx.new_page()
+    goto_home(page)
+    shot(page, "home-light.png")
+    ctx.close()
 
 
 def check_files():
@@ -828,6 +2503,10 @@ def check_files():
         "home-filtered.png": (DESKTOP["width"], DESKTOP["height"]),
         "sources.png": (DESKTOP["width"], DESKTOP["height"]),
         "home-mobile.png": (MOBILE["width"] * MOBILE_SCALE, MOBILE["height"] * MOBILE_SCALE),
+        "home-dark.png": (WIDE["width"], WIDE["height"]),
+        "home-light.png": (DESKTOP["width"], DESKTOP["height"]),
+        "detail.png": (DESKTOP["width"], DESKTOP["height"]),
+        "home-mobile-sheet.png": (MOBILE["width"] * MOBILE_SCALE, MOBILE["height"] * MOBILE_SCALE),
     }
     for name, (w, h) in expected.items():
         path = OUT / name
@@ -840,6 +2519,41 @@ def check_files():
         )
 
 
+PARITY_SCENARIOS = [
+    ("run_home_desktop", lambda b: run_home_desktop(b)),
+    ("run_sources_desktop", run_sources_desktop),
+    ("run_mobile", run_mobile),
+    ("run_wide_light_shots", run_wide_light_shots),
+    ("run_matrix_dark", lambda b: run_matrix(b, "dark")),
+    ("run_matrix_light", lambda b: run_matrix(b, "light")),
+    ("run_sticky", run_sticky),
+    ("run_topbar_budget", run_topbar_budget),
+    ("run_theme", run_theme),
+    ("run_fonts", run_fonts),
+    ("run_reduced_motion", run_reduced_motion),
+    ("run_drawer", run_drawer),
+    ("run_keyboard", run_keyboard),
+    ("run_live_data", run_live_data),
+    ("run_sort_view", run_sort_view),
+    ("run_states", run_states),
+    ("run_radar", run_radar),
+    ("run_sources_layout", run_sources_layout),
+    ("run_sw", lambda b: run_sw(b, True)),
+]
+SMOKE_SCENARIOS = [
+    ("run_live_smoke", run_live_smoke),
+    ("run_sw", lambda b: run_sw(b, False)),
+]
+
+
+PLAYWRIGHT = {"p": None}
+
+
+def browser_type_launch_persistent(profile_dir):
+    """A non-incognito context (the installability check reports in-incognito for ordinary contexts)."""
+    return PLAYWRIGHT["p"].chromium.launch_persistent_context(profile_dir, headless=True, channel=CHANNEL, viewport=DESKTOP, color_scheme="dark")
+
+
 def main():
     print("base url: %s" % BASE)
     print("mode:     %s" % ("smoke (SMOKE_ONLY=1, no screenshots)" if SMOKE_ONLY else "parity (compares the UI with /api/items)"))
@@ -849,19 +2563,24 @@ def main():
     print("channel:  %s" % CHANNEL)
     print("")
 
+    scenarios = SMOKE_SCENARIOS if SMOKE_ONLY else PARITY_SCENARIOS
+    if SCENARIOS:
+        wanted = set(SCENARIOS)
+        scenarios = [(n, f) for n, f in scenarios if n in wanted or n.replace("_dark", "").replace("_light", "") in wanted]
     with sync_playwright() as p:
+        PLAYWRIGHT["p"] = p
         browser = p.chromium.launch(headless=True, channel=CHANNEL)
         try:
-            if SMOKE_ONLY:
-                run_live_smoke(browser)
-            else:
-                run_home_desktop(browser)
-                run_sources_desktop(browser)
-                run_mobile(browser)
+            for name, fn in scenarios:
+                print("== %s" % name)
+                try:
+                    fn(browser)
+                except Exception as e:  # noqa: BLE001 - one broken scenario must not hide the others
+                    check("%s completed without an exception" % name, False, ("%s: %s" % (type(e).__name__, e)).replace("\n", " ")[:400])
         finally:
             browser.close()
 
-    if not SMOKE_ONLY:
+    if not SMOKE_ONLY and not SCENARIOS:
         check_files()
 
     failed = results.count(False)
