@@ -43,6 +43,7 @@ horizontal overflow, honest numbers and the review findings of
 """
 
 import json
+import math
 import os
 import re
 import struct
@@ -2252,7 +2253,7 @@ RADAR_JS = r"""
   }
   const bg1 = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim();
   const outside = [...svg.querySelectorAll('*')].filter((el) => el.getBBox && (() => { const b = el.getBBox(); return b.width > 0 && (b.x < -0.01 || b.y < -0.01 || b.x + b.width > 360.01 || b.y + b.height > 360.01); })()).map((el) => el.tagName + ':' + (el.textContent || el.getAttribute('class')));
-  const blips = [...svg.querySelectorAll('circle.blip')].map((c) => ({ key: c.dataset.key, cx: +c.getAttribute('cx'), cy: +c.getAttribute('cy'), r: +c.getAttribute('r'), fresh: c.classList.contains('is-fresh'), fill: c.getAttribute('fill') }));
+  const blips = [...svg.querySelectorAll('circle.blip')].map((c) => ({ key: c.dataset.key, cx: +c.getAttribute('cx'), cy: +c.getAttribute('cy'), r: +c.getAttribute('r'), fresh: c.classList.contains('is-fresh'), open: c.classList.contains('is-open'), fill: c.getAttribute('fill'), fillOpacity: +c.getAttribute('fill-opacity'), computedOpacity: +getComputedStyle(c).fillOpacity, strokeWidth: +c.getAttribute('stroke-width') }));
   let trough = null;
   for (const sheet of document.styleSheets) { try { for (const rule of sheet.cssRules) { if (rule.type === CSSRule.KEYFRAMES_RULE && rule.name === 'pulse') { for (const k of rule.cssRules) { const o = parseFloat(k.style.opacity); if (!Number.isNaN(o)) trough = trough === null ? o : Math.min(trough, o); } } } } catch (e) {} }
   const textLayer = svg.querySelector('g.radar-text');
@@ -2314,6 +2315,144 @@ def quadrant_of(kind):
     return KIND_ORDER.index(kind) if kind in KIND_ORDER else 2
 
 
+# --- radar fan fix: the allocation model of public/radar.js, ported so the drawn blips can be checked against it ----
+RADAR_R = 150.0
+MIN_SLOT_DEG = 6.0
+MAJORITY_DEG = 45.0
+SLOT_PAD_DEG = 1.5
+LINE_CLEAR = 4.5
+CAPTION_CLEAR = 17.0
+MIN_SECTOR_DEG = 14.0
+RADIAL_JITTER = 2.0
+MIN_GAP = 0.5
+DENSITY_TIERS = [(20, 3.0, 0.9), (60, 2.5, 0.75), (10 ** 9, 2.0, 0.6)]  # (max bucket size, blip r, fill-opacity)
+
+
+def sector_span(kind, r=RADAR_R):
+    """Same as sectorSpan() in public/radar.js: the quadrant minus the line clearance (caption clearance at 270)."""
+    q0 = quadrant_of(kind) * 90
+    line = math.degrees(math.asin(min(1.0, LINE_CLEAR / max(r, 1e-9))))
+    channel = min(math.degrees(math.asin(min(1.0, CAPTION_CLEAR / max(r, 1e-9)))), 90 - line - MIN_SECTOR_DEG)
+    return (q0 + (channel if q0 == 270 else line), q0 + 90 - (channel if q0 + 90 == 270 else line))
+
+
+def allocate_slots(counts, width, min_deg=MIN_SLOT_DEG):
+    """Same as allocateSlots() in public/radar.js: sqrt(count) shares of width, >= min_deg when non-empty, 0 when empty,
+    >= MAJORITY_DEG for a bucket holding at least half of the items (as far as the other floors allow), summing to width."""
+    out = [0.0] * len(counts)
+    free = [i for i, c in enumerate(counts) if c > 0]
+    if not free:
+        return out
+    equal = len(free) * min_deg >= width
+    weight = (lambda i: 1.0) if equal else (lambda i: math.sqrt(counts[i]))
+    items = sum(counts[i] for i in free)
+    top = max(free, key=lambda i: counts[i])
+    majority = max(min_deg, min(MAJORITY_DEG, width - (len(free) - 1) * min_deg))
+    floor = lambda i: majority if i == top and counts[i] * 2 >= items else min_deg  # noqa: E731
+    rest = width
+    while not equal:
+        total = sum(weight(i) for i in free)
+        starved = [i for i in free if weight(i) / total * rest < floor(i)]
+        if not starved or len(starved) == len(free):
+            break
+        for i in starved:
+            out[i] = floor(i)
+            rest -= floor(i)
+        free = [i for i in free if i not in starved]
+    total = sum(weight(i) for i in free)
+    for i in free:
+        out[i] = weight(i) / total * rest
+    return out
+
+
+def slot_spans(kind, counts, r):
+    a, z = sector_span(kind, r)
+    spans = []
+    for w in allocate_slots(counts, z - a):
+        spans.append((a, a + w))
+        a += w
+    return spans
+
+
+def density_tier(n):
+    for max_n, br, op in DENSITY_TIERS:
+        if n <= max_n:
+            return br, op
+    return DENSITY_TIERS[-1][1:]
+
+
+def bbox_hits(r, blip_r=None):
+    """Blips whose bounding box (cx +/- r, cy +/- r; `blip_r` overrides the drawn radius) intersects a ring-caption plate's box."""
+    hits = []
+    for b in r["blips"]:
+        rr = blip_r if blip_r is not None else b["r"]
+        for p in r["plates"]:
+            if not p["caption"]:
+                continue
+            if not (b["cx"] + rr <= p["x"] or b["cx"] - rr >= p["x"] + p["w"] or b["cy"] + rr <= p["y"] or b["cy"] - rr >= p["y"] + p["h"]):
+                hits.append("%s over '%s'" % (b["key"], p["text"]))
+    return hits
+
+
+def close_pairs(blips, gap=MIN_GAP):
+    out = []
+    for i in range(len(blips)):
+        for j in range(i + 1, len(blips)):
+            if math.hypot(blips[i]["cx"] - blips[j]["cx"], blips[i]["cy"] - blips[j]["cy"]) < gap:
+                out.append((blips[i]["key"], blips[j]["key"]))
+    return out
+
+
+def fan_checks(label, r, by_key):
+    """Radar fan fix (F1-F5) for the drawn blips: sub-wedge allocation, de-stacking, caption boxes, density tiers, pointer target."""
+    groups = {}
+    for b in r["blips"]:
+        it = by_key.get(b["key"])
+        if it:
+            groups.setdefault((it["kind"] if it["kind"] in KIND_ORDER else "news", it["region"] if it["region"] in REGION_ORDER else "global"), []).append(b)
+    widest = None
+    outside = []
+    tier_bad = []
+    target_bad = []
+    for kind in KIND_ORDER:
+        counts = [len(groups.get((kind, reg), [])) for reg in REGION_ORDER]
+        n = sum(counts)
+        if not n:
+            continue
+        a, z = sector_span(kind)
+        widths = allocate_slots(counts, z - a)
+        i = max(range(len(counts)), key=lambda k: counts[k])
+        angles = [blip_angle(b) for b in groups[(kind, REGION_ORDER[i])]]
+        row = (kind, REGION_ORDER[i], counts[i], n, widths[i], max(angles) - min(angles))
+        if widest is None or row[2] > widest[2]:
+            widest = row
+        if counts[i] * 2 >= n:
+            check("F1 %s: the largest bucket %s/%s holds %d of %d items -> its allocated sub-wedge is >= 45 deg" % (label, kind, REGION_ORDER[i], counts[i], n), widths[i] >= 45, "%.1f deg allocated (sector %.1f deg), blips span %.1f deg" % (widths[i], z - a, row[5]))
+        for ri, reg in enumerate(REGION_ORDER):
+            exp_r, exp_op = density_tier(counts[ri])
+            for b in groups.get((kind, reg), []):
+                dist = math.hypot(b["cx"] - 180, b["cy"] - 180)
+                s0, s1 = slot_spans(kind, counts, dist)[ri]
+                pad = min(SLOT_PAD_DEG, (s1 - s0) / 4)
+                ang = blip_angle(b)
+                if not (s0 + pad - 0.02 <= ang <= s1 - pad + 0.02):
+                    outside.append("%s %s/%s %.2f not in [%.2f, %.2f] at r=%.1f" % (b["key"], kind, reg, ang, s0 + pad, s1 - pad, dist))
+                if b["open"]:
+                    continue
+                if b["r"] != exp_r or abs(b["fillOpacity"] - exp_op) > 1e-9:
+                    tier_bad.append("%s %s/%s (%d items) r=%s opacity=%s expected %s/%s" % (b["key"], kind, reg, counts[ri], b["r"], b["fillOpacity"], exp_r, exp_op))
+                if abs(b["r"] + b["strokeWidth"] / 2 - 8) > 1e-9:
+                    target_bad.append("%s r=%s stroke=%s" % (b["key"], b["r"], b["strokeWidth"]))
+    check("F1 %s: every blip sits inside its region's padded sub-wedge as allocated from the drawn bucket sizes (sqrt weights, 6 deg floor, 45 deg majority floor, 1.5 deg padding) at its own radius" % label, not outside, "%d blips, %d groups, widest bucket (kind, region, items, sector items, allocated deg, blip span deg) %s; outside %s" % (len(r["blips"]), len(groups), widest and (widest[0], widest[1], widest[2], widest[3], round(widest[4], 2), round(widest[5], 2)), outside[:3]))
+    pairs = close_pairs(r["blips"])
+    check("F2 %s: no two blips share a centre to within 0.5 px" % label, not pairs, "%d blips, %d close pairs %s" % (len(r["blips"]), len(pairs), pairs[:3]))
+    hits = bbox_hits(r) + bbox_hits(r, 5.5)
+    check("F3 %s: no blip bounding box (drawn r, and the open-blip r = 5.5) intersects a ring-caption bounding box" % label, not hits, "%d blips, %d caption plates, hits %s" % (len(r["blips"]), sum(1 for p in r["plates"] if p["caption"]), hits[:3]))
+    check("F4 %s: blip radius / fill-opacity follow the bucket size (<= 20: 3 px 0.9; <= 60: 2.5 px 0.75; > 60: 2 px 0.6)" % label, not tier_bad, "%s; bad %s" % (sorted(set((g, len(bs), density_tier(len(bs))) for g, bs in groups.items()), key=lambda t: -t[1])[:4], tier_bad[:3]))
+    check("F5 %s: the transparent stroke keeps a 16 px pointer target (r + stroke / 2 = 8)" % label, not target_bad, "bad %s" % target_bad[:3])
+    return widest
+
+
 def run_radar(browser):
     """AC 20 + R2 (plates survive a hidden-panel load) + C19 (plates inside the viewBox)."""
     data = Data(browser.new_context().request)
@@ -2360,9 +2499,10 @@ def run_radar(browser):
         except Exception:
             pass
     ages.sort()
-    monotonic = all(ages[i][1] <= ages[i + 1][1] + 0.6 for i in range(len(ages) - 1))
+    # radius = age radius +/- RADIAL_JITTER (hash), so neighbours in age may swap by up to 2 x 2 px
+    monotonic = all(ages[i][1] <= ages[i + 1][1] + 0.6 + 2 * RADIAL_JITTER for i in range(len(ages) - 1))
     m = re.search(r"(\d+) items?", r["title"], re.I)
-    check("AC 20 1280px: one blip per item within 48 h (<= 400), radii 15-150, quadrant by kind, radius monotonic with age", len(r["blips"]) == min(n48, 400) and not bad_geo and monotonic, "%d blips vs %d within 48 h; %s" % (len(r["blips"]), n48, bad_geo[:3]))
+    check("AC 20 1280px: one blip per item within 48 h (<= 400), radii 15-150, quadrant by kind, radius monotonic with age (within the 2 px jitter)", len(r["blips"]) == min(n48, 400) and not bad_geo and monotonic, "%d blips vs %d within 48 h; %s" % (len(r["blips"]), n48, bad_geo[:3]))
     check("AC 20: #radar-title counts the 48 h items (text-transform uppercase, DOM text sentence case)", m is not None and abs(int(m.group(1)) - n48) <= 2 and r["transform"] == "uppercase" and r["title"].startswith("Last 48 h"), r["title"])
     plates_contain = all(p["ok"] and p["contains"] and p["inside"] and p["fill"] for p in r["plates"])
     fill_ok = all(p["fill"].replace(" ", "") == page.evaluate("(() => { const c = document.createElement('div'); c.style.color = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim(); document.body.append(c); const v = getComputedStyle(c).color; c.remove(); return v; })()").replace(" ", "") for p in r["plates"])
@@ -2373,12 +2513,14 @@ def run_radar(browser):
     check("P1: the largest (kind, region) group spreads over >= 5 distinct angles", group is not None and len(angles) >= 5, "%s: %d blips, %d distinct angles (%.1f-%.1f deg)" % (group, sum(1 for b in r["blips"] if (data.by_key.get(b["key"], {}).get("kind"), data.by_key.get(b["key"], {}).get("region")) == group), len(angles), min(angles) if angles else 0, max(angles) if angles else 0))
     hits = blip_caption_hits(r)
     check("P2: real data - no blip disc intersects a ring-caption plate; text layer above the blips with pointer-events none", not hits and r["textAboveBlips"], "%d blips, %d caption plates, hits %s" % (len(r["blips"]), sum(1 for p in r["plates"] if p["caption"]), hits[:3]))
+    fan_checks("real data", r, data.by_key)
     for name, spec in (("150 global launches", [("launch", "global", 150)]), ("200 news/global + 200 accelerator/usa next to the caption ray", [("news", "global", 200), ("accelerator", "usa", 200)])):
         mctx = new_ctx(browser, viewport=DESKTOP)
         mocked = mocked_radar_items(data, spec)
         mocked_body = json.dumps(mocked)
         mctx.route("**/data/items.json", lambda route: route.fulfill(status=200, content_type="application/json", headers={"Cache-Control": "no-store"}, body=mocked_body))
         mpage = mctx.new_page()
+        merrors = ErrorLog(mpage)
         goto_home(mpage)
         mpage.wait_for_function("(n) => document.querySelectorAll('circle.blip').length === n", arg=min(len(mocked), 400), timeout=WAIT_MS)
         mpage.wait_for_timeout(300)
@@ -2389,6 +2531,12 @@ def run_radar(browser):
         mq = [b for b in mr["blips"] if int(blip_angle(b) // 90) != quadrant_of(mby[b["key"]]["kind"])]
         check("P2 mocked (%s): %d blips, none within 2 px of a caption plate, all in their kind's quadrant, >= 5 angles" % (name, len(mr["blips"])), len(mr["blips"]) == min(len(mocked), 400) and not mhits and not mq and len(mangles) >= 5,
               "hits %s; wrong quadrant %d; %s has %d distinct angles" % (mhits[:3], len(mq), mgroup, len(mangles)))
+        fan_checks("mocked %s" % name, mr, mby)
+        empty = [q for q in range(4) if not any(k == KIND_ORDER[q] for k, _, _ in spec)]
+        per_q = [sum(1 for b in mr["blips"] if int(blip_angle(b) // 90) == q) for q in range(4)]
+        mtitle = re.search(r"(\d+) items?", mr["title"], re.I)
+        check("F6 mocked (%s): the radar renders with %d empty sector(s) - %d blips, none in the empty quadrants, honest title" % (name, len(empty), min(len(mocked), 400)), len(mr["blips"]) == min(len(mocked), 400) and all(per_q[q] == 0 for q in empty) and mtitle is not None and int(mtitle.group(1)) == len(mocked), "blips per quadrant %s, empty %s, title %r" % (per_q, [KIND_ORDER[q] for q in empty], mr["title"]))
+        merrors.check("radar mocked (%s)" % name)
         mctx.close()
     page.keyboard.press("t")
     page.wait_for_timeout(200)
@@ -2405,6 +2553,9 @@ def run_radar(browser):
     page.wait_for_function("() => !document.querySelector('.radar-tip').hidden", timeout=WAIT_MS)
     tip = page.evaluate("(() => { const t = document.querySelector('.radar-tip'); const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg-2').trim(); const c = document.createElement('div'); c.style.color = bg2; document.body.append(c); const v = getComputedStyle(c).color; c.remove(); return { bg: getComputedStyle(t).backgroundColor, bg2: v, title: t.querySelector('.tip-title').textContent, role: t.getAttribute('role') }; })()")
     check("AC 20: hovering a blip shows .radar-tip on --bg-2 with that item's title", hit_key in data.by_key and tip["bg"] == tip["bg2"] and tip["title"] == data.by_key[hit_key]["title"] and tip["role"] == "tooltip", "%s | %s" % (tip["title"][:50], data.by_key.get(hit_key, {}).get("title", "?")[:50]))
+    # radar fan fix: a hovered blip is drawn at full opacity (the region colour's design.md contrast), whatever its bucket's resting opacity
+    hov = page.evaluate("(k) => { const c = document.querySelector('circle.blip[data-key=\"' + k + '\"]'); return c ? { hover: c.matches(':hover'), rest: c.getAttribute('fill-opacity'), computed: getComputedStyle(c).fillOpacity } : null; }", hit_key)
+    check("F4: the hovered blip's computed fill-opacity is 1 (styles.css circle.blip:hover) while its resting attribute is the bucket's", hov is not None and hov["hover"] and hov["computed"] == "1" and hov["rest"] in ("0.9", "0.75", "0.6"), str(hov))
     page.mouse.click(x, y)
     page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
     check("AC 20: clicking a blip opens the drawer for that item (open blip highlighted r=5)", page.evaluate("new URLSearchParams(location.search).get('item')") == hit_key and page.evaluate("document.querySelector('circle.blip.is-open').getAttribute('r')") == "5", "%s vs %s" % (page.evaluate("new URLSearchParams(location.search).get('item')"), hit_key))
