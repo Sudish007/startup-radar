@@ -13,9 +13,9 @@ const PRIMARY_MAX_ITEMS = 800; // EXPORT_LIMITS.primaryMaxItems
 const MIN_SOURCES = 21;
 const MIN_EXPLORE = 10;
 const REQUIRED_ITEM_FIELDS = ['id', 'title', 'url', 'source', 'kind', 'region', 'publishedAt'];
-const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html'];
+const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html'];
 const CSS_FILES = ['styles.css', 'sources.css', 'pages.css'];
-const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'related.js', 'pwa.js', 'sw.js'];
+const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'notebook-tools.js', 'related.js', 'pwa.js', 'sw.js'];
 const TEXT_FILES = [...HTML_PAGES, ...CSS_FILES, ...JS_FILES, 'icons.svg', 'manifest.webmanifest'];
 const STATIC_FILES = [
   ...TEXT_FILES,
@@ -121,11 +121,13 @@ async function main() {
   check('index.html links the manifest, theme.js and viewport-fit=cover', index.includes('rel="manifest" href="./manifest.webmanifest"') && index.includes('src="./theme.js"') && index.includes('viewport-fit=cover'));
   const sourcesHtml = files['sources.html']?.text ?? '';
   check('sources.html references ./styles.css and ./sources.js', sourcesHtml.includes('href="./styles.css"') && sourcesHtml.includes('src="./sources.js"'));
-  for (const name of ['trends.html', 'funding.html', 'yc.html']) {
+  for (const name of ['trends.html', 'funding.html', 'yc.html', 'notebook.html']) {
     const text = files[name]?.text ?? '';
     const script = name.replace(/\.html$/, '.js');
     check(`${name} references ./styles.css, ./pages.css and ./${script}, has one bare <h1>`, text.includes('href="./styles.css"') && text.includes('href="./pages.css"') && text.includes(`src="./${script}"`) && (text.match(/<h1[\s>]/g) || []).length === 1 && /<h1>/.test(text));
   }
+  const notebookHtml = files['notebook.html']?.text ?? '';
+  check("notebook.html carries the browser-only banner 'Stored in this browser only — export to keep it.'", notebookHtml.includes('<p class="notice" id="notice">Stored in this browser only \u2014 export to keep it.</p>'));
   for (const name of HTML_PAGES) {
     const text = files[name]?.text ?? '';
     const m = HTML_ABSOLUTE_RE.exec(text);

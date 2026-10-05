@@ -8,7 +8,7 @@ import { buildDerived } from './derived.js';
 import { buildSnapshot, decorateItem, itemsPayload, sourcesPayload } from './export.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-export const PAGES = ['sources', 'trends', 'funding', 'yc'];
+export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook'];
 
 const CSP = "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
@@ -164,7 +164,7 @@ export function createApp({ db, sources, config, refresh, env = process.env, swV
 
   app.use(express.static(PUBLIC_DIR, { maxAge: '1h', index: 'index.html' }));
 
-  // Extensionless page routes (/sources -> public/sources.html); notebook joins the list with its file (FEAT-004).
+  // Extensionless page routes (/sources -> public/sources.html, ... /notebook -> public/notebook.html).
   for (const page of PAGES) {
     app.get(`/${page}`, (req, res) => {
       res.sendFile(path.join(PUBLIC_DIR, `${page}.html`));

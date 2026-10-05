@@ -86,7 +86,7 @@ describe('public/ sub-path safety', () => {
       assert.equal((text.match(/<h1[\s>]/g) || []).length, 1, `${name} has exactly one h1`);
     }
     assert.ok(read('sources.html').includes('href="./sources.css"'));
-    for (const name of ['trends.html', 'funding.html', 'yc.html']) {
+    for (const name of ['trends.html', 'funding.html', 'yc.html', 'notebook.html']) {
       assert.ok(read(name).includes('href="./pages.css"'), `${name} loads pages.css`);
       assert.ok(read(name).includes(`<body class="page-${name.replace(/\.html$/, '')}">`), `${name} body.page-<name>`);
     }
