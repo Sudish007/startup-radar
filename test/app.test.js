@@ -143,6 +143,34 @@ describe('app without ADMIN_TOKEN', () => {
     assert.deepEqual(await archive.json(), { error: 'not found' });
   });
 
+  test('GET /data/{trends,funding,yc}.json serve the derived payloads with no-store', async () => {
+    const trends = await fetch(`${ctx.base}/data/trends.json`);
+    assert.equal(trends.status, 200);
+    assert.equal(trends.headers.get('cache-control'), 'no-store');
+    assert.match(trends.headers.get('content-type'), /application\/json/);
+    const t = await trends.json();
+    assert.deepEqual(Object.keys(t), ['generatedAt', 'method', 'thisWeek', 'prior', 'terms', 'weeks', 'partialWeek', 'bySector', 'byKind', 'byRegion', 'items']);
+    assert.equal(t.weeks.length, 12);
+    assert.equal(t.bySector.length, 15);
+    assert.deepEqual(t.terms, []);
+
+    const funding = await fetch(`${ctx.base}/data/funding.json`);
+    assert.equal(funding.status, 200);
+    assert.equal(funding.headers.get('cache-control'), 'no-store');
+    const f = await funding.json();
+    assert.deepEqual(Object.keys(f), ['generatedAt', 'method', 'fx', 'items', 'totals', 'coverage']);
+    assert.deepEqual(f.coverage, { items: 0, withAmount: 0, withStage: 0 });
+    assert.equal(typeof f.fx.asOf, 'string');
+
+    const yc = await fetch(`${ctx.base}/data/yc.json`);
+    assert.equal(yc.status, 200);
+    assert.equal(yc.headers.get('cache-control'), 'no-store');
+    const y = await yc.json();
+    assert.deepEqual(Object.keys(y), ['generatedAt', 'attribution', 'batches', 'companies', 'byIndustry', 'tagFrequency', 'teamSize', 'byStatus']);
+    assert.deepEqual(y.companies, []);
+    assert.deepEqual(y.teamSize.buckets, ['1', '2-5', '6-10', '11-25', '26-50', '51+', 'unknown']);
+  });
+
   test('unknown /api path is a JSON 404', async () => {
     const res = await fetch(`${ctx.base}/api/nope`);
     assert.equal(res.status, 404);
@@ -229,6 +257,8 @@ describe('app with ADMIN_TOKEN', () => {
     assert.equal(items.total, 2);
     assert.equal(items.items[0].title, 'Stub one');
     assert.equal(items.items[0].source.name, 'Stub Source');
+    assert.ok(items.items.every((i) => Array.isArray(i.sectors)), '/api/items items carry sectors');
+    assert.deepEqual(items.items.map((i) => i.sectors), [[], []], 'stub titles match no sector');
 
     const health = await (await fetch(`${ctx.base}/health`)).json();
     assert.equal(health.items, 2);
@@ -253,5 +283,32 @@ describe('app with ADMIN_TOKEN', () => {
 
     const dataSources = await (await fetch(`${ctx.base}/data/sources.json`)).json();
     assert.deepEqual(dataSources, sources);
+    assert.ok(dataItems.every((i) => Array.isArray(i.sectors)), '/data/items.json items carry sectors');
+    assert.equal(dataStats.sectors.length, 15);
+    assert.ok(dataStats.sectors.every((s) => s.count === 0));
+  });
+
+  test('derived files are recomputed only when the DB changed', async () => {
+    const first = await (await fetch(`${ctx.base}/data/trends.json`)).json();
+    assert.equal(first.items, 2, 'built after the refresh above');
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await (await fetch(`${ctx.base}/data/trends.json`)).json();
+    assert.equal(second.generatedAt, first.generatedAt, 'same DB state -> cached payload');
+    const funding = await (await fetch(`${ctx.base}/data/funding.json`)).json();
+    assert.equal(funding.generatedAt, first.generatedAt, 'one buildDerived call feeds all three files');
+
+    ctx.db.upsertItems('stub', [{
+      url_norm: 'https://stub.test/three', url: 'https://stub.test/three', title: 'Stub three raises $4M seed', summary: '',
+      source_id: 'stub', kind: 'funding', region: 'global', published_at: '2026-10-02T12:00:00.000Z', fetched_at: '2026-10-02T12:00:00.000Z', extra_json: '{}',
+    }]);
+    await new Promise((r) => setTimeout(r, 5));
+    const third = await (await fetch(`${ctx.base}/data/trends.json`)).json();
+    assert.equal(third.items, 3);
+    assert.notEqual(third.generatedAt, first.generatedAt, 'item count changed -> recomputed');
+    const funding2 = await (await fetch(`${ctx.base}/data/funding.json`)).json();
+    assert.equal(funding2.coverage.items, 1);
+    assert.equal(funding2.items[0].funding.amount, 4_000_000);
+    assert.equal(funding2.items[0].funding.stage, 'seed');
+    assert.equal(funding2.items[0].usdApprox, 4_000_000);
   });
 });

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { openDb } from '../src/db.js';
 import { normalizeItem } from '../src/lib/normalize.js';
 import { EXPLORE_MORE } from '../src/explore.js';
-import { EXPORT_LIMITS, itemsPayload, statsPayload, sourcesPayload, buildSnapshot } from '../src/export.js';
+import { EXPORT_LIMITS, itemsPayload, statsPayload, sourcesPayload, buildSnapshot, decorateItem, sectorCounts } from '../src/export.js';
+import { SECTORS } from '../src/lib/sectors.js';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const HN = { id: 'hn_show', name: 'Hacker News: Show HN', homepage: 'https://news.ycombinator.com/show', kind: 'launch', region: 'global', enabled: () => true, requires: null };
@@ -97,6 +98,46 @@ describe('itemsPayload', () => {
     db.upsertItems('hn_show', [row(HN, { url: 'https://a.io/1', publishedAt: daysAgo(89) })]);
     assert.equal(itemsPayload({ db, sources: SOURCES, now: NOW }).items.length, 1);
   });
+
+  test('every item (primary and archive) carries keyword-tagged sectors', () => {
+    db.upsertItems('hn_show', [
+      row(HN, { url: 'https://a.io/1', title: 'LLM copilots for community banks', publishedAt: daysAgo(1) }),
+      row(HN, { url: 'https://a.io/2', title: 'Nothing sectoral here', publishedAt: daysAgo(2) }),
+      row(HN, { url: 'https://a.io/3', title: 'Solar drones', publishedAt: daysAgo(3) }),
+    ]);
+    const { items, archive } = itemsPayload({ db, sources: SOURCES, now: NOW, limits: { maxDays: 90, maxItems: 10, primaryMaxItems: 1, primaryMaxBytes: 10 } });
+    assert.deepEqual(items.map((i) => i.sectors), [['ai', 'fintech']]);
+    assert.deepEqual(archive.map((i) => i.sectors), [[], ['climate', 'hardware']]);
+  });
+});
+
+describe('decorateItem and sectorCounts', () => {
+  test('decorateItem sets sectors in place and returns the item', () => {
+    const item = { title: 'Fintech for farmers', summary: 'with AI' };
+    assert.equal(decorateItem(item), item);
+    assert.deepEqual(item.sectors, ['ai', 'fintech']);
+    assert.deepEqual(decorateItem({ title: 'plain' }).sectors, []);
+  });
+
+  test('sectorCounts returns the 15 sectors in table order with real item counts', () => {
+    const items = [
+      { title: 'AI for banks', sectors: ['ai', 'fintech'] },
+      { title: 'AI robots', sectors: ['ai', 'hardware'] },
+      { title: 'untagged', sectors: [] },
+      { title: 'Solar wind' }, // no sectors field -> computed
+    ];
+    const counts = sectorCounts(items);
+    assert.deepEqual(counts.map((c) => c.id), SECTORS.map((s) => s.id));
+    assert.deepEqual(counts.map((c) => c.label), SECTORS.map((s) => s.label));
+    const byId = Object.fromEntries(counts.map((c) => [c.id, c.count]));
+    assert.equal(byId.ai, 2);
+    assert.equal(byId.fintech, 1);
+    assert.equal(byId.hardware, 1);
+    assert.equal(byId.climate, 1);
+    assert.equal(byId.gaming, 0);
+    const pairs = items.reduce((n, i) => n + (i.sectors ?? ['climate']).length, 0);
+    assert.equal(counts.reduce((n, c) => n + c.count, 0), pairs, 'counts sum to the number of sector-item pairs');
+  });
 });
 
 describe('statsPayload and sourcesPayload', () => {
@@ -114,6 +155,14 @@ describe('statsPayload and sourcesPayload', () => {
     assert.equal(stats.items, 1);
     assert.deepEqual(stats.bySource, { hn_show: 1 });
     assert.equal(statsPayload({ db }).archiveItems, 0);
+    assert.equal(stats.sectors.length, 15, 'sectors present even without window items');
+    assert.ok(stats.sectors.every((s) => s.count === 0));
+  });
+
+  test('statsPayload counts sectors over the window items it is given', () => {
+    const windowItems = [{ title: 'AI', sectors: ['ai'] }, { title: 'AI banks', sectors: ['ai', 'fintech'] }];
+    const stats = statsPayload({ db, now: NOW, windowItems });
+    assert.deepEqual(stats.sectors.slice(0, 2), [{ id: 'ai', label: 'AI/ML', count: 2 }, { id: 'fintech', label: 'Fintech', count: 1 }]);
   });
 
   test('sourcesPayload has the /api/sources key set and exploreMore', () => {
@@ -150,5 +199,19 @@ describe('statsPayload and sourcesPayload', () => {
     assert.equal(split.items.length, 0);
     assert.equal(split.archive.length, 1);
     assert.equal(split.stats.archiveItems, 1);
+  });
+
+  test('buildSnapshot stats.sectors counts primary + archive items', () => {
+    db.upsertItems('hn_show', [
+      row(HN, { url: 'https://a.io/1', title: 'AI copilots', publishedAt: daysAgo(1) }),
+      row(HN, { url: 'https://a.io/2', title: 'AI for fintech', publishedAt: daysAgo(2) }),
+      row(HN, { url: 'https://a.io/3', title: 'Old AI', publishedAt: daysAgo(120) }),
+    ]);
+    const snap = buildSnapshot({ db, sources: SOURCES, env: {}, now: NOW, limits: { maxDays: 90, maxItems: 10, primaryMaxItems: 1, primaryMaxBytes: 1 } });
+    assert.equal(snap.items.length, 1);
+    assert.equal(snap.archive.length, 1);
+    const byId = Object.fromEntries(snap.stats.sectors.map((s) => [s.id, s.count]));
+    assert.equal(byId.ai, 2, 'the 120-day-old item is outside the window');
+    assert.equal(byId.fintech, 1);
   });
 });

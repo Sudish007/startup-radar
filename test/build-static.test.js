@@ -102,9 +102,11 @@ describe('runBuild', () => {
   test('imports the snapshot, runs the live cycle and writes dist/', async () => {
     const r = await build();
     assert.equal(r.exitCode, 0);
+    const dataSize = (name) => fs.statSync(path.join(outDir, 'data', name)).size;
     assert.deepEqual(r.counts, {
       imported: 1, live: 2, sourcesOk: 1, sourcesEnabled: 2, exported: 3,
-      items: 3, itemsBytes: fs.statSync(path.join(outDir, 'data', 'items.json')).size, archive: 0, archiveBytes: 0,
+      items: 3, itemsBytes: dataSize('items.json'), archive: 0, archiveBytes: 0,
+      trendsBytes: dataSize('trends.json'), fundingBytes: dataSize('funding.json'), ycBytes: dataSize('yc.json'),
     });
 
     assert.ok(fs.existsSync(path.join(outDir, '.nojekyll')));
@@ -116,6 +118,7 @@ describe('runBuild', () => {
     const items = readJson(path.join(outDir, 'data', 'items.json'));
     assert.deepEqual(items.map((i) => i.title), ['Live one', 'Snapshot item', 'Live two']);
     assert.ok(items.every((i) => i.source.name === 'Stub OK'));
+    assert.ok(items.every((i) => Array.isArray(i.sectors)), 'every exported item carries sectors');
 
     const sources = readJson(path.join(outDir, 'data', 'sources.json'));
     assert.equal(sources.sources.length, 2);
@@ -130,6 +133,25 @@ describe('runBuild', () => {
     assert.equal(stats.archiveItems, 0);
     assert.equal(stats.items, 3);
     assert.equal(typeof stats.lastRefresh, 'string');
+    assert.equal(stats.sectors.length, 15);
+    assert.ok(stats.sectors.every((s) => typeof s.id === 'string' && typeof s.label === 'string' && Number.isInteger(s.count)));
+
+    const trends = readJson(path.join(outDir, 'data', 'trends.json'));
+    assert.equal(trends.generatedAt, NOW.toISOString());
+    assert.ok(Array.isArray(trends.terms));
+    assert.equal(trends.weeks.length, 12);
+    assert.equal(trends.bySector.length, 15);
+    assert.equal(trends.thisWeek.partial, true);
+    const funding = readJson(path.join(outDir, 'data', 'funding.json'));
+    assert.deepEqual(funding.items, []);
+    assert.deepEqual(funding.coverage, { items: 0, withAmount: 0, withStage: 0 });
+    assert.equal(typeof funding.fx.asOf, 'string');
+    assert.equal(funding.totals.bySector.length, 15);
+    const yc = readJson(path.join(outDir, 'data', 'yc.json'));
+    assert.deepEqual(yc.companies, []);
+    assert.equal(yc.attribution, 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly');
+    assert.equal(yc.teamSize.buckets.length, 7);
+    assert.ok(logs.some((l) => /^\[build\] derived trends\.json [\d.]+ KB, funding\.json [\d.]+ KB, yc\.json [\d.]+ KB$/.test(l)), 'derived size line');
 
     assert.ok(logs.some((l) => l === `[build] snapshot: imported 1 items (0 invalid, 1 unknown source) from ${SNAPSHOT_URL}`));
     assert.ok(logs.some((l) => l.startsWith('source ') && l.includes('| status')));
@@ -192,6 +214,25 @@ describe('runBuild', () => {
     assert.equal(r.exitCode, 1);
     assert.equal(fs.existsSync(outDir), false);
     assert.ok(logs.includes('[build] FAIL: no source returned items'));
+  });
+
+  test('yc.json above the size limit -> exit 1 after logging the sizes', async () => {
+    const bigYc = {
+      id: 'yc', name: 'YC stub', homepage: 'https://yc.test/', kind: 'accelerator', region: 'usa', enabled: () => true, requires: null,
+      async fetch() {
+        return Array.from({ length: 1500 }, (_, i) => ({
+          title: `Company ${i}`,
+          url: `https://yc.test/companies/c${i}`,
+          summary: 'x'.repeat(120),
+          publishedAt: daysAgo(1),
+          extra: { batch: 'Fall 2026', oneLiner: 'y'.repeat(120), tags: ['a', 'b', 'c', 'd', 'e'], teamSize: 4, status: 'Active', stage: 'Early', industry: 'B2B' },
+        }));
+      },
+    };
+    const r = await build({ sources: [bigYc], http: notFoundHttp() });
+    assert.equal(r.exitCode, 1);
+    assert.ok(logs.some((l) => l.startsWith('[build] derived trends.json')));
+    assert.ok(logs.some((l) => /^\[build\] FAIL: yc\.json is \d+ bytes \(limit 300000\)$/.test(l)), logs.at(-1));
   });
 
   test('replaces a stale outDir', async () => {
