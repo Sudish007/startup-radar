@@ -17,7 +17,7 @@ metrics.
 
 ## Contents
 
-1. [What it is](#1-what-it-is)
+1. [What it is](#1-what-it-is) · [The web UI](#the-web-ui)
 2. [Sources](#2-sources)
 3. [Requirements](#3-requirements)
 4. [Quick start](#4-quick-start)
@@ -49,6 +49,81 @@ shared. `sources.html` shows every adapter with its last fetch status, last erro
 count, followed by an "Explore more" list of directories that are links only. The same UI
 works unchanged on GitHub Pages and on the Node server; the server additionally exposes a
 read-only JSON API.
+
+### The web UI
+
+The frontend is plain HTML, CSS and ES modules under `public/` with no framework, no build
+step and no third-party script. What it does:
+
+- **Dark-first theme.** `theme.js` (a classic script under 1 KB in `<head>`) applies the stored
+  choice (`localStorage['sr:theme']`) or the OS preference before the first paint, so there is
+  no flash. The sun/moon button in the top bar and the `t` key switch themes; the choice is
+  remembered. Both themes meet WCAG AA contrast on every surface, including the translucent
+  glass top bar, which is measured against the most extreme colour that can scroll under it.
+- **Sticky top bar with search, a sticky filter bar at 1024 px and wider, a bottom-sheet filter
+  panel below 640 px** (`Filters` button with an active-filter count). The result list is one,
+  two or three columns and has a grid / list toggle (remembered as `sr:view`).
+- **Mission-control hero**: four stat tiles (items in the 90-day feed, last 24 hours, last
+  7 days, sources OK / enabled) counted from the real data files, and a radar panel at 1024 px
+  and wider on devices with a mouse or trackpad, with one blip per item published in the last
+  48 h: kind by quadrant, region by angle, age by distance from the centre. The caption counts
+  the blips before the 400 cap. Hovering a blip shows the item, clicking opens it. The feed list
+  is the keyboard and touch equivalent; the radar adds nothing you cannot reach there.
+- **In-app detail drawer.** Clicking a card (or pressing `Enter` on a highlighted one) opens
+  the item in a side drawer with every field the source actually provided (points, comments,
+  votes, batch, round, amount, website...), a prev/next pair that walks the current result list,
+  a "Copy link" button and an "Open on <source>" link. Each card also has a small
+  external-link icon for going straight to the source. The drawer writes `?item=<key>` to the
+  URL, so a drawer link can be shared and the Back button closes it. The key is a hash of the
+  item URL, stable across builds (`itemKey` in `public/filter.js`).
+- **Keyboard layer** (press `?` for the in-app list):
+
+  | Key | Action |
+  | --- | --- |
+  | `/` | Focus the search field |
+  | `j` / `↓`, `k` / `↑` | Next / previous card (`j` at the last card loads more) |
+  | `Home` / `End` | First / last card |
+  | `Enter` | Open the highlighted card in the detail drawer |
+  | `o` | Open the original page in a new tab |
+  | `Esc` | Close the top layer (help, drawer, filter sheet, sources list) or clear the highlight |
+  | `t` | Toggle dark / light theme |
+  | `?` | Keyboard shortcuts |
+  | `j` / `→`, `k` / `←` | In the drawer: next / previous item |
+
+  Shortcuts are ignored while typing in a field; `Esc` always closes exactly one layer.
+- **Live data.** `data/stats.json` is polled every 5 minutes (paused while the tab is hidden).
+  When the build behind the page changed, the new items are fetched and a "N new items ·
+  Refresh" pill appears; the list never reorders under your cursor. "Last refreshed ... ago"
+  in the top bar ticks every minute. A failing check is shown as "update check failed" and the
+  data you already have stays on screen.
+- **Honest sort.** "Newest" (default) and "Most points / votes", which only orders items whose
+  source provides Hacker News points or Product Hunt votes; everything else keeps its date
+  order below them and the result count says so. There is no trending, score or ranking the
+  data does not contain.
+- **Installable, works offline.** `manifest.webmanifest` plus a hand-written service worker
+  (`public/sw.js`, no library) precache the app shell under a relative scope, so it works on
+  GitHub Pages sub-paths and on the Node server alike. Data files are network-first with the
+  last good copy as fallback (the page then shows "Offline — showing data cached ... ago").
+  Each build gets its own cache name; when a new build is deployed the open page shows an
+  "Update available — Reload" toast and only reloads when you ask it to. The footer shows an
+  "Install app" button when the browser offers it. Nothing is registered on plain `http://`
+  other than `localhost`.
+- **Fonts and icons.** Geist and Geist Mono (variable, OFL-1.1) are self-hosted from
+  `public/fonts/`; `npm run fonts:copy` refreshes them from the pinned
+  `@fontsource-variable/*` dev dependencies and fails if a byte size differs. The icon sprite
+  is `public/icons.svg`; `npm run icons:make` renders the PWA icons under `public/icons/` with
+  the repo's Playwright venv (`PW_CHANNEL` picks the browser, default `msedge`).
+- **Budget.** The home page ships under 120 KB of HTML + CSS + JS uncompressed (the service
+  worker and its client are loaded after `load` and have their own 10 KB budget); the
+  numbers are enforced by `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
+  loops stop, transitions become instant). To measure a build with Lighthouse 13 (which has no
+  `--chrome-path` flag) point it at a local browser and a running host:
+
+  ```powershell
+  $env:CHROME_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+  npx --yes lighthouse@13.5.0 http://localhost:3000/ --preset=desktop --only-categories=performance,accessibility,best-practices --chrome-flags="--headless=new" --output=json --output-path=lh-home.json --quiet
+  Remove-Item Env:CHROME_PATH
+  ```
 
 ## 2. Sources
 
@@ -139,6 +214,8 @@ npm run build:static        # fetch all sources once and write the static site t
 npm run verify:pages -- <baseUrl>   # HTTP-level checks of a deployed site, e.g. https://sudish007.github.io/startup-radar
 npm run dev                 # same as start, restarts on file changes (node --watch)
 npm test                    # unit + API tests (node --test), no network needed
+npm run fonts:copy          # refresh public/fonts/ from the pinned @fontsource-variable packages
+npm run icons:make          # re-render public/icons/*.png from icons/radar.svg (Playwright venv, PW_CHANNEL=msedge)
 ```
 
 `npm start` creates the database on first start in `DATA_DIR` (default
@@ -550,15 +627,24 @@ refreshes); the 1 GB volume in `.railway/railway.ts` assumes the Hobby plan, so 
 
 ## 11. Screenshots
 
-Captured from a local run with real data by `scripts/screenshots.py` (parity mode).
+Captured from a local run with real data by `scripts/screenshots.py` (parity mode); every image
+is the viewport only (1280 × 900 unless noted).
 
-![Home page: masthead with "Last refreshed", filter bar (kind, region, All/USA/World toggle, sources, search, time chips) and a list of startup cards newest first](docs/screenshots/home.png)
+![Home page, dark theme: glass top bar with the Startup Radar wordmark, search field, grid/list toggle and theme button; hero with four stat tiles and the radar panel; the sticky filter bar; the first rows of startup cards in two columns](docs/screenshots/home.png)
 
-![Home page filtered to kind=funding and USA scope: the result count and cards update to show only USA funding items](docs/screenshots/home-filtered.png)
+![Home page filtered to kind=funding and region=USA: the result count and the cards show only USA funding items; the Kind and Region selects reflect the filter](docs/screenshots/home-filtered.png)
 
-![Home page on a 390 px wide mobile viewport: single column, full-width controls and cards](docs/screenshots/home-mobile.png)
+![Home page with the detail drawer open on the right: title, summary, the fields the source provided, previous/next, Copy link and Open on the source; the matching card is marked in the list](docs/screenshots/detail.png)
 
-![Sources page: a table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
+![Home page, light theme: the same layout with the light palette](docs/screenshots/home-light.png)
+
+![Home page at 1920 × 1080, dark theme: three card columns under the hero](docs/screenshots/home-dark.png)
+
+![Home page on a 390 px wide phone viewport: compact top bar with the Filters button, stat tiles two by two, single-column cards](docs/screenshots/home-mobile.png)
+
+![Phone viewport with the filter bottom sheet open: kind and region selects, scope and time chips, the sources list and the Apply button](docs/screenshots/home-mobile-sheet.png)
+
+![Sources page: configured / enabled / with-errors status strip, the table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
 
 ## 12. Adding a source
 
@@ -610,8 +696,8 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (124 tests in 31 suites, no network, about a second).
-The GitHub Pages workflow runs the same command before every build.
+Runs `node --test` over `test/*.test.js` (168 tests in 47 suites, no network, about two
+seconds). The GitHub Pages workflow runs the same command before every build.
 
 - `normalize.test.js`: URL normalization (tracking parameters, fragments, trailing slashes),
   HTML stripping and entity decoding, truncation, date parsing, `normalizeItem` validation.
@@ -635,34 +721,74 @@ The GitHub Pages workflow runs the same command before every build.
   `sources.json`, 404 snapshot tolerated, exit 1 and no `data/` when every source fails.
 - `filter.test.js`: the browser-side filter module (`public/filter.js`): kind, region, World
   scope, sources, each time chip, prefix search, multi-term AND, case and punctuation handling,
-  newest-first ordering.
+  newest-first ordering; `itemKey` (deterministic base-36 hash, never throws), `pointsOf`,
+  `comparePoints` and `sortItems` (stable, `'points'` only).
+- `format.test.js`: `public/format.js` with Hacker News, Product Hunt, YC and Crunchbase
+  fixtures: relative and absolute times, compact money, `metaParts`, `detailRows` emitting only
+  the fields present (Discussion omitted when it equals the item URL, Website only for a valid
+  http(s) URL that differs from it), `hostnameOf`, `safeHttpUrl` rejecting `javascript:`, `data:`
+  and relative strings, `pluralize`.
+- `radar.test.js`: `public/radar.js` geometry: quadrant per kind, region slot order, radius
+  exactly 0.10 R / 0.55 R / R at 0 / 24 / 48 h, future dates clamped, items older than 48 h
+  excluded, jitter within ±4°, the 400 cap keeps the newest items while `radarCount` stays the
+  honest pre-cap count.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
   clamping, `/api/refresh` 404/401/409/200, `/data/*.json` routes and `no-store`, HTML pages,
-  security headers.
+  security headers, `/sw.js` with the injected version and `Cache-Control: no-cache`, the
+  manifest and PWA icons.
+- `public-urls.test.js`: every file under `public/` uses relative URLs only (no `href="/..."`,
+  `'/api/'`, `'/data/'`, `url(/...)` or `register('/...')`), the manifest has `start_url` and
+  `scope` `./`, no `id` and three `./icons/` entries, both pages keep an attribute-free `<h1>`.
+- `public-safety.test.js`: no `innerHTML`, `insertAdjacentHTML`, `outerHTML`, `document.write`,
+  `eval`, `new Function` or `window.open` in `public/*.js`; `'_blank'` appears only inside
+  `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`.
+- `budget.test.js`: the home page set (`index.html`, `styles.css`, `theme.js`, `ui.js`,
+  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 120 000
+  bytes, `theme.js` under 1 024 bytes, `pwa.js` + `sw.js` under 10 000 bytes, no off-origin
+  `<script src>` and no Google Fonts references.
 
 `scripts/verify-pages.mjs <baseUrl> [--max-age-hours N]` (also `npm run verify:pages -- <baseUrl>`)
-checks a deployed site over HTTP without a browser: the HTML and JS use only relative URLs, all
-static files answer 200, `data/items.json` is a newest-first array within the 90-day window with
-the required fields, `data/sources.json` and `data/stats.json` have the documented shape,
-`generatedAt` is fresher than `N` hours (default 3) and `data/archive.json` is either absent or a
-consistent split. It prints one `PASS`/`FAIL` line per check and exits 1 on any failure. It works
-against `http://localhost:3000`, a local `dist/` preview and the live site.
+checks a deployed site over HTTP without a browser: the HTML, CSS and JS use only relative URLs,
+all static files answer 200 (pages, scripts, stylesheets, the icon sprite, fonts, PWA icons),
+the manifest parses with `start_url` and `scope` `./` and no `id`, `sw.js` carries its injected
+build version, no file references Google Fonts, `data/items.json` is a newest-first array within
+the 90-day window with the required fields, `data/sources.json` and `data/stats.json` have the
+documented shape, `generatedAt` is fresher than `N` hours (default 3) and `data/archive.json` is
+either absent or a consistent split. It prints one `PASS`/`FAIL` line per check and exits 1 on
+any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
 
 `scripts/screenshots.py` runs the frontend in a real browser. It needs Python with `playwright`
 installed and a local Edge or Chrome; it launches the browser via Playwright's `channel` option
 so no browser download is required. Two modes:
 
-- **Parity mode** (default, needs the Node server with a fresh database): captures the four
-  screenshots above and asserts the frontend rules (body font 16 px, nothing below 12 px,
-  controls at least 40 px tall, no horizontal overflow at 390 px, `rel="noopener noreferrer"` on
-  outbound links), that the page requested `data/items.json` exactly once and never `/api/items`,
-  and that the rendered result of every filter, time chip, search and source selection equals
-  what `/api/items` returns for the same query (within the 90-day export window).
+- **Parity mode** (default, needs the Node server with a fresh database): captures the eight
+  screenshots above and asserts, for both pages at 320 / 390 / 768 / 1024 / 1280 / 1920 px in
+  the dark and the light theme and in every state (default, filtered, sources list open, list
+  view, drawer open, help open, phone filter sheet): body font 16 px, nothing below 12 px, every
+  control exactly `--control-h` (40 px from 1024 px with a fine pointer, 44 px otherwise), no
+  horizontal overflow,
+  composited WCAG AA contrast of every visible text node and indicator (text 4.5:1, non-text
+  3:1, glass bars measured against their worst case), honest badges, stat tiles and radar count,
+  `rel="noopener noreferrer"` on outbound links and no console errors. Scenario checks cover the
+  sticky header and filter bar, the top-bar width budget with the longest status text, the theme
+  toggle and its persistence, self-hosted fonts, reduced motion, the drawer (focus trap and
+  return, history, `?item=` deep links, prev/next, copy link), the keyboard map and the one-Esc
+  rule, the 5-minute poll with a fake newer build (pill, silent replace, failure streak),
+  sort / view toggles, skeleton / empty / error states, the radar geometry and plates, the
+  sources page layout, and the service worker in a dedicated context (scope, versioned
+  precache, data navigations untouched, offline shell, update toast and reload-once,
+  installability via CDP). It also checks that the page requested `data/items.json` exactly once
+  and never `/api/items`, and that the rendered result of every filter, time chip, search and
+  source selection equals what `/api/items` returns for the same query.
 - **Smoke mode** (`SMOKE_ONLY=1`, needs only the static files, writes no screenshots): home
   page renders newest first with a real "Last refreshed", kind / scope / time / search / reset
-  filters change the cards and the URL, `sources.html` lists every source from
-  `data/sources.json`, the 390 px layout has no overflow, and there are no console errors. Use it
-  against a `dist/` preview or the live Pages site.
+  filters change the cards and the URL, `?item=<key>` deep links open the drawer, the service
+  worker registers under the page's own path (so it also proves a sub-path deployment such as
+  `/startup-radar/`; set `STATIC_ROOT` to the served folder to exercise a real version swap),
+  `sources.html` lists every source from `data/sources.json`, the 390 px layout has no overflow,
+  and there are no console errors. Use it against a `dist/` preview or the live Pages site.
+
+`SCENARIOS=run_drawer,run_sw` limits a run to the named scenario functions while iterating.
 
 ```powershell
 # parity mode against the local server (generic / dev machine with the venv one level up)
@@ -687,8 +813,16 @@ $env:SMOKE_ONLY = "1"; $env:BASE_URL = "https://sudish007.github.io/startup-rada
   both HTML pages also carry the same policy (minus `frame-ancestors`, which a meta tag cannot
   express) as `<meta http-equiv="Content-Security-Policy">`; the same tag is served by the Node
   server and does not conflict with the header. The frontend has no inline scripts or styles and
-  builds the DOM with `createElement`/`textContent`, never `innerHTML` with source data. Outbound
-  links use `rel="noopener noreferrer"`.
+  builds the DOM with `createElement`/`textContent`, never `innerHTML` with source data
+  (`test/public-safety.test.js` enforces this). Outbound links use `rel="noopener noreferrer"`
+  and are created in one place (`extLink` in `public/ui.js`). Item URLs are only rendered as
+  links when they parse as `http:`/`https:`.
+- The page makes no third-party requests: fonts and icons are self-hosted, there is no
+  analytics, and the CSP's `default-src 'self'` would block anything else. The service worker is
+  registered only over `https:` or on `localhost`, with a scope relative to the page
+  (`./`), so a GitHub Pages deployment under a sub-path controls only that sub-path. It never
+  intercepts cross-origin requests, non-GET requests or same-origin paths it does not know, and
+  the Node server's JSON API passes through untouched.
 - The GitHub Actions workflow runs with `contents: read` (it never writes to the repository) and
   only the `pages: write` / `id-token: write` permissions that deploying to Pages requires.
   Secrets are referenced by name and never printed.
