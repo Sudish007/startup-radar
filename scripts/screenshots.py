@@ -655,6 +655,8 @@ LAYOUT_JS = r"""
     out.radarTitle = document.getElementById('radar-title').textContent;
     out.radarTitleTransform = getComputedStyle(document.getElementById('radar-title')).textTransform;
     out.blips = document.querySelectorAll('circle.blip').length;
+    const stats = document.querySelector('ul.stats');
+    out.hero = { mainH: rect(heroMain).height, radarH: rect(radar).height, statsGap: rect(heroMain).bottom - rect(stats).bottom, statFont: px(getComputedStyle(document.querySelector('.stat-n')).fontSize), tileRows: new Set(tiles.map((t) => Math.round(rect(t).top))).size };
   }
   // AC 9 honesty
   const sort = document.getElementById('sort');
@@ -1431,11 +1433,12 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
         honest = texts[0] == data.feed_tile and texts[1] == str(data.stats["last24h"]) and texts[2] == str(data.stats["last7d"]) and texts[3] == data.sources_tile
         check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s / %s / %s / %s" % (data.feed_tile, data.stats["last24h"], data.stats["last7d"], data.sources_tile))
         if width >= 1024 and not mobile:
-            if width < 1280:
-                # 268 px tiles at a 976 px content width; headless reserves a 15 px scrollbar gutter at 1024, so the content is 961 px and the tiles 259.5 px
-                check("%s: stats 2x2 beside the radar (tiles >= 259px)" % label, lay["tileColumns"] == 2 and lay["tileMinWidth"] >= 259 and lay["radarDisplay"] != "none" and lay.get("radarInSecondColumn"), "%d columns, min %.1fpx, radar %s, layout viewport %s" % (lay["tileColumns"], lay["tileMinWidth"], lay["radarDisplay"], lay["layoutRight"]))
-            else:
-                check("%s: stats 4x1 and radar panel shown" % label, lay["tileColumns"] == 4 and lay["radarDisplay"] != "none", "%d columns, radar %s" % (lay["tileColumns"], lay["radarDisplay"]))
+            # 268 px tiles at a 976 px content width; headless reserves a 15 px scrollbar gutter at 1024, so the content is 961 px and the tiles 259.5 px
+            check("%s: stats 2x2 beside the radar (tiles >= 259px)" % label, lay["tileColumns"] == 2 and lay["tileMinWidth"] >= 259 and lay["radarDisplay"] != "none" and lay.get("radarInSecondColumn"), "%d columns, min %.1fpx, radar %s, layout viewport %s" % (lay["tileColumns"], lay["tileMinWidth"], lay["radarDisplay"], lay["layoutRight"]))
+            hero = lay.get("hero") or {}
+            check("%s: hero column fills the radar panel height (within 10%%, tiles end at the column bottom, 40 px numerals)" % label,
+                  hero and abs(hero["mainH"] - hero["radarH"]) <= 0.1 * hero["radarH"] and hero["statsGap"] <= 1 and hero["statFont"] == 40 and hero["tileRows"] == 2,
+                  "column %.0f vs radar %.0f px, gap below tiles %.1f, numeral %spx, %s rows" % (hero.get("mainH", 0), hero.get("radarH", 0), hero.get("statsGap", 0), hero.get("statFont"), hero.get("tileRows")))
             if lay.get("radarTitle") is not None:
                 m = re.search(r"(\d+) items?", lay["radarTitle"], re.I)
                 now = datetime.now(timezone.utc)
@@ -1875,7 +1878,33 @@ def run_drawer(browser):
         check("AC 24 %dpx: unknown key -> toast and the param is removed, no drawer" % width, page.evaluate("document.querySelector('#toasts .toast p').textContent") == "That item is no longer in the feed" and page.evaluate("location.search") == "" and not page.evaluate("document.querySelector('dialog#detail').open"))
         check("AC 26 %dpx: no iframe/embed/object" % width, page.evaluate("document.querySelectorAll('iframe, embed, object').length") == 0)
         if width == 1280:
-            goto_home(page, "?item=" + base["cards"][0]["key"])
+            # polish pass: honest labels (no "HN author" on a non-HN item), one Published value, relative header time, plurals on cards
+            non_hn = next((it for it in data.items if not str(it["source"]["id"]).startswith("hn_") and isinstance((it.get("extra") or {}).get("author"), str)), None)
+            hn = next((it for it in data.items if str(it["source"]["id"]).startswith("hn_") and isinstance((it.get("extra") or {}).get("author"), str)), None)
+            for label, it, want in (("non-HN", non_hn, "Author"), ("HN", hn, "HN author")):
+                if it is None:
+                    check("P3 %dpx: a %s item with an author exists in the data" % (width, label), False, "none found")
+                    continue
+                goto_home(page, "?item=" + item_key(it["url"]))
+                page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+                d3 = page.evaluate("(() => { const p = document.querySelector('#detail .detail-panel'); const t = p.querySelector('p.detail-time'); const tm = t && t.querySelector('time'); return { dts: [...p.querySelectorAll('dl.detail-meta dt')].map((x) => x.textContent), published: (p.textContent.match(/Published/g) || []).length, head: t ? t.textContent.trim() : null, title: tm ? tm.title : null, datetime: tm ? tm.getAttribute('datetime') : null, rel: tm ? tm.hasAttribute('data-rel') : false }; })()")
+                rel_ok = d3["head"] is not None and (re.match(r"^(just now|\d+ (min|h|d) ago)$", d3["head"]) or re.search(r"\d{4}", d3["head"])) and d3["title"] and d3["datetime"] == it["publishedAt"] and d3["rel"]
+                branded = [x for x in d3["dts"] if x.startswith("HN ") or x.startswith("PH ")]
+                generic = [x for x in d3["dts"] if x in ("Author", "Points", "Comments", "Votes")]
+                src = str(it["source"]["id"])
+                labels_ok = want in d3["dts"] and (all(x.startswith("HN ") for x in branded) and not generic if src.startswith("hn_") else all(x == "PH votes" and src == "producthunt" for x in branded))
+                check("P3/P4 %dpx: %s item (%s) -> author row '%s', no brand leak, exactly one 'Published', header line = relative time with the absolute in title" % (width, label, src, want),
+                      labels_ok and d3["published"] == 1 and rel_ok,
+                      "rows %s; Published x%d; head '%s' title '%s'" % (d3["dts"], d3["published"], d3["head"], d3["title"]))
+                page.keyboard.press("Escape")
+                page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+            metas = page.evaluate("[...document.querySelectorAll('#results .meta')].map((m) => m.textContent)")
+            bad_plural = [m for m in metas if re.search(r"\b1 (points|comments|votes)\b", m) or re.search(r"\b(0|[2-9]|\d{2,}) (point|comment|vote)\b", m)]
+            check("P3 %dpx: card meta lines use correct singular/plural (point/points, comment/comments, vote/votes)" % width, len(metas) > 0 and not bad_plural, "%d meta lines, bad %s" % (len(metas), bad_plural[:3]))
+            # the documented screenshot: the first card opened with the mouse (a pointer interaction, so the programmatic
+            # focus on the title does not draw the keyboard focus ring that the Escape presses above would otherwise trigger)
+            goto_home(page)
+            page.click("#results article h2 a")
             page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
             shot(page, "detail.png")
         errors.check("drawer %dpx" % width)
@@ -2219,16 +2248,66 @@ RADAR_JS = r"""
     const bb = t.getBBox();
     const ok = !!p && p.matches('rect.radar-plate');
     const x = ok ? +p.getAttribute('x') : NaN, y = ok ? +p.getAttribute('y') : NaN, w = ok ? +p.getAttribute('width') : NaN, h = ok ? +p.getAttribute('height') : NaN;
-    plates.push({ text: t.textContent, ok, contains: ok && x <= bb.x + 0.5 && y <= bb.y + 0.5 && x + w >= bb.x + bb.width - 0.5 && y + h >= bb.y + bb.height - 0.5, inside: ok && x >= 0 && y >= 0 && x + w <= 360 && y + h <= 360, fill: ok ? getComputedStyle(p).fill : null });
+    plates.push({ text: t.textContent, ok, caption: t.classList.contains('radar-caption'), x, y, w, h, contains: ok && x <= bb.x + 0.5 && y <= bb.y + 0.5 && x + w >= bb.x + bb.width - 0.5 && y + h >= bb.y + bb.height - 0.5, inside: ok && x >= 0 && y >= 0 && x + w <= 360 && y + h <= 360, fill: ok ? getComputedStyle(p).fill : null });
   }
   const bg1 = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim();
   const outside = [...svg.querySelectorAll('*')].filter((el) => el.getBBox && (() => { const b = el.getBBox(); return b.width > 0 && (b.x < -0.01 || b.y < -0.01 || b.x + b.width > 360.01 || b.y + b.height > 360.01); })()).map((el) => el.tagName + ':' + (el.textContent || el.getAttribute('class')));
   const blips = [...svg.querySelectorAll('circle.blip')].map((c) => ({ key: c.dataset.key, cx: +c.getAttribute('cx'), cy: +c.getAttribute('cy'), r: +c.getAttribute('r'), fresh: c.classList.contains('is-fresh'), fill: c.getAttribute('fill') }));
   let trough = null;
   for (const sheet of document.styleSheets) { try { for (const rule of sheet.cssRules) { if (rule.type === CSSRule.KEYFRAMES_RULE && rule.name === 'pulse') { for (const k of rule.cssRules) { const o = parseFloat(k.style.opacity); if (!Number.isNaN(o)) trough = trough === null ? o : Math.min(trough, o); } } } } catch (e) {} }
-  return { display: getComputedStyle(document.getElementById('radar-panel')).display, plates, bg1, outside, blips, trough, title: document.getElementById('radar-title').textContent, transform: getComputedStyle(document.getElementById('radar-title')).textTransform };
+  const textLayer = svg.querySelector('g.radar-text');
+  const textAboveBlips = !!textLayer && textLayer.compareDocumentPosition(svg.querySelector('g.blips')) === Node.DOCUMENT_POSITION_PRECEDING && getComputedStyle(textLayer).pointerEvents === 'none';
+  return { display: getComputedStyle(document.getElementById('radar-panel')).display, plates, bg1, outside, blips, trough, textAboveBlips, title: document.getElementById('radar-title').textContent, transform: getComputedStyle(document.getElementById('radar-title')).textTransform };
 }
 """
+
+
+def blip_caption_hits(r, pad=0.0):
+    """Blips whose visible disc (cx, cy, r) intersects a ring-caption plate; `pad` widens the disc."""
+    hits = []
+    for b in r["blips"]:
+        for p in r["plates"]:
+            if not p["caption"]:
+                continue
+            nx = max(p["x"], min(b["cx"], p["x"] + p["w"]))
+            ny = max(p["y"], min(b["cy"], p["y"] + p["h"]))
+            if ((b["cx"] - nx) ** 2 + (b["cy"] - ny) ** 2) ** 0.5 < b["r"] + pad:
+                hits.append("%s over '%s'" % (b["key"], p["text"]))
+    return hits
+
+
+def blip_angle(b):
+    ang = (180 / 3.141592653589793) * __import__("math").atan2(b["cx"] - 180, -(b["cy"] - 180))
+    return ang + 360 if ang < 0 else ang
+
+
+def largest_group_angles(r, by_key):
+    """(group, distinct angles rounded to 0.01 deg) for the most populated (kind, region) pair among the drawn blips."""
+    groups = {}
+    for b in r["blips"]:
+        it = by_key.get(b["key"])
+        if it:
+            groups.setdefault((it["kind"], it["region"]), set()).add(round(blip_angle(b), 2))
+    if not groups:
+        return None, set()
+    group = max(groups, key=lambda g: len(groups[g]))
+    return group, groups[group]
+
+
+def mocked_radar_items(data, spec):
+    """Synthetic items.json: for each (kind, region, n) in `spec`, n items evenly spread over the last 48 h."""
+    items = []
+    now = datetime.now(timezone.utc)
+    for kind, region, n in spec:
+        for i in range(n):
+            base = dict(data.items[0])
+            base.update({
+                "id": 800000 + len(items), "title": "Mock %s %s %d" % (kind, region, i), "url": "https://mock.test/%s/%s/%d" % (kind, region, i),
+                "kind": kind, "region": region, "source": {"id": "hn_show" if kind == "launch" else "mock", "name": "Mock source"},
+                "publishedAt": to_iso(now - timedelta(hours=47.5 * i / max(1, n - 1))), "summary": "", "extra": {},
+            })
+            items.append(base)
+    return items
 
 
 def quadrant_of(kind):
@@ -2289,6 +2368,28 @@ def run_radar(browser):
     fill_ok = all(p["fill"].replace(" ", "") == page.evaluate("(() => { const c = document.createElement('div'); c.style.color = getComputedStyle(document.documentElement).getPropertyValue('--bg-1').trim(); document.body.append(c); const v = getComputedStyle(c).color; c.remove(); return v; })()").replace(" ", "") for p in r["plates"])
     check("AC 20/C19: every svg.radar text is preceded by rect.radar-plate (fill --bg-1) containing its bbox; nothing outside the viewBox", plates_contain and fill_ok and not r["outside"], "%d plates, fill %s, outside %s" % (len(r["plates"]), r["plates"][0]["fill"] if r["plates"] else None, r["outside"][:3]))
     check("AC 20: fresh-blip pulse trough is 0.75", r["trough"] == 0.75, str(r["trough"]))
+    # polish pass: blips of one (kind, region) fan out inside their sub-wedge; the ring captions sit on a reserved ray
+    group, angles = largest_group_angles(r, data.by_key)
+    check("P1: the largest (kind, region) group spreads over >= 5 distinct angles", group is not None and len(angles) >= 5, "%s: %d blips, %d distinct angles (%.1f-%.1f deg)" % (group, sum(1 for b in r["blips"] if (data.by_key.get(b["key"], {}).get("kind"), data.by_key.get(b["key"], {}).get("region")) == group), len(angles), min(angles) if angles else 0, max(angles) if angles else 0))
+    hits = blip_caption_hits(r)
+    check("P2: real data - no blip disc intersects a ring-caption plate; text layer above the blips with pointer-events none", not hits and r["textAboveBlips"], "%d blips, %d caption plates, hits %s" % (len(r["blips"]), sum(1 for p in r["plates"] if p["caption"]), hits[:3]))
+    for name, spec in (("150 global launches", [("launch", "global", 150)]), ("200 news/global + 200 accelerator/usa next to the caption ray", [("news", "global", 200), ("accelerator", "usa", 200)])):
+        mctx = new_ctx(browser, viewport=DESKTOP)
+        mocked = mocked_radar_items(data, spec)
+        mocked_body = json.dumps(mocked)
+        mctx.route("**/data/items.json", lambda route: route.fulfill(status=200, content_type="application/json", headers={"Cache-Control": "no-store"}, body=mocked_body))
+        mpage = mctx.new_page()
+        goto_home(mpage)
+        mpage.wait_for_function("(n) => document.querySelectorAll('circle.blip').length === n", arg=min(len(mocked), 400), timeout=WAIT_MS)
+        mpage.wait_for_timeout(300)
+        mr = mpage.evaluate(RADAR_JS)
+        mhits = blip_caption_hits(mr, pad=2.0)
+        mby = {item_key(it["url"]): it for it in mocked}
+        mgroup, mangles = largest_group_angles(mr, mby)
+        mq = [b for b in mr["blips"] if int(blip_angle(b) // 90) != quadrant_of(mby[b["key"]]["kind"])]
+        check("P2 mocked (%s): %d blips, none within 2 px of a caption plate, all in their kind's quadrant, >= 5 angles" % (name, len(mr["blips"])), len(mr["blips"]) == min(len(mocked), 400) and not mhits and not mq and len(mangles) >= 5,
+              "hits %s; wrong quadrant %d; %s has %d distinct angles" % (mhits[:3], len(mq), mgroup, len(mangles)))
+        mctx.close()
     page.keyboard.press("t")
     page.wait_for_timeout(200)
     r2 = page.evaluate(RADAR_JS)
