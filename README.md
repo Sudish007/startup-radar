@@ -66,11 +66,16 @@ step and no third-party script. What it does:
 - **Mission-control hero**: four stat tiles (items in the 90-day feed, last 24 hours, last
   7 days, sources OK / enabled) counted from the real data files, and a radar panel at 1024 px
   and wider on devices with a mouse or trackpad, with one blip per item published in the last
-  48 h: kind by quadrant, region by sub-wedge (items of one region fan out inside it, placed by a
-  hash of the item URL so a render is stable), age by distance from the centre; the ring captions
-  sit on the 9 o'clock half of the crosshair, which blips keep clear. The caption counts the
-  blips before the 400 cap. Hovering a blip shows the item, clicking opens it. The feed list is
-  the keyboard and touch equivalent; the radar adds nothing you cannot reach there.
+  48 h: kind by quadrant, region by sub-wedge sized to its share of the items (square-root
+  weighted, so a region with a few items still gets a readable 6° slot and a region with most of
+  them gets most of the quadrant), the items of one region fanned out inside it by a hash of the
+  item URL so a render is stable, age by distance from the centre (plus a ±2 px hash jitter and
+  a de-stacking pass, so items published in the same minute do not sit on one another); crowded
+  regions draw smaller, lighter dots so they read as density rather than a solid shape, and a
+  hovered dot is drawn at full colour. The ring captions sit on the 9 o'clock half of the
+  crosshair, which blips keep clear. The caption counts the blips before the 400 cap. Hovering a
+  blip shows the item, clicking opens it. The feed list is the keyboard and touch equivalent;
+  the radar adds nothing you cannot reach there.
 - **In-app detail drawer.** Clicking a card (or pressing `Enter` on a highlighted one) opens
   the item in a side drawer with every field the source actually provided (points, comments,
   votes, batch, round, amount, website...), a prev/next pair that walks the current result list,
@@ -731,12 +736,19 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   the fields present (Discussion omitted when it equals the item URL, Website only for a valid
   http(s) URL that differs from it), `hostnameOf`, `safeHttpUrl` rejecting `javascript:`, `data:`
   and relative strings, `pluralize`.
-- `radar.test.js`: `public/radar.js` geometry: quadrant per kind at every age, ordered and
-  contiguous region sub-wedges, radius exactly 0.10 R / 0.55 R / R at 0 / 24 / 48 h, future
-  dates clamped, items older than 48 h excluded, the deterministic spread inside [0.1, 0.9] of
-  the sub-wedge (150 identical launches give ≥ 5 distinct angles), blips clear of the crosshair
-  lines and of the ring-caption plates, the 400 cap keeps the newest items while `radarCount`
-  stays the honest pre-cap count.
+- `radar.test.js`: `public/radar.js` geometry: quadrant per kind at every age; the sub-wedge
+  allocation (`allocateSlots`: widths sum exactly to the sector, empty regions get 0, non-empty
+  ones at least 6°, square-root weighting with the exact 1 : 2 ratio for 4 vs 16 items, a 45°
+  floor for a region holding at least half of its sector's items, deterministic, input not
+  mutated); ordered and contiguous sub-wedges at every radius; radius 0.10 R / 0.55 R / R at
+  0 / 24 / 48 h plus a hash jitter of at most ±2 px clamped to the rings, future dates clamped,
+  items older than 48 h excluded; the deterministic angular spread inside the padded sub-wedge
+  and the radial jitter (same key → same offset); the layout of 150 identical launches (≥ 100
+  distinct angles, no two blips within 0.5 px as rendered) and of a live-like mix (the global
+  launches get ≥ 45°, the dense 2 px / 0.6 style, small buckets 3 px / 0.9, an empty sector
+  draws nothing); blips clear of the crosshair lines and of the ring-caption plates alone and
+  in dense de-stacked layouts; the 400 cap keeps the newest items while `radarCount` stays the
+  honest pre-cap count.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
   clamping, `/api/refresh` 404/401/409/200, `/data/*.json` routes and `no-store`, HTML pages,
   security headers, `/sw.js` with the injected version and `Cache-Control: no-cache`, the
@@ -748,7 +760,7 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   `eval`, `new Function` or `window.open` in `public/*.js`; `'_blank'` appears only inside
   `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`.
 - `budget.test.js`: the home page set (`index.html`, `styles.css`, `theme.js`, `ui.js`,
-  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 125 000
+  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 130 000
   bytes as deployed (LF line endings), `theme.js` under 1 024 bytes, `pwa.js` + `sw.js` under
   10 000 bytes, no off-origin `<script src>` and no Google Fonts references.
 
