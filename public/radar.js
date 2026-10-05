@@ -1,6 +1,8 @@
 // Startup Radar live radar panel: pure geometry (unit-tested, DOM-free at module level) plus the SVG
-// renderer and pointer tooltip. Angle = kind quadrant (launch, funding, news, accelerator clockwise
-// from 12 o'clock) + region slot; radius = 0.10R (now) .. 0.55R (24 h) .. R (48 h); newest 400 drawn.
+// renderer and pointer tooltip. Angle = kind sector (launch, funding, news, accelerator clockwise from
+// 12 o'clock) + region sub-wedge, spread inside it by a hash of the item key; radius = 0.10R (now) ..
+// 0.55R (24 h) .. R (48 h); newest 400 drawn. The ring captions sit on the 9 o'clock half of the
+// crosshair (the caption channel); blips keep CAPTION_CLEAR px off it and LINE_CLEAR px off the lines.
 
 import { itemKey } from './filter.js';
 import { regionLabel, relativeTime } from './format.js';
@@ -12,8 +14,12 @@ export const MAX_BLIPS = 400;
 export const FRESH_MIN = 60;
 export const KIND_ORDER = ['launch', 'funding', 'news', 'accelerator'];
 export const REGION_ORDER = ['usa', 'europe', 'asia', 'india', 'latam', 'africa', 'global'];
-const SLOT = 90 / REGION_ORDER.length;
-const JITTER_MAX = 4;
+export const CAPTION_RAY = 270;
+export const CAPTION_CLEAR = 17; // plate half-height 10 + open blip 5.5 + air
+export const LINE_CLEAR = 4.5; // 1 px line + 3.5 px blip + air
+export const SPREAD = [0.1, 0.9]; // the part of its sub-wedge a blip may occupy
+const MIN_SECTOR_DEG = 14; // 2 degrees per region slot at the very centre (r < 20 px)
+const DEG = 180 / Math.PI;
 const VIEWBOX = 360;
 const PAD_X = 4;
 const PAD_Y = 2;
@@ -26,21 +32,43 @@ export function ageHours(item, now = Date.now()) {
   return Number.isNaN(t) ? NaN : (now - t) / 3_600_000;
 }
 
-/** Centre angle of the kind quadrant + region slot; unknown kinds -> news, unknown regions -> global. */
-export function baseAngle(kind, region) {
+/** Degrees off a line through the centre that put a point at radius r `px` away from it. */
+const clearanceDeg = (px, r) => Math.asin(Math.min(1, px / Math.max(r, 1e-9))) * DEG;
+
+/** [start, end] of a kind's sector at radius r: its quadrant minus the clearances (the caption channel at 270). */
+export function sectorSpan(kind, r = RADIUS) {
   let k = KIND_ORDER.indexOf(kind);
   if (k < 0) k = 2;
-  let r = REGION_ORDER.indexOf(region);
-  if (r < 0) r = REGION_ORDER.length - 1;
-  return k * 90 + (r + 0.5) * SLOT;
+  const q0 = k * 90;
+  const q1 = q0 + 90;
+  const line = clearanceDeg(LINE_CLEAR, r);
+  const channel = Math.min(clearanceDeg(CAPTION_CLEAR, r), 90 - line - MIN_SECTOR_DEG);
+  return [q0 + (q0 === CAPTION_RAY ? channel : line), q1 - (q1 === CAPTION_RAY ? channel : line)];
 }
 
-/** Deterministic jitter in [-4, 4] degrees from the item key (spreads coincident items). */
-export function jitterDeg(key) {
+/** [start, end] of the region sub-wedge inside the sector at radius r; unknown regions -> global. */
+export function slotSpan(kind, region, r = RADIUS) {
+  let i = REGION_ORDER.indexOf(region);
+  if (i < 0) i = REGION_ORDER.length - 1;
+  const [a, b] = sectorSpan(kind, r);
+  const w = (b - a) / REGION_ORDER.length;
+  return [a + i * w, a + (i + 1) * w];
+}
+
+/** Deterministic fraction in [0, 1) from the item key (FNV-1a + avalanche); never Math.random, so renders are stable. */
+export function spreadFraction(key) {
   const s = String(key ?? '');
   let h = 2166136261;
   for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
-  return ((h % 8001) / 8000) * (2 * JITTER_MAX) - JITTER_MAX;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** Blip angle in degrees: sub-wedge start + (0.1 + 0.8 * fraction) of its width. */
+export function blipAngle(kind, region, key, r = RADIUS) {
+  const [s0, s1] = slotSpan(kind, region, r);
+  return s0 + (SPREAD[0] + (SPREAD[1] - SPREAD[0]) * spreadFraction(key)) * (s1 - s0);
 }
 
 /** R * (0.10 + 0.90 * clamp(age / 48, 0, 1)); future dates clamp to 0.10R. */
@@ -49,13 +77,13 @@ export function radiusFor(ageH, R = RADIUS) {
   return R * (0.10 + 0.90 * f);
 }
 
-/** { x, y, r, angle, base } for one item; angle = base + jitter. */
+/** { x, y, r, angle, key } for one item. */
 export function blipPosition(item, now = Date.now(), R = RADIUS) {
-  const base = baseAngle(item?.kind, item?.region);
-  const angle = (base + jitterDeg(itemKey(item?.url)) + 360) % 360;
+  const key = itemKey(item?.url);
   const r = radiusFor(ageHours(item, now), R);
-  const rad = (angle * Math.PI) / 180;
-  return { x: CENTER + r * Math.sin(rad), y: CENTER - r * Math.cos(rad), r, angle, base };
+  const angle = blipAngle(item?.kind, item?.region, key, r);
+  const rad = angle / DEG;
+  return { x: CENTER + r * Math.sin(rad), y: CENTER - r * Math.cos(rad), r, angle, key };
 }
 
 function within48h(item, now) {
@@ -112,9 +140,9 @@ export function renderRadar(svg, items, now = Date.now(), openKey = null) {
   for (const c of group.querySelectorAll('circle.blip')) byKey.set(c.dataset.key, c);
   const lookup = new Map();
   for (const item of drawn) {
-    const key = itemKey(item.url);
-    lookup.set(key, item);
     const pos = blipPosition(item, now);
+    const { key } = pos;
+    lookup.set(key, item);
     let circle = byKey.get(key);
     if (circle) byKey.delete(key);
     else {
