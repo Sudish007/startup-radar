@@ -7,6 +7,24 @@ export const REGION_LABELS = { usa: 'USA', europe: 'Europe', asia: 'Asia', india
 export const kindLabel = (kind) => KIND_LABELS[kind] || String(kind ?? '');
 export const regionLabel = (region) => REGION_LABELS[region] || String(region ?? '');
 
+/** Honesty wording, stated once for every page (plan D12): how a derived value was obtained. */
+export const METHOD_LABELS = {
+  sectors: 'keyword-tagged',
+  headline: 'parsed from headline',
+  summary: 'parsed from summary',
+  usd: 'approx. USD at static rates \u2014 see table',
+  related: 'token overlap in the 90-day window',
+};
+
+/** stats.sectors [{ id, label, count }] -> { id: label } (ids travel on items, labels once in stats.json). */
+export function sectorLabels(stats) {
+  const out = {};
+  for (const s of Array.isArray(stats?.sectors) ? stats.sectors : []) {
+    if (s && typeof s.id === 'string' && typeof s.label === 'string') out[s.id] = s.label;
+  }
+  return out;
+}
+
 const localeDate = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
 /** "just now", "12 min ago", "3 h ago", "5 d ago"; a locale date beyond 30 days and for future dates. */

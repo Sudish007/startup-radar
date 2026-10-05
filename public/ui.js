@@ -1,7 +1,7 @@
 // Startup Radar shared UI module (home + sources). Strict CSP: el() is the only element factory
 // (textContent only), extLink() the only constructor of external anchors, styles via CSSOM/WAAPI.
 
-import { absoluteTime, relativeTime } from './format.js';
+import { REGION_LABELS, absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
 
 export const STATS_POLL_MS = 300_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -47,6 +47,25 @@ export function extLink(href, text, { className = null, ariaLabel = null, title 
   a.rel = 'noopener noreferrer';
   if (text) a.textContent = text;
   return a;
+}
+
+/** <button type="button" ...props>children</button> with a click handler. */
+export function button(props, children, onClick) {
+  const b = el('button', { type: 'button', ...props }, children);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// -- item badges (cards + drawer on every page) --
+
+export const badge = (text, className, title = null) => el('span', { className: `badge ${className}`, text, title });
+export const sourceBadge = (item) => badge(item.source?.name || item.source?.id || 'Unknown source', 'badge-source');
+export const kindBadge = (item) => badge(kindLabel(item.kind), `badge-${item.kind}`, 'Kind assigned by Startup Radar from the source and the text');
+export const timeEl = (iso) => el('time', { datetime: iso, title: absoluteTime(iso), 'data-rel': '', text: relativeTime(iso) });
+
+export function regionBadge(item) {
+  const region = Object.hasOwn(REGION_LABELS, item.region) ? item.region : 'global';
+  return el('span', { className: 'badge badge-region' }, [el('span', { className: `dot dot-${region}`, 'aria-hidden': 'true' }), document.createTextNode(regionLabel(item.region))]);
 }
 
 export function scrollLock(on) {

@@ -69,6 +69,14 @@ describe('public/*.js DOM safety', () => {
     }
   });
 
+  test("honesty wording: no 'trend(ing) score', 'opportunity index' or standalone 'score' in public/*.html|js (plan D12)", () => {
+    for (const file of [...JS_FILES, ...HTML_FILES]) {
+      const text = read(file);
+      assert.doesNotMatch(text, /\b(trend(ing)? score|opportunity index)\b/i, `${file} invents a score/index`);
+      assert.doesNotMatch(text, /\bscore\b/i, `${file} uses the word 'score'`);
+    }
+  });
+
   test('no inline scripts, inline styles or inline handlers in the HTML (CSP)', () => {
     for (const file of HTML_FILES) {
       const text = read(file);
