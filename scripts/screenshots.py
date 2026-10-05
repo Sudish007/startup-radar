@@ -10,8 +10,9 @@ Environment:
     PW_CHANNEL    chromium channel, default "msedge" (bundled browsers are not
                   installed on the dev machine; "chrome" also works)
     SMOKE_ONLY    "1" = static-file checks only (home + sources + the trends,
-                  funding and YC lens pages against their JSON + mobile + the
-                  deep link + the service worker), usable against GitHub Pages
+                  funding and YC lens pages against their JSON + the notebook
+                  page over localStorage + mobile + the deep link + the service
+                  worker incl. notebook survival), usable against GitHub Pages
                   or a dist/ preview. Writes no PNGs.
     STATIC_ROOT   smoke mode only: the directory the server serves BASE_URL
                   from. When set, the service-worker update flow is proven by
@@ -84,11 +85,13 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
 # page kind -> index of its link in NAV (audit_state asserts aria-current there)
-NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "sources": 5}
-# lens pages (FEAT-003): (kind, path, selector that proves the data rendered)
-LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details")]
+NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "notebook": 4, "sources": 5}
+# lens pages (FEAT-003/004): (kind, path, selector that proves the data rendered)
+LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details"), ("notebook", "/notebook.html", "#main[data-ready]")]
+NOTEBOOK_KEY = "sr:notebook:v1"
+NOTEBOOK_BANNER = "Stored in this browser only \u2014 export to keep it."
 SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192", "g"]
 # nav.js NAV in order (label, href); every page ships this static list and the shell re-fills it
 NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Sources", "./sources.html")]
@@ -1403,6 +1406,14 @@ def run_live_smoke(browser):
     errors.check("smoke lens pages desktop")
     ctx.close()
 
+    # --- notebook (FEAT-004): localStorage only, save on home -> listed, export/import, confirm deletes ---------------
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    smoke_notebook(page, ctx, "smoke", audit=True)
+    errors.check("smoke notebook desktop")
+    ctx.close()
+
     # --- mobile ------------------------------------------------------------
     mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     mpage = mctx.new_page()
@@ -1414,7 +1425,13 @@ def run_live_smoke(browser):
     a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True, sheet=True)
     check("smoke mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
     for kind, _, _ in LENS_PAGES:
-        goto_lens(mpage, kind)
+        if kind == "notebook":
+            seed_notebook(mpage, Api(mctx.request).data("items.json")[0])
+            goto_lens(mpage, kind)
+            mpage.click("#nb-canvas-list .nb-canvas-row")
+            mpage.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+        else:
+            goto_lens(mpage, kind)
         a = audit_page(mpage, "smoke %s mobile 390px" % kind, want_controls=True, want_links=(kind == "yc"))
         check("smoke mobile %s: scrollWidth <= 390" % kind, a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
     merrors.check("smoke mobile")
@@ -1585,6 +1602,171 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
         audit_page(page, "%s yc desktop" % prefix, want_controls=True)
 
 
+NOTEBOOK_STATE_JS = r"""
+() => {
+  const text = (el) => (el ? el.textContent.trim() : '');
+  const stored = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null');
+  return {
+    banner: text(document.getElementById('notice')),
+    status: text(document.getElementById('status')),
+    count: text(document.getElementById('nb-items-count')),
+    items: Array.from(document.querySelectorAll('#nb-items article.nb-item')).map((a) => ({
+      key: a.dataset.key, title: text(a.querySelector('h3 a')), href: a.querySelector('h3 a').getAttribute('href'), openKey: a.querySelector('h3 a').dataset.openKey,
+      note: a.querySelector('textarea.nb-note').value, tags: a.querySelector('input.nb-tags').value, chips: Array.from(a.querySelectorAll('.badge-tag')).map(text),
+    })),
+    emptyNote: document.getElementById('nb-items-empty').hidden ? null : text(document.getElementById('nb-items-empty')),
+    canvasRows: Array.from(document.querySelectorAll('#nb-canvas-list .nb-canvas-row')).map((b) => ({ id: b.dataset.canvasId, title: text(b.querySelector('.nb-canvas-title')), pressed: b.getAttribute('aria-pressed'), meta: text(b.querySelector('.meta')) })),
+    formHidden: document.getElementById('nb-canvas-form').hidden,
+    formTitle: text(document.getElementById('nb-canvas-form-title')),
+    linked: Array.from(document.querySelectorAll('#nb-linked-grid input')).map((i) => [i.dataset.linkKey, i.checked]),
+    stored,
+    storedItems: stored ? Object.keys(stored.items) : [],
+    storedCanvases: stored ? Object.values(stored.canvases) : [],
+    bodyText: document.body.innerText,
+  };
+}
+"""
+
+
+def goto_notebook(page, query=""):
+    page.goto(BASE + "/notebook.html" + query, wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+
+
+def seed_notebook(page, item, with_canvas=True):
+    """Write a one-item (+ one canvas) notebook into localStorage from a feed item (the documented saved shape)."""
+    key = item_key(item["url"])
+    saved = {
+        "key": key, "title": item["title"], "url": item["url"], "source": {"id": item["source"]["id"], "name": item["source"].get("name", "")},
+        "kind": item["kind"], "region": item["region"], "publishedAt": item["publishedAt"], "summary": item.get("summary") or "",
+        "sectors": item.get("sectors") or [], "savedAt": "2026-01-01T00:00:00.000Z", "note": "Seeded by the harness", "tags": ["harness", "seed"],
+    }
+    canvases = {}
+    if with_canvas:
+        canvases["c-seed-1"] = {"id": "c-seed-1", "title": "Seed canvas", "problem": "p", "who": "w", "whyNow": "n", "existing": "e", "distribution": "d", "moat": "m", "firstTen": "f",
+                                "linkedKeys": [key], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z"}
+    page.evaluate("(nb) => localStorage.setItem('sr:notebook:v1', JSON.stringify(nb))", {"version": 1, "items": {key: saved}, "canvases": canvases})
+    return key
+
+
+def smoke_notebook(page, ctx, prefix, audit=True):
+    """Notebook page (FEAT-004): save on home -> listed, notes/tags persist, canvases, export/import, delete with confirm."""
+    api = Api(ctx.request)
+    items = api.data("items.json")
+    by_key = dict((item_key(it["url"]), it) for it in items)
+    accepted = []
+
+    def on_dialog(d):
+        accepted.append(d.message)
+        d.accept()
+    page.on("dialog", on_dialog)
+    # empty state (navigate first: about:blank has no localStorage)
+    goto_notebook(page)
+    page.evaluate("localStorage.removeItem('sr:notebook:v1')")
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: banner reads '%s'" % (prefix, NOTEBOOK_BANNER), s["banner"] == NOTEBOOK_BANNER, s["banner"])
+    check("%s notebook empty: status '0 saved items · 0 canvases · stored in this browser only', no cards, empty note" % prefix, s["status"] == "0 saved items \u00b7 0 canvases \u00b7 stored in this browser only" and not s["items"] and s["emptyNote"] is not None and "bookmark" in s["emptyNote"], "%s | %s" % (s["status"], s["emptyNote"]))
+    check("%s notebook: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    # save on the home page, then the notebook lists it
+    goto_home(page)
+    first = snapshot(page)["cards"][0]
+    page.click('#results article.card[data-key="%s"] button.card-save' % first["key"])
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return n && Object.keys(n.items).length === 1; }", timeout=WAIT_MS)
+    goto_notebook(page)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: the item saved on the home page is listed with its title, opens in-app (?item=<key>), status says 1 saved item" % prefix,
+          len(s["items"]) == 1 and s["items"][0]["key"] == first["key"] and s["items"][0]["title"] == first["title"] and s["items"][0]["href"] == "?item=" + first["key"] and s["items"][0]["openKey"] == first["key"] and s["status"].startswith("1 saved item \u00b7 0 canvases") and s["count"] == "1 saved item",
+          json.dumps(s["items"])[:160])
+    # note + tags persist (debounced 300 ms)
+    page.fill("#nb-items article.nb-item textarea.nb-note", "Follow up next week")
+    page.fill("#nb-items article.nb-item input.nb-tags", "idea, fintech , idea")
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1')); const it = Object.values(n.items)[0]; return it.note === 'Follow up next week' && it.tags.length === 2; }", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    saved = s["stored"]["items"][first["key"]]
+    check("%s notebook: note and comma-separated tags are stored (trimmed, de-duplicated) and shown as chips" % prefix, saved["note"] == "Follow up next week" and saved["tags"] == ["idea", "fintech"] and s["items"][0]["chips"] == ["idea", "fintech"], json.dumps(saved)[:160])
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: reload keeps the note and tags in the fields" % prefix, len(s["items"]) == 1 and s["items"][0]["note"] == "Follow up next week" and s["items"][0]["tags"] == "idea, fintech", json.dumps(s["items"])[:160])
+    # search filters title/summary/note/tags
+    page.fill("#nb-search", "fintech")
+    page.wait_for_function("() => document.getElementById('nb-items-count').textContent.startsWith('1 of 1')", timeout=WAIT_MS)
+    page.fill("#nb-search", "zqxjkvwpyq")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 0", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: search matches a tag, a miss shows the 'no saved item matches' note and '0 of 1 saved item match'" % prefix, s["emptyNote"] is not None and s["emptyNote"].startswith("No saved item matches") and s["count"] == "0 of 1 saved item match", "%s | %s" % (s["count"], s["emptyNote"]))
+    page.fill("#nb-search", "")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
+    # drawer from a saved item (the saved shape carries everything the drawer needs)
+    page.click("#nb-items article.nb-item h3 a")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    title = page.evaluate("document.getElementById('detail-title').textContent")
+    check("%s notebook: the title opens the drawer for the saved item under the page path with ?item=<key>, with a Saved row" % prefix, title == first["title"] and ("item=" + first["key"]) in page.url and urlsplit(page.url).path == urlsplit(BASE + "/notebook.html").path and page.evaluate("Array.from(document.querySelectorAll('#detail .detail-sectors dt')).some((d) => d.textContent === 'Saved')"), title[:60])
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    # canvases: new, fields saved as typed, link the saved item, duplicate, delete with confirm
+    page.click("#nb-canvas-new")
+    page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+    page.fill("#cv-title", "Payroll for gig workers")
+    page.fill("#cv-problem", "Weekly pay is late")
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1')); const c = Object.values(n.canvases)[0]; return c && c.title === 'Payroll for gig workers' && c.problem === 'Weekly pay is late'; }", timeout=WAIT_MS)
+    page.check("#nb-linked-grid input")
+    page.wait_for_function("() => Object.values(JSON.parse(localStorage.getItem('sr:notebook:v1')).canvases)[0].linkedKeys.length === 1", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    c = s["storedCanvases"][0]
+    check("%s notebook: a new canvas stores the typed fields, links the saved item and shows up in the list as pressed" % prefix,
+          len(s["canvasRows"]) == 1 and s["canvasRows"][0]["title"] == "Payroll for gig workers" and s["canvasRows"][0]["pressed"] == "true" and s["canvasRows"][0]["meta"] == "1 linked item" and c["linkedKeys"] == [first["key"]] and all(k in c for k in ("problem", "who", "whyNow", "existing", "distribution", "moat", "firstTen")) and s["status"].startswith("1 saved item \u00b7 1 canvas"),
+          json.dumps(s["canvasRows"])[:160])
+    page.click("#nb-canvas-duplicate")
+    page.wait_for_function("() => document.querySelectorAll('#nb-canvas-list .nb-canvas-row').length === 2", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Duplicate adds '(copy)' with the same fields and links" % prefix, len(s["storedCanvases"]) == 2 and sorted(x["title"] for x in s["storedCanvases"]) == ["Payroll for gig workers", "Payroll for gig workers (copy)"] and all(x["linkedKeys"] == [first["key"]] and x["problem"] == "Weekly pay is late" for x in s["storedCanvases"]), json.dumps([x["title"] for x in s["storedCanvases"]]))
+    # export JSON and Markdown really download, and the JSON round-trips through import (merge)
+    with page.expect_download(timeout=WAIT_MS) as dl:
+        page.click("#nb-export-json")
+    d = dl.value
+    exported = Path(d.path()).read_text(encoding="utf-8")
+    parsed = json.loads(exported)
+    check("%s notebook: Export JSON downloads startup-radar-notebook-<date>.json holding the saved item and both canvases" % prefix, re.match(r"^startup-radar-notebook-\d{4}-\d{2}-\d{2}\.json$", d.suggested_filename) is not None and parsed["version"] == 1 and list(parsed["items"].keys()) == [first["key"]] and len(parsed["canvases"]) == 2, d.suggested_filename)
+    with page.expect_download(timeout=WAIT_MS) as dl:
+        page.click("#nb-export-md")
+    d = dl.value
+    md = Path(d.path()).read_text(encoding="utf-8")
+    check("%s notebook: Export Markdown downloads .md with the item link, note, tags, canvases and the browser-only line" % prefix, d.suggested_filename.endswith(".md") and md.startswith("# Startup Radar notebook") and ("](%s)" % by_key[first["key"]]["url"]) in md and "note: Follow up next week" in md and "tags: idea, fintech" in md and "### Payroll for gig workers" in md and "Saved in the browser only" in md, d.suggested_filename)
+    # delete the item with confirm, then import the export to get it back (merge reports counts)
+    page.click("#nb-items article.nb-item .nb-danger")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 0", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Remove asks for confirmation and removes the item from the page and from localStorage" % prefix, len(accepted) == 1 and accepted[0].startswith('Remove "') and s["storedItems"] == [] and s["status"].startswith("0 saved items \u00b7 2 canvases"), accepted[-1][:80] if accepted else "no confirm dialog")
+    page.set_input_files("#nb-import-file", {"name": "notebook.json", "mimeType": "application/json", "buffer": exported.encode("utf-8")})
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
+    page.wait_for_function("() => Array.from(document.querySelectorAll('#toasts .toast p')).some((p) => p.textContent.startsWith('Imported'))", timeout=WAIT_MS)
+    toast_text = page.evaluate("Array.from(document.querySelectorAll('#toasts .toast p')).map((p) => p.textContent).find((t) => t.startsWith('Imported'))")
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Import JSON merges the export back (item with note and tags restored, canvases unchanged) and toasts the counts" % prefix, s["storedItems"] == [first["key"]] and s["stored"]["items"][first["key"]]["note"] == "Follow up next week" and len(s["storedCanvases"]) == 2 and toast_text.startswith("Imported 1 saved item and 2 canvases (1 new items, 0 new canvases"), toast_text[:120])
+    page.set_input_files("#nb-import-file", {"name": "bad.json", "mimeType": "application/json", "buffer": b"[1,2]"})
+    page.wait_for_function("() => Array.from(document.querySelectorAll('#toasts .toast.error p')).some((p) => p.textContent.startsWith('Import failed:'))", timeout=WAIT_MS)
+    check("%s notebook: a non-notebook file is rejected with an error toast and changes nothing" % prefix, page.evaluate("Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length") == 1)
+    if audit:
+        # toasts animate in (transform); dismiss them so the control audit measures settled boxes
+        page.evaluate("() => document.querySelectorAll('#toasts .toast-close').forEach((b) => b.click())")
+        page.wait_for_function("() => document.querySelectorAll('#toasts .toast').length === 0", timeout=WAIT_MS)
+        audit_page(page, "%s notebook desktop" % prefix, want_controls=True, want_links=False)
+    # delete a canvas and everything, each behind confirm
+    page.click("#nb-canvas-list .nb-canvas-row")
+    page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+    n_before = len(accepted)
+    page.click("#nb-canvas-delete")
+    page.wait_for_function("() => document.querySelectorAll('#nb-canvas-list .nb-canvas-row').length === 1", timeout=WAIT_MS)
+    check("%s notebook: Delete canvas asks for confirmation and removes one canvas; the editor closes" % prefix, len(accepted) == n_before + 1 and page.evaluate("document.getElementById('nb-canvas-form').hidden") is True)
+    page.click("#nb-delete-all")
+    page.wait_for_function("() => document.getElementById('status').textContent.startsWith('0 saved items \u00b7 0 canvases')", timeout=WAIT_MS)
+    check("%s notebook: Delete everything asks for confirmation and empties items and canvases" % prefix, len(accepted) == n_before + 2 and "Export first" in accepted[-1] and page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).items") == {} and page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).canvases") == {}, accepted[-1][:80])
+    page.remove_listener("dialog", on_dialog)
+
+
 # ---------------------------------------------------------------------------
 # Audit matrix (design.md section 20; plan 3.5): page x width x theme x state
 # ---------------------------------------------------------------------------
@@ -1726,7 +1908,14 @@ def run_matrix(browser, scheme):
         audit_state(page, "sources %s" % tag, scheme, width, data, kind="sources")
         # FEAT-003 lens pages: the same computed-style audit (font floor, controls, contrast, overflow, shell)
         for kind, _, _ in LENS_PAGES:
-            goto_lens(page, kind)
+            if kind == "notebook":
+                # a seeded saved item + canvas so the cards, chips, textareas and the open editor are audited too
+                seed_notebook(page, data.items[0])
+                goto_lens(page, kind)
+                page.click("#nb-canvas-list .nb-canvas-row")
+                page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+            else:
+                goto_lens(page, kind)
             audit_state(page, "%s %s" % (kind, tag), scheme, width, data, kind=kind)
             if kind == "trends":
                 check("%s %s: sparklines present with HTML axis labels (no scaled SVG text)" % (kind, tag), page.evaluate("document.querySelectorAll('#sector-grid .sparkline').length >= 1 && document.querySelectorAll('#sector-grid svg text').length === 0"))
@@ -3052,6 +3241,13 @@ def run_sw(browser, parity):
     page.goto(BASE + "/", wait_until="load")
     wait_cards(page)
     check("AC 34 %s: back online the offline note disappears" % mode, page.evaluate("document.getElementById('offline-note').hidden") is True)
+    # notebook survival (FEAT-004, D11): save an item now; it must still be there after the worker update below
+    page.evaluate("localStorage.removeItem('%s')" % NOTEBOOK_KEY)
+    nb_key = base["cards"][0]["key"]
+    page.click('#results article.card[data-key="%s"] button.card-save' % nb_key)
+    page.wait_for_function("(k) => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return !!(n && n.items[k]); }", arg=nb_key, timeout=WAIT_MS)
+    page.evaluate("() => document.querySelectorAll('#toasts .toast-close').forEach((b) => b.click())")  # the 'Saved to notebook' toast must not count below
+    page.wait_for_function("() => document.querySelectorAll('#toasts .toast').length === 0", timeout=WAIT_MS)
     # update flow: a new sw.js version must yield the toast; Reload activates it exactly once.
     # Browsers fetch sw.js outside page routing, so the new version is really deployed: on disk in smoke mode
     # (STATIC_ROOT, the cache name changes), or in parity mode by registering the same script under a query string
@@ -3109,6 +3305,12 @@ def run_sw(browser, parity):
         controlled = page.evaluate("() => navigator.serviceWorker.controller !== null && navigator.serviceWorker.controller.scriptURL.endsWith('/sw.js')")
         how = "cache swapped to " + expect_cache if restore is not None else "same version " + version + ", a new worker instance took over"
         check("AC 35 %s: Reload activates the new worker exactly once (%s); shell caches: %s" % (mode, how, s2["shell"]), s2["shell"] == [expect_cache] and controlled and len(workers) == 1 and not workers[0][1] and page.evaluate("performance.getEntriesByType('navigation').length") == 1 and not s2["waiting"], "active %s, running workers %s" % (active_url, workers))
+        still = page.evaluate("(k) => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return !!(n && n.items[k]); }", nb_key)
+        page.goto(BASE + "/notebook.html", wait_until="domcontentloaded")
+        page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+        listed = page.evaluate("document.querySelectorAll('#nb-items article.nb-item[data-key=\"%s\"]').length" % nb_key)
+        check("FEAT-004 %s: the saved item survives the service-worker update (localStorage untouched) and notebook.html lists it under the new worker" % mode, still and listed == 1 and page.evaluate("navigator.serviceWorker.controller !== null"), "stored %s, listed %d" % (still, listed))
+        page.evaluate("localStorage.removeItem('%s')" % NOTEBOOK_KEY)
     finally:
         if restore is not None:
             Path(STATIC_ROOT, "sw.js").write_text(restore, encoding="utf-8")
