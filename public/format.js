@@ -64,13 +64,17 @@ const nonEmpty = (v) => typeof v === 'string' && v.trim() !== '';
 const batchText = (batch) => (/^yc\b/i.test(batch) ? batch : `YC ${batch}`);
 const roundText = (v) => String(v).replace(/_/g, ' ');
 
-/** Card metadata parts: HN points/comments, PH votes, YC batch + location, Crunchbase round/amount, author. */
+export const pointsText = (n) => pluralize(n, 'point', 'points');
+export const commentsText = (n) => pluralize(n, 'comment', 'comments');
+export const votesText = (n) => pluralize(n, 'vote', 'votes');
+
+/** Card metadata parts: points/comments, votes, batch + location, Crunchbase round/amount, author (counts pluralised). */
 export function metaParts(extra) {
   const parts = [];
   if (!extra || typeof extra !== 'object') return parts;
-  if (finite(extra.points)) parts.push(`${extra.points} points${finite(extra.comments) ? ` \u00b7 ${extra.comments} comments` : ''}`);
-  else if (finite(extra.comments)) parts.push(`${extra.comments} comments`);
-  if (finite(extra.votes)) parts.push(`${extra.votes} votes`);
+  if (finite(extra.points)) parts.push(`${pointsText(extra.points)}${finite(extra.comments) ? ` \u00b7 ${commentsText(extra.comments)}` : ''}`);
+  else if (finite(extra.comments)) parts.push(commentsText(extra.comments));
+  if (finite(extra.votes)) parts.push(votesText(extra.votes));
   if (nonEmpty(extra.batch)) {
     parts.push(batchText(extra.batch));
     if (nonEmpty(extra.location)) parts.push(extra.location);
@@ -88,10 +92,20 @@ export function hnDiscussion(item) {
   return hn && hn !== safeHttpUrl(item?.url) ? hn : null;
 }
 
-// [extra field, row label, formatter]; emitted only for a non-empty string or finite number.
+const HN_LABELS = { points: 'HN points', comments: 'HN comments', author: 'HN author' };
+
+/** Drawer row label: source-branded wording only for that source (hn_* -> "HN author", producthunt -> "PH votes"), else generic. */
+export function rowLabel(field, generic, sourceId) {
+  const id = String(sourceId ?? '');
+  if (id.startsWith('hn_') && HN_LABELS[field]) return HN_LABELS[field];
+  if (id === 'producthunt' && field === 'votes') return 'PH votes';
+  return generic;
+}
+
+// [extra field, generic row label, formatter]; emitted only for a non-empty string or finite number.
 const EXTRA_ROWS = [
-  ['points', 'HN points'], ['comments', 'HN comments'], ['author', 'HN author'], ['votes', 'PH votes'],
-  ['batch', 'YC batch', batchText], ['location', 'Location'], ['industry', 'Industry'], ['teamSize', 'Team size'], ['status', 'Status'],
+  ['points', 'Points'], ['comments', 'Comments'], ['author', 'Author'], ['votes', 'Votes'],
+  ['batch', 'Batch', batchText], ['location', 'Location'], ['industry', 'Industry'], ['teamSize', 'Team size'], ['status', 'Status'],
   ['investmentType', 'Round type', roundText], ['moneyRaisedUsd', 'Amount', (v) => `$${compactMoney(v)}`], ['organization', 'Organization'],
 ];
 
@@ -106,9 +120,9 @@ export function detailRows(item) {
   if (nonEmpty(item?.kind)) rows.push({ label: 'Kind', value: kindLabel(item.kind) });
   if (nonEmpty(item?.region)) rows.push({ label: 'Region', value: regionLabel(item.region) });
   if (nonEmpty(item?.publishedAt) && absoluteTime(item.publishedAt)) rows.push({ label: 'Published', value: absoluteTime(item.publishedAt) });
-  for (const [field, label, fmt] of EXTRA_ROWS) {
+  for (const [field, generic, fmt] of EXTRA_ROWS) {
     const v = extra[field];
-    if (nonEmpty(v) || finite(v)) rows.push({ label, value: fmt ? fmt(v) : String(v) });
+    if (nonEmpty(v) || finite(v)) rows.push({ label: rowLabel(field, generic, item?.source?.id), value: fmt ? fmt(v) : String(v) });
   }
   const website = safeHttpUrl(extra.website);
   if (website && website !== url) rows.push({ label: 'Website', value: hostnameOf(website), href: website });

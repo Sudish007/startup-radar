@@ -11,8 +11,12 @@ import {
   pluralize,
   safeHttpUrl,
   hostnameOf,
+  pointsText,
+  commentsText,
+  votesText,
   metaParts,
   hnDiscussion,
+  rowLabel,
   detailRows,
 } from '../public/format.js';
 
@@ -89,6 +93,33 @@ describe('pluralize', () => {
     assert.equal(pluralize(0, 'item', 'items'), '0 items');
     assert.equal(pluralize(3, 'new item', 'new items'), '3 new items');
   });
+
+  test('points / comments / votes: singular only for exactly 1', () => {
+    assert.equal(pointsText(1), '1 point');
+    assert.equal(pointsText(0), '0 points');
+    assert.equal(pointsText(142), '142 points');
+    assert.equal(commentsText(1), '1 comment');
+    assert.equal(commentsText(0), '0 comments');
+    assert.equal(votesText(1), '1 vote');
+    assert.equal(votesText(312), '312 votes');
+  });
+});
+
+describe('rowLabel', () => {
+  test('source-branded labels only for the matching source id', () => {
+    assert.equal(rowLabel('author', 'Author', 'hn_show'), 'HN author');
+    assert.equal(rowLabel('author', 'Author', 'hn_launch'), 'HN author');
+    assert.equal(rowLabel('author', 'Author', 'techcabal'), 'Author');
+    assert.equal(rowLabel('author', 'Author', 'producthunt'), 'Author');
+    assert.equal(rowLabel('author', 'Author', undefined), 'Author');
+    assert.equal(rowLabel('points', 'Points', 'hn_show'), 'HN points');
+    assert.equal(rowLabel('comments', 'Comments', 'hn_launch'), 'HN comments');
+    assert.equal(rowLabel('points', 'Points', 'reddit'), 'Points');
+    assert.equal(rowLabel('votes', 'Votes', 'producthunt'), 'PH votes');
+    assert.equal(rowLabel('votes', 'Votes', 'hn_show'), 'Votes');
+    assert.equal(rowLabel('batch', 'Batch', 'yc'), 'Batch', 'the value already reads "YC <batch>"');
+    assert.equal(rowLabel('location', 'Location', 'yc'), 'Location');
+  });
 });
 
 describe('safeHttpUrl / hostnameOf', () => {
@@ -118,8 +149,12 @@ describe('safeHttpUrl / hostnameOf', () => {
 describe('metaParts', () => {
   test('metaParts (HN/PH/YC incl. location/Crunchbase)', () => {
     assert.deepEqual(metaParts({ points: 142, comments: 37, author: 'pg', hnUrl: 'https://news.ycombinator.com/item?id=1' }), ['142 points \u00b7 37 comments', 'by pg']);
+    assert.deepEqual(metaParts({ points: 1, comments: 0, author: 'pg' }), ['1 point \u00b7 0 comments', 'by pg'], 'singular point, plural zero comments');
     assert.deepEqual(metaParts({ comments: 4 }), ['4 comments']);
+    assert.deepEqual(metaParts({ comments: 1 }), ['1 comment']);
     assert.deepEqual(metaParts({ votes: 312 }), ['312 votes']);
+    assert.deepEqual(metaParts({ votes: 1 }), ['1 vote']);
+    assert.deepEqual(metaParts({ author: 'Emmanuel Nwosu' }), ['by Emmanuel Nwosu'], 'a generic author line for RSS sources');
     assert.deepEqual(metaParts({ batch: 'W26', location: 'San Francisco', industry: 'B2B' }), ['YC W26', 'San Francisco']);
     assert.deepEqual(metaParts({ batch: 'YC S25' }), ['YC S25']);
     assert.deepEqual(metaParts({ location: 'Berlin' }), [], 'location only follows a batch');
@@ -156,13 +191,23 @@ describe('detailRows', () => {
     assert.deepEqual(labels(hn).slice(5), ['HN points', 'HN comments', 'HN author']);
     assert.deepEqual(hn.slice(5).map((r) => r.value), ['142', '37', 'pg']);
 
-    const ph = detailRows(item({ extra: { votes: 312 } }));
-    assert.deepEqual(labels(ph).slice(5), ['PH votes']);
+    // the same fields from a non-HN source carry generic labels (TechCabal's RSS author is not an "HN author")
+    const rss = detailRows(item({ source: { id: 'techcabal', name: 'TechCabal' }, kind: 'news', region: 'africa', extra: { author: 'Emmanuel Nwosu' } }));
+    assert.deepEqual(labels(rss).slice(5), ['Author']);
+    assert.equal(rss.at(-1).value, 'Emmanuel Nwosu');
+    assert.ok(!labels(rss).some((l) => /\bHN\b|\bPH\b|\bYC\b/.test(l)), 'no source brand leaks into another source');
+    const redditLike = detailRows(item({ source: { id: 'reddit', name: 'Reddit' }, extra: { points: 3, comments: 1, author: 'u' } }));
+    assert.deepEqual(labels(redditLike).slice(5), ['Points', 'Comments', 'Author']);
 
-    const yc = detailRows(item({ extra: { batch: 'W26', location: 'San Francisco', industry: 'B2B', teamSize: 4, status: 'Active', website: 'https://acme.test/' } }));
-    assert.deepEqual(labels(yc).slice(5), ['YC batch', 'Location', 'Industry', 'Team size', 'Status', 'Website']);
-    assert.deepEqual(yc.find((r) => r.label === 'YC batch').value, 'YC W26');
+    const ph = detailRows(item({ source: { id: 'producthunt', name: 'Product Hunt' }, extra: { votes: 312, author: 'Bin Liu', via: 'atom' } }));
+    assert.deepEqual(labels(ph).slice(5), ['Author', 'PH votes']);
+    assert.deepEqual(labels(detailRows(item({ extra: { votes: 312 } }))).slice(5), ['Votes'], 'votes without the Product Hunt source are just votes');
+
+    const yc = detailRows(item({ source: { id: 'yc', name: 'Y Combinator' }, kind: 'accelerator', extra: { batch: 'W26', location: 'San Francisco', industry: 'B2B', teamSize: 4, status: 'Active', website: 'https://acme.test/' } }));
+    assert.deepEqual(labels(yc).slice(5), ['Batch', 'Location', 'Industry', 'Team size', 'Status', 'Website']);
+    assert.deepEqual(yc.find((r) => r.label === 'Batch').value, 'YC W26');
     assert.deepEqual(yc.find((r) => r.label === 'Team size').value, '4');
+    assert.equal(detailRows(item({ source: { id: 'hn_launch', name: 'Launch HN' }, extra: { batch: 'S25' } })).at(-1).value, 'YC S25', 'Launch HN batches read "YC S25" under the generic Batch label');
 
     const cb = detailRows(item({ extra: { investmentType: 'series_a', moneyRaisedUsd: 12_000_000, organization: 'Acme Inc' } }));
     assert.deepEqual(labels(cb).slice(5), ['Round type', 'Amount', 'Organization']);
