@@ -46,9 +46,21 @@ news, accelerator), region (USA, Europe, Asia, India, Latin America, Africa, glo
 All / USA / World toggle), source and time window, and search titles and summaries (all terms
 must match as whole words or word prefixes). Filter state is kept in the URL so views can be
 shared. `sources.html` shows every adapter with its last fetch status, last error and item
-count, followed by an "Explore more" list of directories that are links only. The same UI
-works unchanged on GitHub Pages and on the Node server; the server additionally exposes a
-read-only JSON API.
+count, followed by an "Explore more" list of directories that are links only. Three lens pages
+read the same data from a different angle: `trends.html` (rising terms and weekly counts),
+`funding.html` (funding items with the amounts parsed from their headlines) and `yc.html` (the
+three newest Y Combinator batches). `notebook.html` keeps the items you bookmark, with notes,
+tags and idea canvases, in this browser only. The same UI works unchanged on GitHub Pages and on
+the Node server; the server additionally exposes a read-only JSON API.
+
+**Honesty rules.** Every number on every page is a real count or sum of the items shown, with its
+basis stated next to it (the 90-day window, the selected batches, "N of M had a parseable
+amount"). Derived values are labelled with how they were derived: sector tags say
+`keyword-tagged`, funding amounts say `parsed from headline` or `parsed from summary`, dollar
+figures say `approx. USD at static rates — see table`, related items say `token overlap`. Nothing
+is called a score, trend score, opportunity index or ranking, there is no generated text, and
+anything kept only in your browser is labelled "stored in this browser only — export to keep
+it". Computations that cover only part of the items (the funding sums) show their coverage.
 
 ### The web UI
 
@@ -83,6 +95,56 @@ step and no third-party script. What it does:
   external-link icon for going straight to the source. The drawer writes `?item=<key>` to the
   URL, so a drawer link can be shared and the Back button closes it. The key is a hash of the
   item URL, stable across builds (`itemKey` in `public/filter.js`).
+- **Navigation.** Every page shares the same header: brand, a six-link nav row (Feed, Trends,
+  Funding, YC, Notebook, Sources; a `Menu` button opens it as a dropdown below 640 px), theme
+  toggle, "Last refreshed" and the shortcuts button (`public/nav.js` + `public/shell.js`). Go-to
+  chords work everywhere: press `g` then `h` / `t` / `f` / `y` / `n` within 800 ms to jump to
+  Feed / Trends / Funding / YC / Notebook (ignored while typing or while a dialog is open).
+- **Sectors (keyword-tagged).** Every item carries up to a few of 15 sector ids (AI/ML, Fintech,
+  Health & Bio, Climate & Energy, Devtools & Infra, Security, Edtech, Marketplace & Commerce,
+  SaaS & Productivity, Hardware & Robotics, Mobility & Logistics, Media & Creator, Consumer &
+  Social, Gaming, Space & Defense) assigned by word-boundary keyword rules over the title and
+  summary; the rule table is `src/lib/sectors.js`, nothing is stored. The home page gets sector
+  chips (counts from `data/stats.json`, OR within the group) and sector badges on cards and in
+  the drawer, each titled "keyword-tagged (title + summary)".
+- **Trends** (`trends.html`, from `data/trends.json`). Rising terms: each term is a word or
+  adjacent word pair from titles and summaries (stopwords removed); "this week" counts the items
+  of the current ISO week that mention it at least once (minimum 5), compared with the average
+  per week over the 4 weeks before; the rise is the difference and the ratio is shown as "new"
+  when the term never appeared before. Up to 5 example items per term open in the drawer. Below
+  it, items per sector / kind / region per ISO week for 12 weeks as SVG sparklines and tables
+  (the current, partial week is marked). All counts come from the 90-day feed window.
+- **Funding lens** (`funding.html`, from `data/funding.json`). Every `funding`-kind item of
+  the window with the amount, currency and stage parsed from its headline (then its summary) by
+  text rules (`src/lib/funding-parse.js`; USD, EUR, GBP, INR, "crore" / "lakh" imply INR);
+  each parsed value is labelled `parsed from headline` / `parsed from summary`, and a headline
+  that names a valuation or fund size is parsed as such, so the sums are "headline amounts".
+  Approximate USD uses the static ECB reference rates of 2026-10-05 printed in the page's FX
+  table (`src/lib/fx-rates.js`) and is used only to sort and to sum. Filters (stage, sector,
+  region, time window, sort) are URL-synced; totals by sector and by stage cover all window
+  items and the coverage line says how many items had a parseable amount and a stage.
+- **YC lens** (`yc.html`, from `data/yc.json`). The companies of the three newest Y Combinator
+  batches (slim fields only, from the `yc-oss` mirror; attribution "Source: yc-oss open API
+  mirror of ycombinator.com, refreshed hourly" is printed verbatim), grouped by the industry YC
+  lists, with the tags YC assigned (top 40) and team-size buckets as bars. A batch chip filters
+  everything, and the counts are recomputed from the companies shown. A company that is also a
+  feed item opens in the drawer; the others link to their YC page.
+- **Related items.** The drawer lists up to 5 related items from the loaded 90-day window: two
+  items are related when they share at least 2 significant words, or a sector and 1 word
+  (`public/related.js`, method stated under the list). Clicking one opens it in the same drawer.
+- **Notebook** (`notebook.html`). The bookmark button on every card and in the drawer saves the
+  item (its full feed record plus `savedAt`) to `localStorage['sr:notebook:v1']`, in this
+  browser only; the page says so in a banner. Saved items get a free-text note and
+  comma-separated tags (saved as you type), a search over title, summary, note and tags, and
+  open in the drawer. Idea canvases hold seven fields per idea (problem, who has it, why now,
+  existing solutions, distribution, moat, first ten customers) and link saved items as evidence;
+  new / duplicate / delete. Export Markdown or JSON downloads a file; Import JSON validates and
+  merges an export back (later edits win, tags are unioned); Remove, Delete canvas and Delete
+  everything ask for confirmation. A storage failure (quota, blocked storage) is shown as an
+  error toast, never swallowed. The service worker never touches `localStorage`, so the notebook
+  survives app updates (checked by `scripts/screenshots.py`). Store code:
+  `public/notebook-store.js` (items, storage adapter) and `public/notebook-tools.js` (canvases,
+  search, export, import, merge), both DOM-free and unit-tested.
 - **Keyboard layer** (press `?` for the in-app list):
 
   | Key | Action |
@@ -96,6 +158,7 @@ step and no third-party script. What it does:
   | `t` | Toggle dark / light theme |
   | `?` | Keyboard shortcuts |
   | `j` / `→`, `k` / `←` | In the drawer: next / previous item |
+  | `g` then `h` / `t` / `f` / `y` / `n` | Go to Feed / Trends / Funding / YC / Notebook (every page) |
 
   Shortcuts are ignored while typing in a field; `Esc` always closes exactly one layer.
 - **Live data.** `data/stats.json` is polled every 5 minutes (paused while the tab is hidden).
@@ -120,9 +183,11 @@ step and no third-party script. What it does:
   `@fontsource-variable/*` dev dependencies and fails if a byte size differs. The icon sprite
   is `public/icons.svg`; `npm run icons:make` renders the PWA icons under `public/icons/` with
   the repo's Playwright venv (`PW_CHANNEL` picks the browser, default `msedge`).
-- **Budget.** The home page ships under 120 KB of HTML + CSS + JS uncompressed (the service
-  worker and its client are loaded after `load` and have their own 10 KB budget); the
-  numbers are enforced by `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
+- **Budget.** Every page set (the HTML + CSS + JS one page loads for its first render) stays
+  under 150 KB uncompressed: home ≈ 149.7 KB, notebook ≈ 126 KB, funding ≈ 114 KB, YC ≈ 109 KB,
+  trends ≈ 108 KB, sources ≈ 78 KB. The service worker, its client and the lazily loaded
+  related-items module share a 16 KB deferred budget; the numbers are enforced and printed by
+  `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
   loops stop, transitions become instant). To measure a build with Lighthouse 13 (which has no
   `--chrome-path` flag) point it at a local browser and a running host:
 
@@ -271,10 +336,11 @@ whole set exceeds 600 KB (the rest goes to `archive.json`).
 
 ### Data files (GitHub Pages and the Node server)
 
-The frontend reads only these four files, with relative URLs, so it works under any base path
+The frontend reads only these seven files, with relative URLs, so it works under any base path
 (the live site lives under `/startup-radar/`). On GitHub Pages they are static files written by
 `npm run build:static`; the Node server generates the same shapes on request at the same paths
-(`Cache-Control: no-store`). All filtering, searching and paging happens in the browser
+(`Cache-Control: no-store`; the three derived files are cached per refresh and recomputed only
+when the database changed). All filtering, searching and paging happens in the browser
 (`public/filter.js`), so there are no query parameters.
 
 | File | Content |
@@ -282,10 +348,17 @@ The frontend reads only these four files, with relative URLs, so it works under 
 | `GET /data/items.json` | Array of items (same object shape as `/api/items` below, including `source.name`), newest first, from the last 90 days, at most 3 000. When the full set is larger than 600 KB this file holds the newest 800 and the rest moves to `archive.json`. |
 | `GET /data/archive.json` | Older items (same shape) when the split happened; otherwise the file does not exist (404). The UI fetches it on demand: when "Load more" runs out of recent items, when the 30-days or All-time chip is selected, or when a search is typed. |
 | `GET /data/sources.json` | Exactly the `/api/sources` payload: `{ "sources": [...], "exploreMore": [...] }`. Backs `sources.html`. |
-| `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started) and `archiveItems` (number of items in `archive.json`, `0` when there is none). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
+| `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started), `archiveItems` (number of items in `archive.json`, `0` when there is none) and `sectors` (`[{ id, label, count }]`, the 15 sectors with the number of window items tagged with each; the only place sector labels travel). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
+| `GET /data/trends.json` | Backs `trends.html`. `{ generatedAt, method, thisWeek { id, from, to, partial }, prior { from, to, weeks }, terms [{ term, kind: "token" \| "bigram", thisWeek, priorWeeklyAvg, rise, ratio \| null, examples [item keys, ≤ 5] }], weeks [12 ISO week ids], partialWeek, bySector / byKind / byRegion [{ id, label, counts[12] }], items }`. Computed by `src/trends.js` from the window items. |
+| `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, parsedFrom } + usdApprox \| null], totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
+| `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
-`sources.html` is the sources page on both hosts; the Node server keeps `/sources` as an alias
-for old links.
+Items in `items.json`, `archive.json` and `/api/items` carry `sectors: string[]` (sector ids,
+keyword-tagged from title and summary; see `src/lib/sectors.js`).
+
+`sources.html`, `trends.html`, `funding.html`, `yc.html` and `notebook.html` are the other pages
+on both hosts; the Node server also serves them without the extension (`/sources`, `/trends`,
+`/funding`, `/yc`, `/notebook`).
 
 ### JSON API (Node server only)
 
@@ -431,7 +504,9 @@ database that is deleted afterwards:
    items` and exits 1 without touching `dist/`, so a total outage never replaces a good site with
    an empty one. Otherwise `dist/` is recreated: `public/` is copied, `.nojekyll` is added and
    `data/items.json`, `data/sources.json`, `data/stats.json` (and `data/archive.json` when the
-   600 KB / 800-item split applies) are written. The last log line reads
+   600 KB / 800-item split applies) are written, then the derived `data/trends.json`,
+   `data/funding.json` and `data/yc.json` (logged as `[build] derived trends.json … KB, …`; a
+   `yc.json` above 300 KB fails the build). The last log line reads
    `[build] imported N from snapshot, fetched M live (K sources OK of T enabled), exported X items (…)`.
 
 Only items published in the last 90 days are exported (at most 3 000), so an item disappears
@@ -704,8 +779,9 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (168 tests in 47 suites, no network, about two
-seconds). The GitHub Pages workflow runs the same command before every build.
+Runs `node --test` over `test/*.test.js` (370 tests in 71 suites, no network, about three
+seconds; count with `node --test --test-reporter=tap 2>&1 | Select-String '^# tests'`). The
+GitHub Pages workflow runs the same command before every build.
 
 - `normalize.test.js`: URL normalization (tracking parameters, fragments, trailing slashes),
   HTML stripping and entity decoding, truncation, date parsing, `normalizeItem` validation.
@@ -719,8 +795,8 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   become one row), first-source-wins, FTS5 prefix search (and the logged `LIKE` fallback),
   filters, pagination, status rows, `listItems`.
 - `export.test.js`: the shared payload builders: `itemsPayload` window/limit/`source.name` and
-  the `items.json` / `archive.json` split, `statsPayload` (`generatedAt`, `archiveItems`),
-  `sourcesPayload` key set.
+  the `items.json` / `archive.json` split, `decorateItem` (`sectors` on every exported item),
+  `statsPayload` (`generatedAt`, `archiveItems`, `sectors` counts), `sourcesPayload` key set.
 - `snapshot.test.js`: round trip export → import into a second database (counts, kinds,
   `fetchedAt` preserved, unknown sources skipped, invalid rows counted, live data wins), status
   seeding, `fetchSnapshot` with 404 / repeated timeouts / success.
@@ -728,14 +804,14 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   temp directory: `.nojekyll`, copied `index.html`, merged `items.json`, failing source shown in
   `sources.json`, 404 snapshot tolerated, exit 1 and no `data/` when every source fails.
 - `filter.test.js`: the browser-side filter module (`public/filter.js`): kind, region, World
-  scope, sources, each time chip, prefix search, multi-term AND, case and punctuation handling,
-  newest-first ordering; `itemKey` (deterministic base-36 hash, never throws), `pointsOf`,
+  scope, sources, sectors (OR within the group, AND with the other filters), each time chip,
+  prefix search, multi-term AND, case and punctuation handling, newest-first ordering; `itemKey` (deterministic base-36 hash, never throws), `pointsOf`,
   `comparePoints` and `sortItems` (stable, `'points'` only).
 - `format.test.js`: `public/format.js` with Hacker News, Product Hunt, YC and Crunchbase
   fixtures: relative and absolute times, compact money, `metaParts`, `detailRows` emitting only
   the fields present (Discussion omitted when it equals the item URL, Website only for a valid
   http(s) URL that differs from it), `hostnameOf`, `safeHttpUrl` rejecting `javascript:`, `data:`
-  and relative strings, `pluralize`.
+  and relative strings, `pluralize`, the shared `METHOD_LABELS` wording and `sectorLabels`.
 - `radar.test.js`: `public/radar.js` geometry: quadrant per kind at every age; the sub-wedge
   allocation (`allocateSlots`: widths sum exactly to the sector, empty regions get 0, non-empty
   ones at least 6°, square-root weighting with the exact 1 : 2 ratio for 4 vs 16 items, a 45°
@@ -750,19 +826,48 @@ seconds). The GitHub Pages workflow runs the same command before every build.
   in dense de-stacked layouts; the 400 cap keeps the newest items while `radarCount` stays the
   honest pre-cap count.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
-  clamping, `/api/refresh` 404/401/409/200, `/data/*.json` routes and `no-store`, HTML pages,
+  clamping (items carry `sectors`), `/api/refresh` 404/401/409/200, `/data/*.json` routes
+  (including `trends.json`, `funding.json`, `yc.json` and their per-refresh cache) and
+  `no-store`, the six HTML pages (`/`, `/sources`, `/trends`, `/funding`, `/yc`, `/notebook`),
   security headers, `/sw.js` with the injected version and `Cache-Control: no-cache`, the
   manifest and PWA icons.
+- `sectors.test.js`: the 15 sector rules (`src/lib/sectors.js`): positives and negatives per
+  sector with word boundaries, table order, de-duplication, labels.
+- `funding-parse.test.js`: `parseFunding` over real-looking headlines: amounts in USD / EUR /
+  GBP / INR with `k` / `M` / `bn` / `crore` / `lakh`, stages (pre-seed to Series H, bridge and
+  growth only when followed by a round word), `parsedFrom` title or summary, `toUsd` at the
+  static rates.
+- `text.test.js`, `weeks.test.js`: `public/text.js` stopwords, significant tokens, singulars
+  and bigrams; `src/lib/weeks.js` ISO week ids, Monday starts, the last-N-weeks list.
+- `trends.test.js`, `derived.test.js`: `buildTrends` (12 weeks, partial current week, minimum
+  support, rise and ratio, ≤ 5 examples, counts per sector / kind / region) and `buildDerived`
+  (the three derived payloads from an in-memory database, including the un-windowed YC query).
+- `shell.test.js`: `public/nav.js` (six pages, go-to keys, `pageOf` at the root and under a
+  sub-path) and the shell contract of every `public/*.html`: the static nav list equals `NAV`
+  with `aria-current` on its own page, no page-local help dialog / toasts / footer links, one
+  attribute-free `<h1>`.
+- `related.test.js`: `relatedItems` (≥ 2 shared significant words or a shared sector + 1 word,
+  self and same-URL excluded, ordered by shared count then date, capped at 5).
+- `notebook-store.test.js`: `public/notebook-store.js` and `public/notebook-tools.js`: add /
+  remove / note / tags (re-adding keeps the note), canvases with the seven fields and linked
+  keys, prefix search over items and canvases, Markdown and JSON export, `fromJson` rejecting
+  non-notebooks with readable errors, `merge` (later wins, tags unioned), the storage adapter
+  (`load` never throws, `save` reports quota / blocked storage).
 - `public-urls.test.js`: every file under `public/` uses relative URLs only (no `href="/..."`,
   `'/api/'`, `'/data/'`, `url(/...)` or `register('/...')`), the manifest has `start_url` and
-  `scope` `./`, no `id` and three `./icons/` entries, both pages keep an attribute-free `<h1>`.
+  `scope` `./`, no `id` and three `./icons/` entries, every page keeps an attribute-free `<h1>`,
+  loads only its own module script and the right stylesheets (`pages.css` + `body.page-<name>`
+  on the lens and notebook pages).
 - `public-safety.test.js`: no `innerHTML`, `insertAdjacentHTML`, `outerHTML`, `document.write`,
   `eval`, `new Function` or `window.open` in `public/*.js`; `'_blank'` appears only inside
-  `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`.
-- `budget.test.js`: the home page set (`index.html`, `styles.css`, `theme.js`, `ui.js`,
-  `app.js`, `filter.js`, `format.js`, `radar.js`) and the sources set each stay under 130 000
-  bytes as deployed (LF line endings), `theme.js` under 1 024 bytes, `pwa.js` + `sw.js` under
-  10 000 bytes, no off-origin `<script src>` and no Google Fonts references.
+  `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`; no inline scripts, styles or
+  handlers in the HTML; the honesty wording guard (no `trend(ing) score`, `opportunity index`
+  or standalone `score` anywhere in `public/`).
+- `budget.test.js`: each page set (home, sources, trends, funding, YC, notebook: the HTML, CSS
+  and JS that page loads for its first render) stays under 150 000 bytes as deployed (LF line
+  endings), `theme.js` under 1 024 bytes, the deferred set (`pwa.js`, `sw.js`, `related.js`,
+  `text.js`) under 16 000 bytes, no off-origin `<script src>` and no Google Fonts references;
+  it prints the per-file byte table.
 
 `scripts/verify-pages.mjs <baseUrl> [--max-age-hours N]` (also `npm run verify:pages -- <baseUrl>`)
 checks a deployed site over HTTP without a browser: the HTML, CSS and JS use only relative URLs,
@@ -770,18 +875,23 @@ all static files answer 200 (pages, scripts, stylesheets, the icon sprite, fonts
 the manifest parses with `start_url` and `scope` `./` and no `id`, `sw.js` carries its injected
 build version, no file references Google Fonts, `data/items.json` is a newest-first array within
 the 90-day window with the required fields, `data/sources.json` and `data/stats.json` have the
-documented shape, `generatedAt` is fresher than `N` hours (default 3) and `data/archive.json` is
-either absent or a consistent split. It prints one `PASS`/`FAIL` line per check and exits 1 on
-any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
+documented shape, `generatedAt` is fresher than `N` hours (default 3), `data/archive.json` is
+either absent or a consistent split, `data/trends.json` has 12 weeks and 15 sector rows of
+non-negative integers, `data/funding.json` has consistent coverage counts and `rates.USD === 1`,
+`data/yc.json` stays under 300 KB with ≥ 100 companies in 3 batches, the verbatim attribution and
+industry counts that sum to the company count, every page has one bare `<h1>`, its own script and
+stylesheets, and `notebook.html` carries the browser-only banner. It prints one `PASS`/`FAIL`
+line per check (117 checks) and exits 1 on any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
 
 `scripts/screenshots.py` runs the frontend in a real browser. It needs Python with `playwright`
 installed and a local Edge or Chrome; it launches the browser via Playwright's `channel` option
 so no browser download is required. Two modes:
 
 - **Parity mode** (default, needs the Node server with a fresh database): captures the eight
-  screenshots above and asserts, for both pages at 320 / 390 / 768 / 1024 / 1280 / 1920 px in
+  screenshots above and asserts, for all six pages at 320 / 390 / 768 / 1024 / 1280 / 1920 px in
   the dark and the light theme and in every state (default, filtered, sources list open, list
-  view, drawer open, help open, phone filter sheet): body font 16 px, nothing below 12 px, every
+  view, drawer open, help open, phone filter sheet, lens pages with their drawers, the notebook
+  with a seeded item and an open canvas editor): body font 16 px, nothing below 12 px, every
   control exactly `--control-h` (40 px from 1024 px with a fine pointer, 44 px otherwise), no
   horizontal overflow,
   composited WCAG AA contrast of every visible text node and indicator (text 4.5:1, non-text
@@ -789,12 +899,15 @@ so no browser download is required. Two modes:
   `rel="noopener noreferrer"` on outbound links and no console errors. Scenario checks cover the
   sticky header and filter bar, the top-bar width budget with the longest status text, the theme
   toggle and its persistence, self-hosted fonts, reduced motion, the drawer (focus trap and
-  return, history, `?item=` deep links, prev/next, copy link), the keyboard map and the one-Esc
-  rule, the 5-minute poll with a fake newer build (pill, silent replace, failure streak),
+  return, history, `?item=` deep links, prev/next, copy link, sectors and related items,
+  the save button), the shared shell (phone menu, nav row, `g` chords, sector chips, bookmark
+  round trip), the keyboard map and the one-Esc rule, the 5-minute poll with a fake newer build
+  (pill, silent replace, failure streak),
   sort / view toggles, skeleton / empty / error states, the radar geometry and plates, the
   sources page layout, and the service worker in a dedicated context (scope, versioned
-  precache, data navigations untouched, offline shell, update toast and reload-once,
-  installability via CDP). It also checks that the page requested `data/items.json` exactly once
+  precache, data navigations untouched, offline shell, update toast and reload-once, a saved
+  notebook item surviving the worker update, installability via CDP). It also checks that the
+  page requested `data/items.json` exactly once
   and never `/api/items`, and that the rendered result of every filter, time chip, search and
   source selection equals what `/api/items` returns for the same query.
 - **Smoke mode** (`SMOKE_ONLY=1`, needs only the static files, writes no screenshots): home
@@ -802,8 +915,13 @@ so no browser download is required. Two modes:
   filters change the cards and the URL, `?item=<key>` deep links open the drawer, the service
   worker registers under the page's own path (so it also proves a sub-path deployment such as
   `/startup-radar/`; set `STATIC_ROOT` to the served folder to exercise a real version swap),
-  `sources.html` lists every source from `data/sources.json`, the 390 px layout has no overflow,
-  and there are no console errors. Use it against a `dist/` preview or the live Pages site.
+  `sources.html` lists every source from `data/sources.json`, the trends / funding / YC pages
+  show exactly the numbers of their JSON files and open the drawer, the notebook saves an item
+  from the home page, keeps notes and tags across a reload, searches, edits and duplicates
+  canvases, downloads the Markdown and JSON exports, imports the JSON back and deletes behind
+  `confirm()`, the 390 px layout of every page has no overflow, and there are no console errors.
+  Use it against a `dist/` preview or the live Pages site. On Windows run it with
+  `$env:PYTHONUTF8 = "1"` when piping the output (check labels contain `↓` and `—`).
 
 `SCENARIOS=run_drawer,run_sw` limits a run to the named scenario functions while iterating.
 
