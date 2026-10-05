@@ -84,6 +84,9 @@ function renderAll() {
     clear(els.status);
     els.status.setAttribute('role', 'alert');
     els.status.textContent = `Could not load sources: ${loadError}`;
+    // the placeholder tiles and skeleton rows reserve the layout while loading; nothing honest can replace them
+    els.strip.hidden = true;
+    els.tableWrap.hidden = true;
     return;
   }
   const sources = payload.sources;
@@ -95,8 +98,6 @@ function renderAll() {
   els.status.textContent = `${sources.length} configured, ${enabled.length} enabled.`;
   clear(els.strip);
   els.strip.append(tile(sources.length, 'Configured'), tile(enabled.length, 'Enabled'), tile(withErrors.length, 'With errors'));
-  els.strip.hidden = false;
-  els.tableWrap.hidden = false;
 }
 
 async function loadSources() {

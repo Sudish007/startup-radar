@@ -1,7 +1,5 @@
-// Startup Radar home page (vanilla ES module, strict CSP: DOM via ui.js el(), textContent only).
-// Data: ./data/{items,sources,stats}.json, archive.json on demand; filtering in ./filter.js.
-// Layers: detail drawer (?item=<key>), keyboard map, phone filter sheet, 5-minute stats
-// polling with a real new-items diff, desktop radar panel, theme/view preferences.
+// Startup Radar home page (vanilla ES module, strict CSP: DOM via ui.js el(), textContent only). Data from
+// ./data/*.json (filtering in ./filter.js); drawer (?item=<key>), keyboard map, filter sheet, stats polling, radar.
 
 import { SINCE_VALUES, filterItems, itemKey, pointsOf, sortItems } from './filter.js';
 import { KIND_LABELS, REGION_LABELS, absoluteTime, detailRows, hnDiscussion, hostnameOf, kindLabel, metaParts, pluralize, regionLabel, relativeTime, safeHttpUrl } from './format.js';
@@ -268,7 +266,7 @@ function renderError() {
   els.results.setAttribute('aria-busy', 'false');
 }
 
-/** Synchronous redraw (DOM, count, URL state are final on return); FLIP + stagger are layered on afterwards. */
+/** Synchronous redraw (DOM, count and URL final on return); FLIP + stagger layered on afterwards. */
 function render({ animate = true } = {}) {
   if (data.loadError) { renderError(); return; }
   const view = effectiveView();
@@ -412,7 +410,7 @@ async function loadItems() {
   }
 }
 
-/** Load archive.json once; 404 = no archive; a network error shows an inline alert with Retry. */
+/** Load archive.json once; 404 = no archive; a network error shows an inline alert + Retry. */
 function ensureArchive({ revalidate = false } = {}) {
   if (data.archive !== null || data.archiveItems === 0 || data.loadError) return Promise.resolve();
   if (data.archiveLoading) return data.archiveLoading;
@@ -438,7 +436,7 @@ function ensureArchive({ revalidate = false } = {}) {
   return data.archiveLoading;
 }
 
-/** Adopt a newer archive split (forget a loaded archive); returns whether one had been loaded. */
+/** Adopt a newer archive split (forget a loaded one); returns whether one had been loaded. */
 function adoptArchiveFrom(stats) {
   const next = finiteNumber(stats.archiveItems) ?? 0;
   if (data.archive === null && data.archiveItems === next) return false;
@@ -977,6 +975,15 @@ function wireEvents() {
 
 // -- boot --
 
+/** Resolves at first-contentful-paint (or after 300 ms): the shell paints before data fetch + render. */
+function shellPainted() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 300);
+    if (!PerformanceObserver.supportedEntryTypes?.includes('paint')) return resolve();
+    new PerformanceObserver((list) => { if (list.getEntriesByName('first-contentful-paint').length) resolve(); }).observe({ type: 'paint', buffered: true });
+  });
+}
+
 async function init() {
   initTheme();
   fillHelp(SHORTCUTS);
@@ -988,6 +995,7 @@ async function init() {
   readStateFromLocation();
   syncControls();
   wireEvents();
+  await shellPainted();
   await Promise.allSettled([loadSources(), loadStats(), loadItems()]);
   readStateFromLocation(); // drops unknown source ids
   syncControls();

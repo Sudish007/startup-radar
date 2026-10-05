@@ -5,11 +5,12 @@
 let awaitingReload = false;
 let updateToast = null;
 
-function showUpdateToast(toast, worker) {
+/** One persistent toast; Reload skips the registration's *current* waiting worker (a newer install may replace the one seen first). */
+function showUpdateToast(toast, reg, worker) {
   if (updateToast?.isConnected) return;
   updateToast = toast('Update available \u2014 Reload', {
     variant: 'update',
-    action: { label: 'Reload', onClick: () => { awaitingReload = true; worker.postMessage({ type: 'SKIP_WAITING' }); } },
+    action: { label: 'Reload', onClick: () => { awaitingReload = true; (reg.waiting || worker).postMessage({ type: 'SKIP_WAITING' }); } },
   });
 }
 
@@ -20,11 +21,11 @@ async function registerServiceWorker(toast) {
   if (location.protocol !== 'https:' && !local) return;
   try {
     const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-    if (reg.waiting && navigator.serviceWorker.controller) showUpdateToast(toast, reg.waiting);
+    if (reg.waiting && navigator.serviceWorker.controller) showUpdateToast(toast, reg, reg.waiting);
     reg.addEventListener('updatefound', () => {
       const w = reg.installing;
       w?.addEventListener('statechange', () => {
-        if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdateToast(toast, w);
+        if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdateToast(toast, reg, w);
       });
     });
     navigator.serviceWorker.addEventListener('controllerchange', () => {

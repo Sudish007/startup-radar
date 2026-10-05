@@ -29,7 +29,7 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> (inline SVG is not focusable in any target browser) */
+/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> (not focusable in any target browser) */
 export function icon(name, className = 'icon') {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', className);
@@ -53,7 +53,7 @@ export function scrollLock(on) {
   document.documentElement.classList.toggle('has-modal', Boolean(on));
 }
 
-/** Run `done` once `node`'s exit animation ends (at once under reduced motion or without animations; 300 ms safety net). */
+/** Run `done` when `node`'s exit animation ends (at once under reduced motion / no animations; 300 ms safety net). */
 export function afterExit(node, done) {
   if (reduceMotion.matches || !node?.getAnimations || node.getAnimations().length === 0) { done(); return; }
   let fired = false;
@@ -82,7 +82,7 @@ function dismissToast(t, immediate = false) {
   afterExit(t, () => t.remove());
 }
 
-/** toast(message, { variant: info|error|update, action: { label, onClick }, duration }); max two auto-dismissing, actioned ones persist. */
+/** toast(message, { variant: info|error|update, action: { label, onClick }, duration }); <= 2 auto-dismissing, actioned persist. */
 export function toast(message, { variant = 'info', action = null, duration = 6000 } = {}) {
   const host = toastsEl();
   const t = el('div', { className: `toast ${variant}`, role: variant === 'error' ? 'alert' : null }, [el('p', { text: message })]);
