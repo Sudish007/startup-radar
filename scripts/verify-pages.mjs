@@ -13,8 +13,15 @@ const PRIMARY_MAX_ITEMS = 800; // EXPORT_LIMITS.primaryMaxItems
 const MIN_SOURCES = 21;
 const MIN_EXPLORE = 10;
 const REQUIRED_ITEM_FIELDS = ['id', 'title', 'url', 'source', 'kind', 'region', 'publishedAt'];
-const STATIC_FILES = ['index.html', 'sources.html', 'app.js', 'filter.js', 'sources.js', 'styles.css'];
-const JS_FILES = ['app.js', 'filter.js', 'sources.js'];
+const STATIC_FILES = [
+  'index.html', 'sources.html', 'app.js', 'filter.js', 'sources.js', 'styles.css', 'sources.css',
+  'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js', 'icons.svg', 'manifest.webmanifest',
+  'fonts/geist-latin-wght-normal.woff2', 'fonts/geist-mono-latin-wght-normal.woff2',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon.svg',
+];
+const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js'];
+const TEXT_FILES = ['index.html', 'sources.html', 'styles.css', 'sources.css', 'app.js', 'filter.js', 'sources.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'pwa.js', 'sw.js', 'icons.svg', 'manifest.webmanifest'];
+const ICON_FILES = ['icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const FETCH_TIMEOUT_MS = 20_000;
 
 const results = [];
@@ -104,6 +111,7 @@ async function main() {
   const index = files['index.html']?.text ?? '';
   check('index.html references ./styles.css and ./app.js', index.includes('href="./styles.css"') && index.includes('src="./app.js"'));
   check('index.html has the CSP meta tag', /http-equiv="Content-Security-Policy"/.test(index));
+  check('index.html links the manifest, theme.js and viewport-fit=cover', index.includes('rel="manifest" href="./manifest.webmanifest"') && index.includes('src="./theme.js"') && index.includes('viewport-fit=cover'));
   const sourcesHtml = files['sources.html']?.text ?? '';
   check('sources.html references ./styles.css and ./sources.js', sourcesHtml.includes('href="./styles.css"') && sourcesHtml.includes('src="./sources.js"'));
   for (const name of ['index.html', 'sources.html']) {
@@ -116,8 +124,44 @@ async function main() {
     const hit = JS_ABSOLUTE_RES.map((re) => re.exec(text)).find(Boolean);
     check(`${name} has no '/api/, '/data/ or fetch('/ patterns`, text.length > 0 && !hit, hit ? `found ${hit[0]}` : '');
   }
-  const css = files['styles.css']?.text ?? '';
-  check('styles.css has no url(/...) references', css.length > 0 && !/url\(\s*['"]?\/(?!\/)/.test(css));
+  for (const name of ['styles.css', 'sources.css']) {
+    const css = files[name]?.text ?? '';
+    check(`${name} has no url(/...) references`, css.length > 0 && !/url\(\s*['"]?\/(?!\/)/.test(css));
+  }
+  const sw = files['sw.js']?.text ?? '';
+  check('sw.js has its build version injected (no __BUILD_VERSION__ token)', sw.length > 0 && !sw.includes('__BUILD_VERSION__'), /const VERSION = '([^']*)'/.exec(sw)?.[1] ?? 'no VERSION line');
+  const thirdParty = TEXT_FILES.filter((name) => /fonts\.googleapis\.com|fonts\.gstatic\.com/.test(files[name]?.text ?? ''));
+  check('no Google Fonts reference in any text file', thirdParty.length === 0, thirdParty.join(', '));
+  for (const name of ['fonts/geist-latin-wght-normal.woff2', 'fonts/geist-mono-latin-wght-normal.woff2']) {
+    const res = files[name];
+    check(`${name} is served (200, non-empty)`, Boolean(res) && res.status === 200 && res.text.length > 1000, res ? `${res.text.length} chars, ${res.headers.get('content-type')}` : '');
+  }
+
+  // --- manifest + icons --------------------------------------------------------
+  let manifest = null;
+  try {
+    manifest = JSON.parse(files['manifest.webmanifest']?.text ?? '');
+  } catch {
+    manifest = null;
+  }
+  check('manifest.webmanifest parses as JSON', Boolean(manifest), manifest ? `content-type ${files['manifest.webmanifest']?.headers.get('content-type')}` : 'parse error');
+  if (manifest) {
+    const manifestUrl = new URL('manifest.webmanifest', base);
+    const startUrl = new URL(manifest.start_url ?? '', manifestUrl);
+    const idOk = !('id' in manifest) || new URL(manifest.id, startUrl.origin).href === startUrl.href;
+    check('manifest start_url and scope are ./ and id is absent (or equals the resolved start_url)', manifest.start_url === './' && manifest.scope === './' && idOk, `start_url ${manifest.start_url}, scope ${manifest.scope}, id ${'id' in manifest ? manifest.id : 'absent'} -> ${startUrl.href}`);
+    check('manifest is standalone with three icons', manifest.display === 'standalone' && Array.isArray(manifest.icons) && manifest.icons.length === 3 && manifest.icons.every((i) => typeof i.src === 'string' && i.src.startsWith('./icons/')), `${manifest.icons?.length ?? 0} icons`);
+  }
+  for (const name of ICON_FILES) {
+    try {
+      const res = await fetch(new URL(name, base).href, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      const bytes = Buffer.from(await res.arrayBuffer());
+      const isPng = bytes.length > 24 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      check(`${name} -> 200 image/png`, res.status === 200 && /image\/png/.test(res.headers.get('content-type') ?? '') && isPng, `HTTP ${res.status}, ${res.headers.get('content-type')}, ${isPng ? `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}` : 'not a PNG'}`);
+    } catch (err) {
+      check(`${name} -> 200 image/png`, false, err.message);
+    }
+  }
 
   // --- data/items.json ------------------------------------------------------
   let items = null;
