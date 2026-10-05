@@ -83,8 +83,10 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./styles.css", "./sources.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
-SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192"]
+SHELL = ["./", "./index.html", "./sources.html", "./styles.css", "./sources.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192", "g"]
+# nav.js NAV in order (label, href); every page ships this static list and the shell re-fills it
+NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Sources", "./sources.html")]
 
 KIND_LABELS = [
     ("launch", "Launch"),
@@ -209,7 +211,7 @@ SNAPSHOT_JS = r"""
   const total = m ? parseInt(m[1], 10) : (countText.startsWith('No items') ? 0 : null);
   const cards = Array.from(document.querySelectorAll('#results article')).map((a) => {
     const t = a.querySelector('time');
-    const kindBadge = a.querySelector('.badge:not(.badge-source):not(.badge-region)');
+    const kindBadge = a.querySelector('.badge:not(.badge-source):not(.badge-region):not(.badge-sector)');
     return {
       title: text(a.querySelector('h2 a')),
       source: text(a.querySelector('.badge-source')),
@@ -641,7 +643,22 @@ LAYOUT_JS = r"""
     if (getComputedStyle(links[0], '::after').content !== 'none') out.cardIssues.push('card-link ::after overlay');
   }
   out.cardExt = cards.map((c) => ({ key: c.dataset.key, href: c.querySelector('a.card-ext') ? c.querySelector('a.card-ext').href : null }));
-  out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region), #detail .badge:not(.badge-region)')).map((b) => b.textContent.trim());
+  out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region):not(.badge-sector), #detail .badge:not(.badge-region):not(.badge-sector)')).map((b) => b.textContent.trim());
+  out.sectorBadges = Array.from(document.querySelectorAll('#results .badge-sector, #detail .badge-sector')).map((b) => ({ text: b.textContent.trim(), title: b.title }));
+  // shell: one nav list with the six static links, the phone toggle only below 640, no second help/toasts
+  const navList = document.querySelectorAll('nav.site-nav ul#site-nav-list');
+  out.navLinks = navList.length === 1 ? Array.from(navList[0].querySelectorAll('a')).map((a) => [a.textContent.trim(), a.getAttribute('href'), a.getAttribute('aria-current')]) : null;
+  const toggle = document.getElementById('nav-toggle');
+  if (!toggle) problem('#nav-toggle missing');
+  else if (visible(toggle) !== (innerWidth < 640)) problem('#nav-toggle visibility at ' + innerWidth);
+  if (innerWidth >= 640 && navList.length === 1) {
+    const ul = navList[0];
+    const links = Array.from(ul.querySelectorAll('a'));
+    if (!links.every(visible)) problem('nav links hidden at ' + innerWidth);
+    const brand = document.querySelector('.topbar .brand');
+    if (brand && rect(ul).top < rect(brand).bottom - 1) problem('nav is not a second row under the brand row');
+    for (const sel of ['dialog#help', '#toasts', 'p.footer-links']) if (document.querySelectorAll(sel).length !== 1) problem(sel + ' x' + document.querySelectorAll(sel).length);
+  }
   out.regionBadges = Array.from(document.querySelectorAll('#results .badge-region, #detail .badge-region')).map((b) => b.textContent.trim());
   // AC 19 stat tiles
   out.statN = Array.from(document.querySelectorAll('.stat-n')).map((n) => ({ text: n.textContent.trim(), lines: n.getClientRects().length, ws: getComputedStyle(n).whiteSpace, overflow: n.scrollWidth > n.clientWidth }));
@@ -908,6 +925,8 @@ class Data:
         enabled = [s for s in self.sources["sources"] if s["enabled"]]
         self.sources_tile = "%d/%d" % (len([s for s in enabled if not s.get("lastError")]), len(enabled))
         self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
+        self.sectors = self.stats.get("sectors") or []  # [{id, label, count}] (FEAT-001)
+        self.sector_labels = set(s["label"] for s in self.sectors)
 
     def within_48h(self, now, slack_s=0):
         n = 0
@@ -1418,10 +1437,13 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
         bad_regions = [r for r in lay["regionBadges"] if r not in data.region_labels]
         check("%s: honest badges (sources, kinds, regions only) and sort options ['', 'points']" % label, not bad_badges and not bad_regions and lay["sortOptions"] == ["", "points"],
               "%d badges%s" % (len(lay["badges"]), ("; bad " + ", ".join((bad_badges + bad_regions)[:3])) if (bad_badges or bad_regions) else ""))
+        bad_sectors = [b for b in lay["sectorBadges"] if not (b["text"] in data.sector_labels or re.match(r"^\+\d+$", b["text"])) or "keyword-tagged" not in b["title"]]
+        check("%s: sector badges use stats.json labels (or +N) and are titled keyword-tagged" % label, not bad_sectors, "%d sector badges%s" % (len(lay["sectorBadges"]), ("; bad " + json.dumps(bad_sectors[:2])) if bad_sectors else ""))
         pairs = [[e["href"], data.by_key[e["key"]]["url"]] for e in lay["cardExt"] if e["key"] in data.by_key and e["href"]]
         # a.href is the parsed URL (e.g. a bare origin gains its trailing slash): compare after the same WHATWG normalisation
         ext_ok = len(pairs) == len(lay["cardExt"]) and page.evaluate("(pairs) => pairs.every(([href, url]) => href === new URL(url).href)", pairs)
         check("%s: every a.card-ext points at item.url" % label, ext_ok, "%d cards" % len(lay["cardExt"]))
+    check("%s: static nav list equals NAV with aria-current on this page" % label, lay["navLinks"] is not None and [(l[0], l[1]) for l in lay["navLinks"]] == NAV and [l[2] for l in lay["navLinks"]].count("page") == 1 and lay["navLinks"][5 if kind == "sources" else 0][2] == "page", str(lay["navLinks"])[:160])
     if kind == "sources" and lay["statN"]:
         texts = [s["text"] for s in lay["statN"]]
         src = data.sources["sources"]
@@ -1912,6 +1934,171 @@ def run_drawer(browser):
         ctx.close()
 
 
+NAV_STATE_JS = r"""
+() => {
+  const nav = document.querySelector('nav.site-nav');
+  const ul = document.getElementById('site-nav-list');
+  const btn = document.getElementById('nav-toggle');
+  const r = (el) => el.getBoundingClientRect();
+  const vis = (el) => { const b = r(el); return b.width > 0 && b.height > 0; };
+  const links = Array.from(ul.querySelectorAll('a'));
+  return {
+    open: nav.classList.contains('is-open'), expanded: btn.getAttribute('aria-expanded'), controls: btn.getAttribute('aria-controls'), label: btn.getAttribute('aria-label'),
+    btnH: r(btn).height, btnVisible: vis(btn), listVisible: vis(ul), linkHeights: links.map((a) => r(a).height), linksVisible: links.filter(vis).length,
+    listLeft: r(ul).left, listRight: r(ul).right, listTop: r(ul).top, headerBottom: document.querySelector('header.site-header').getBoundingClientRect().bottom,
+    scrollWidth: document.documentElement.scrollWidth, innerWidth, active: document.activeElement ? document.activeElement.id : null,
+    labels: links.map((a) => [a.textContent.trim(), a.getAttribute('href'), a.getAttribute('aria-current')]),
+  };
+}
+"""
+
+
+def run_shell(browser):
+    """FEAT-002: shared shell (phone nav dropdown, nav row, `g` chords), sector chips + badges, bookmarks, drawer sections."""
+    for width in (320, 390):
+        ctx = new_ctx(browser, viewport={"width": width, "height": 844}, mobile=True)
+        page = ctx.new_page()
+        errors = ErrorLog(page)
+        goto_home(page)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: #nav-toggle visible (44px, aria-controls=site-nav-list), list hidden" % width, s["btnVisible"] and abs(s["btnH"] - 44) <= 0.5 and s["controls"] == "site-nav-list" and s["label"] == "Menu" and s["expanded"] == "false" and not s["listVisible"], str({k: s[k] for k in ("btnH", "expanded", "listVisible")}))
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: toggle opens the dropdown (aria-expanded=true, six 44px rows, full width under the header, no overflow)" % width,
+              s["open"] and s["expanded"] == "true" and s["linksVisible"] == 6 and all(abs(h - 44) <= 0.5 for h in s["linkHeights"]) and s["listLeft"] == 0 and abs(s["listRight"] - s["innerWidth"]) <= 16 and abs(s["listTop"] - s["headerBottom"]) <= 1 and s["scrollWidth"] <= s["innerWidth"],
+              "rows %s, list %s-%s top %s header %s, scroll %s/%s" % (s["linkHeights"], s["listLeft"], s["listRight"], s["listTop"], s["headerBottom"], s["scrollWidth"], s["innerWidth"]))
+        check("shell %dpx: dropdown lists NAV in order with aria-current on Feed" % width, [(l[0], l[1]) for l in s["labels"]] == NAV and s["labels"][0][2] == "page", str(s["labels"])[:120])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: Esc closes the dropdown, aria-expanded=false, focus on the toggle, highlight untouched" % width, not s["open"] and s["expanded"] == "false" and not s["listVisible"] and s["active"] == "nav-toggle" and page.evaluate("document.querySelectorAll('#results .is-active').length") == 0)
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        # the open panel covers the hero, so a real tap there would hit the panel: dispatch the pointerdown on an outside element
+        page.dispatch_event("footer.site-footer p", "pointerdown")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        check("shell %dpx: an outside pointerdown closes the dropdown (no drawer opened)" % width, not page.evaluate("document.querySelector('dialog#detail').open"))
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        # the shell's Esc only runs while the menu is open: with it closed, Esc on the page stays the page's (one-Esc rule)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        goto_sources(page)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx sources: toggle present, list hidden, aria-current on Sources" % width, s["btnVisible"] and not s["listVisible"] and s["labels"][5][2] == "page" and [(l[0], l[1]) for l in s["labels"]] == NAV)
+        errors.check("shell %dpx" % width)
+        ctx.close()
+
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    data = Data(ctx.request)
+    goto_home(page)
+    s = page.evaluate(NAV_STATE_JS)
+    check("shell 1280px: nav is a row of six visible links under the brand row, toggle hidden, --topbar-h == header height", s["linksVisible"] == 6 and not s["btnVisible"] and page.evaluate("Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) - document.querySelector('header.site-header').offsetHeight) <= 0.5"), "%d visible, header %s" % (s["linksVisible"], page.evaluate("document.querySelector('header.site-header').offsetHeight")))
+    keys = page.evaluate("(() => { document.getElementById('help-open').click(); return [...document.querySelectorAll('#help dl.help-list dt')].map((d) => d.textContent.trim()); })()")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
+    check("shell 1280px: help lists the g-chords (g h, g t, g f, g y, g n)", all(k in keys for k in ("g h", "g t", "g f", "g y", "g n")), str(keys)[:200])
+    # g + t navigates (routed: trends.html does not exist until FEAT-003; the stub declares an icon so no /favicon.ico probe fires)
+    page.route("**/trends.html", lambda route: route.fulfill(status=200, content_type="text/html", body='<!DOCTYPE html><title>routed</title><link rel="icon" href="./icons/favicon.svg"><h1>routed</h1>'))
+    page.focus("#q")
+    page.keyboard.type("gt")
+    page.wait_for_timeout(300)
+    check("shell 1280px: `g` `t` typed into #q only inserts characters", page.evaluate("document.getElementById('q').value") == "gt" and "trends" not in page.url, page.url)
+    page.fill("#q", "")
+    wait_state(page, {"q": ABSENT})
+    page.evaluate("document.activeElement.blur()")
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=WAIT_MS):
+        page.keyboard.press("g")
+        page.keyboard.press("t")
+    check("shell 1280px: `g` then `t` navigates to ./trends.html (routed)", page.url == BASE + "/trends.html", page.url)
+    page.unroute("**/trends.html")
+    goto_home(page)
+    page.keyboard.press("g")
+    page.wait_for_timeout(900)
+    page.keyboard.press("t")
+    page.wait_for_timeout(200)
+    check("shell 1280px: `g` expires after 800 ms (`t` then toggles the theme, no navigation)", page.url.startswith(BASE + "/") and "trends" not in page.url and page.evaluate("document.documentElement.dataset.theme") == "light")
+    page.keyboard.press("t")
+    # sector chips
+    chips = page.evaluate("[...document.querySelectorAll('#sector-chips button.chip-sector')].map((b) => ({ id: b.dataset.sector, text: b.textContent, pressed: b.getAttribute('aria-pressed') }))")
+    expected_chips = ["%s \u00b7 %d" % (s["label"], s["count"]) for s in data.sectors]
+    check("sectors: one chip per stats.sectors entry labelled '<label> · <count>' under 'Sectors · keyword-tagged'", [c["text"] for c in chips] == expected_chips and all(c["pressed"] == "false" for c in chips) and page.evaluate("document.getElementById('sector-label').textContent") == "Sectors \u00b7 keyword-tagged", "%d chips" % len(chips))
+    base = snapshot(page)
+    pick = next((s for s in data.sectors if 0 < s["count"] < len(data.items)), None)
+    if pick is None:
+        check("sectors: a sector with items exists", False)
+    else:
+        sid = pick["id"]
+        expected_total = len([it for it in data.items if sid in (it.get("sectors") or [])])
+        page.click('#sector-chips button[data-sector="%s"]' % sid)
+        wait_state(page, {"sector": sid})
+        snap = snapshot(page)
+        cards_ok = all(sid in (data.by_key[c["key"]].get("sectors") or []) for c in snap["cards"] if c["key"] in data.by_key)
+        badge_ok = page.evaluate("(label) => [...document.querySelectorAll('#results article.card')].every((c) => [...c.querySelectorAll('.badge-sector')].some((b) => b.textContent.trim() === label || /^\\+\\d+$/.test(b.textContent.trim())))", pick["label"])
+        check("sectors: chip %s -> URL sector=%s, total %d = items carrying it, every card carries it (badge or +N), chip pressed, filter count 1" % (sid, sid, expected_total),
+              snap["total"] == expected_total and snap["total"] < base["total"] and cards_ok and badge_ok and page.get_attribute('#sector-chips button[data-sector="%s"]' % sid, "aria-pressed") == "true" and page.evaluate("document.querySelector('#filters-open .count-badge').textContent") == "1",
+              "UI %s, expected %s, baseline %s" % (snap["total"], expected_total, base["total"]))
+        second = next((s for s in data.sectors if s["id"] != sid and s["count"] > 0), None)
+        if second:
+            page.click('#sector-chips button[data-sector="%s"]' % second["id"])
+            wait_state(page, {"sector": "%s,%s" % (sid, second["id"])})
+            snap2 = snapshot(page)
+            exp2 = len([it for it in data.items if sid in (it.get("sectors") or []) or second["id"] in (it.get("sectors") or [])])
+            check("sectors: two chips = OR within the facet (sector=a,b, total %d)" % exp2, snap2["total"] == exp2, "UI %s" % snap2["total"])
+        page.click("#reset")
+        wait_state(page, {"sector": ABSENT})
+        snap = snapshot(page)
+        check("sectors: Reset clears sector= and restores the baseline", snap["total"] == base["total"] and page.evaluate("document.querySelectorAll('#sector-chips [aria-pressed=\"true\"]').length") == 0)
+        goto_home(page, "?sector=%s,bogus" % sid)
+        wait_state(page, {"sector": sid})
+        check("sectors: ?sector= round trip drops unknown ids and keeps %s pressed" % sid, page.get_attribute('#sector-chips button[data-sector="%s"]' % sid, "aria-pressed") == "true" and snapshot(page)["total"] == expected_total)
+        goto_home(page)
+    # bookmarks
+    page.evaluate("localStorage.removeItem('sr:notebook:v1')")
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    first = snapshot(page)["cards"][0]
+    btn = '#results article.card[data-key="%s"] button.card-save' % first["key"]
+    check("bookmark: every card has button.card-save (aria-pressed=false, label 'Save to notebook')", page.evaluate("[...document.querySelectorAll('#results article.card')].every((c) => { const b = c.querySelector('button.card-save'); return b && b.getAttribute('aria-pressed') === 'false' && b.getAttribute('aria-label') === 'Save to notebook'; })"))
+    page.click(btn)
+    page.wait_for_selector("#toasts .toast", timeout=WAIT_MS)
+    stored = page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null')")
+    saved = (stored or {}).get("items", {}).get(first["key"])
+    check("bookmark: click stores the item in localStorage['sr:notebook:v1'] with the documented fields, toasts 'stored in this browser only', no drawer",
+          stored and stored.get("version") == 1 and saved and saved["url"] == data.by_key[first["key"]]["url"] and all(k in saved for k in ("key", "title", "url", "source", "kind", "region", "publishedAt", "summary", "sectors", "savedAt")) and page.evaluate("document.querySelector('#toasts .toast p').textContent") == "Saved to notebook \u00b7 stored in this browser only" and not page.evaluate("document.querySelector('dialog#detail').open") and page.get_attribute(btn, "aria-pressed") == "true",
+          json.dumps(saved)[:160] if saved else str(stored)[:160])
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    check("bookmark: reload keeps the pressed state", page.get_attribute(btn, "aria-pressed") == "true" and page.get_attribute(btn, "aria-label") == "Saved \u2014 remove from notebook")
+    # drawer: sectors row, save action, related section
+    page.click('#results article.card[data-key="%s"] h2 a' % first["key"])
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    page.wait_for_function("() => /related items? in 90 days$/.test(document.querySelector('#detail .related h3').textContent)", timeout=WAIT_MS)
+    d = page.evaluate("(() => { const p = document.querySelector('#detail .detail-panel'); const rel = p.querySelector('.related'); const save = p.querySelector('.detail-actions [data-save-key]'); const sec = p.querySelector('.detail-sectors'); return { h3: rel.querySelector('h3').textContent, n: rel.querySelectorAll('button.related-item').length, method: (rel.querySelector('p.method') || {}).textContent, afterMeta: !!sec ? sec.compareDocumentPosition(p.querySelector('.detail-actions')) & Node.DOCUMENT_POSITION_FOLLOWING : true, relBeforeActions: !!(rel.compareDocumentPosition(p.querySelector('.detail-actions')) & Node.DOCUMENT_POSITION_FOLLOWING), save: save ? { pressed: save.getAttribute('aria-pressed'), text: save.textContent.trim(), h: save.getBoundingClientRect().height } : null, sectors: sec ? { title: sec.querySelector('dd').title, badges: [...sec.querySelectorAll('.badge-sector')].map((b) => b.textContent.trim()) } : null, itemHeights: [...rel.querySelectorAll('button.related-item')].map((b) => b.getBoundingClientRect().height) }; })()")
+    item = data.by_key[first["key"]]
+    want_sectors = [next(s["label"] for s in data.sectors if s["id"] == sid) for sid in (item.get("sectors") or [])]
+    m = re.match(r"^Related \u00b7 (\d+) related items? in 90 days$", d["h3"])
+    check("drawer: sections render between the metadata and the actions: Sectors row (keyword-tagged, %s), 'Related · N related items in 90 days' with <= 5 40px items and the method sentence" % want_sectors,
+          m is not None and d["n"] <= 5 and d["n"] <= int(m.group(1)) and d["method"].startswith("method: token overlap") and d["relBeforeActions"] and d["afterMeta"] and (d["sectors"] == {"title": "keyword-tagged (title + summary)", "badges": want_sectors} if want_sectors else d["sectors"] is None) and all(abs(h - 40) <= 0.5 for h in d["itemHeights"]),
+          "h3 '%s', %d items, sectors %s" % (d["h3"], d["n"], d["sectors"]))
+    check("drawer: 'Saved' secondary action is pressed for the bookmarked item (40px control)", d["save"] and d["save"]["pressed"] == "true" and d["save"]["text"] == "Saved" and abs(d["save"]["h"] - 40) <= 0.5, str(d["save"]))
+    page.click("#detail .detail-actions [data-save-key]")
+    page.wait_for_function("() => document.querySelector('#toasts .toast p') && document.querySelector('#toasts .toast p').textContent === 'Removed from notebook'", timeout=WAIT_MS)
+    check("drawer: toggling in the drawer removes the item, repaints the card button and toasts 'Removed from notebook'", page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).items") == {} and page.get_attribute(btn, "aria-pressed") == "false" and page.get_attribute("#detail .detail-actions [data-save-key]", "aria-pressed") == "false")
+    if d["n"] >= 1:
+        hist = page.evaluate("history.length")
+        page.click("#detail .related-list button.related-item")
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=item["title"], timeout=WAIT_MS)
+        check("drawer: a related item opens in the same drawer with a pushed history entry (?item=<key>)", page.evaluate("history.length") == hist + 1 and "item=" in page.evaluate("location.search") and page.evaluate("new URLSearchParams(location.search).get('item')") != first["key"])
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    errors.check("shell desktop")
+    ctx.close()
+
+
 class Served:
     """Mutable JSON bodies for routed data files (page.route reads the current value per request)."""
 
@@ -2082,8 +2269,10 @@ def run_sort_view(browser):
         check("C5 %dpx: #sort sits in a div.select wrapper with appearance:none and the chevron-down icon" % width, c5["wrap"] and c5["appearance"] == "none" and (c5["chevron"] or "").endswith("#chevron-down"), str(c5))
         page.click("#view-list")
         page.wait_for_function("() => document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
-        rows = page.evaluate("(() => { const cards = [...document.querySelectorAll('#results article.card')]; return { n: cards.length, rows: cards.filter((c) => c.classList.contains('card-row')).length, cols: new Set(cards.map((c) => Math.round(c.offsetLeft))).size, ellipsis: [...document.querySelectorAll('.meta-line')].every((m) => m.scrollWidth <= m.clientWidth), selectors: cards.every((a) => a.querySelector('h2 a') && a.querySelector('.badge-source') && a.querySelector('.badge:not(.badge-source):not(.badge-region)') && a.querySelector('.badge-region') && a.querySelector('time[datetime]')), stored: localStorage.getItem('sr:view') }; })()")
-        check("AC 15 %dpx: list view = single column of article.card.card-row, ellipsised meta line, snapshot selectors intact, sr:view=list" % width, rows["n"] >= 1 and rows["rows"] == rows["n"] and rows["cols"] == 1 and rows["ellipsis"] and rows["selectors"] and rows["stored"] == "list", str(rows))
+        rows = page.evaluate("(() => { const cards = [...document.querySelectorAll('#results article.card')]; return { n: cards.length, rows: cards.filter((c) => c.classList.contains('card-row')).length, cols: new Set(cards.map((c) => Math.round(c.offsetLeft))).size, ellipsis: [...document.querySelectorAll('.meta-line')].every((m) => { const cs = getComputedStyle(m); return cs.textOverflow === 'ellipsis' && cs.overflowX === 'hidden' && cs.whiteSpace === 'nowrap' && m.clientWidth <= m.parentElement.clientWidth && m.title === m.textContent; }), selectors: cards.every((a) => a.querySelector('h2 a') && a.querySelector('.badge-source') && a.querySelector('.badge:not(.badge-source):not(.badge-region):not(.badge-sector)') && a.querySelector('.badge-region') && a.querySelector('time[datetime]')), stored: localStorage.getItem('sr:view') }; })()")
+        # the meta line now ends with the sector badges (FEAT-002), so it may legitimately be longer than its box: the contract is the
+        # CSS ellipsis (nowrap + hidden + ellipsis), no layout overflow, and the full line in `title`
+        check("AC 15 %dpx: list view = single column of article.card.card-row, ellipsised meta line (full text in title), snapshot selectors intact, sr:view=list" % width, rows["n"] >= 1 and rows["rows"] == rows["n"] and rows["cols"] == 1 and rows["ellipsis"] and rows["selectors"] and rows["stored"] == "list", str(rows))
         page.reload(wait_until="domcontentloaded")
         wait_cards(page)
         check("AC 15 %dpx: the list choice survives a reload" % width, page.evaluate("document.getElementById('results').classList.contains('view-list')") and page.evaluate("document.getElementById('view-list').getAttribute('aria-pressed')") == "true")
@@ -2784,6 +2973,7 @@ PARITY_SCENARIOS = [
     ("run_fonts", run_fonts),
     ("run_reduced_motion", run_reduced_motion),
     ("run_drawer", run_drawer),
+    ("run_shell", run_shell),
     ("run_keyboard", run_keyboard),
     ("run_live_data", run_live_data),
     ("run_sort_view", run_sort_view),

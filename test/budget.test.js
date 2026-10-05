@@ -1,9 +1,10 @@
 // Payload budget of the frontend (design.md section 21, ceiling raised from 120 000 to 125 000 bytes
-// by the polish pass: radar caption channel + spread, source-aware labels, plurals; and to 130 000 by
-// the radar fan fix: bucket-proportional sub-wedges, radial jitter, de-stacking, density tiers): the
-// HTML + CSS + JS a page loads stays under the ceiling uncompressed, theme.js fits in 1 KB, no
-// third-party script and no Google Fonts anywhere. Sizes are measured as deployed (LF line endings), so
-// an autocrlf checkout on Windows reports the same bytes as the Pages build.
+// by the polish pass: radar caption channel + spread, source-aware labels, plurals; to 130 000 by
+// the radar fan fix: bucket-proportional sub-wedges, radial jitter, de-stacking, density tiers; and to
+// 150 000 per page set by the ideas-engine task spec (shared shell + nav, drawer module, sector chips,
+// bookmarks)): the HTML + CSS + JS a page loads stays under the ceiling uncompressed, theme.js fits in
+// 1 KB, no third-party script and no Google Fonts anywhere. Sizes are measured as deployed (LF line
+// endings), so an autocrlf checkout on Windows reports the same bytes as the Pages build.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,12 +12,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-const BUDGET = 130_000;
-const HOME = ['index.html', 'styles.css', 'theme.js', 'ui.js', 'app.js', 'filter.js', 'format.js', 'radar.js'];
-const SOURCES = ['sources.html', 'styles.css', 'sources.css', 'theme.js', 'ui.js', 'format.js', 'sources.js'];
-// Loaded after `load` like sw.js (design.md section 21 excludes post-load PWA plumbing from the first-render budget); bounded here.
-const DEFERRED = ['pwa.js', 'sw.js'];
-const DEFERRED_BUDGET = 10_000;
+const BUDGET = 150_000; // task spec: per-page ceiling (plan D9)
+const HOME = ['index.html', 'styles.css', 'theme.js', 'ui.js', 'app.js', 'filter.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'notebook-store.js'];
+const SOURCES = ['sources.html', 'styles.css', 'sources.css', 'theme.js', 'ui.js', 'format.js', 'sources.js', 'nav.js', 'shell.js'];
+// Loaded after `load` like sw.js, or lazily on the first drawer open (related.js + text.js); bounded here.
+const DEFERRED = ['pwa.js', 'sw.js', 'related.js', 'text.js'];
+const DEFERRED_BUDGET = 16_000;
 
 const read = (name) => fs.readFileSync(path.join(PUBLIC_DIR, name), 'utf8');
 const size = (name) => Buffer.byteLength(read(name).replace(/\r\n/g, '\n'));
@@ -39,7 +40,7 @@ describe('frontend payload budget', () => {
     assert.ok(total < BUDGET, `sources set is ${total} bytes`);
   });
 
-  test('deferred PWA scripts (pwa.js + sw.js) stay small', () => {
+  test('deferred scripts (pwa.js + sw.js + related.js + text.js) stay small', () => {
     const total = DEFERRED.reduce((n, f) => n + size(f), 0);
     assert.ok(total < DEFERRED_BUDGET, `deferred set is ${total} bytes`);
   });

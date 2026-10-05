@@ -62,12 +62,14 @@ export function compareNewestFirst(a, b) {
 }
 
 /**
- * Apply { kind, region, sources, q, since } to `items` -> new array, newest first. region 'world' =
- * every region except 'usa'; sources = array of ids (empty = all); since = a SINCE_VALUES entry.
+ * Apply { kind, region, sources, q, since, sectors } to `items` -> new array, newest first. region 'world' =
+ * every region except 'usa'; sources = array of ids (empty = all); since = a SINCE_VALUES entry; sectors =
+ * array of sector ids (empty = all; an item passes when item.sectors carries any of them - OR within, AND across).
  */
-export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '' } = {}, now = new Date()) {
+export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '', sectors = [] } = {}, now = new Date()) {
   const sinceIso = SINCE_VALUES.has(since) ? sinceToIso(since, now) : null;
   const sourceSet = Array.isArray(sources) && sources.length > 0 ? new Set(sources) : null;
+  const sectorSet = Array.isArray(sectors) && sectors.length > 0 ? new Set(sectors) : null;
   const qTokens = queryTokens(q);
 
   const out = [];
@@ -79,6 +81,7 @@ export function filterItems(items, { kind = '', region = '', sources = [], q = '
       continue;
     }
     if (sourceSet && !sourceSet.has(item.source?.id)) continue;
+    if (sectorSet && !(Array.isArray(item.sectors) && item.sectors.some((s) => sectorSet.has(s)))) continue;
     if (sinceIso && !(String(item.publishedAt ?? '') >= sinceIso)) continue;
     if (qTokens.length > 0 && !matchesQuery(item, qTokens)) continue;
     out.push(item);
