@@ -1,5 +1,4 @@
-// Startup Radar home page (vanilla ES module, strict CSP: DOM via ui.js el(), textContent only). Data from
-// ./data/*.json (filtering in ./filter.js); shell + drawer modules, keyboard map, filter sheet, stats polling, radar.
+// Startup Radar home page (strict CSP: DOM via ui.js el(), textContent only; ./data/*.json filtered by ./filter.js).
 
 import { SINCE_VALUES, filterItems, pointsOf, sortItems } from './filter.js';
 import { KIND_LABELS, METHOD_LABELS, REGION_LABELS, absoluteTime, hostnameOf, metaParts, pluralize, pointsText, regionLabel, relativeTime, safeHttpUrl, sectorLabels, votesText } from './format.js';
@@ -21,7 +20,7 @@ const EASE_IN_OUT = 'cubic-bezier(.4,0,.2,1)';
 const FLIP_MAX = 60;
 const TEXT_ENTRY = 'textarea, [contenteditable]:not([contenteditable="false"]), input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input[type="number"], input[type="password"]';
 const INERT_SELECTOR = 'header.site-header, section.hero, main > :not(#filter-panel):not(.scrim), footer.site-footer, #new-items, #toasts';
-// The keyboard map (shown in the help dialog; onKeydown implements exactly these rows)
+// Help-dialog rows; onKeydown implements exactly these
 const SHORTCUTS = [
   [['/'], 'Focus the search field'],
   [['j', '\u2193'], 'Next card (at the last card: load more)'],
@@ -235,7 +234,7 @@ function renderCard(item, view) {
   return el('article', { className: 'card', dataset: { key } }, children);
 }
 
-// -- bookmarks (browser-only storage, ./notebook-store.js); every save button carries data-save-key --
+// -- bookmarks (./notebook-store.js; save buttons carry data-save-key) --
 
 const isSaved = (key) => Boolean(nb.items[key]);
 
@@ -647,11 +646,10 @@ function sectorsSection(item) {
   ]);
 }
 
-/** Drawer section: related items (lazy ./related.js; the count is the real number in the loaded window). */
+/** Drawer section: related items (lazy ./related.js; real count over the loaded window). */
 function relatedSection(item, { drawer: d }) {
   const box = el('section', { className: 'related', 'aria-labelledby': 'related-title' }, [el('h3', { id: 'related-title', text: 'Related \u00b7 \u2026' })]);
   const fill = (mod) => {
-    if (!box.isConnected) return;
     const { count, items } = mod.relatedItems(item, allItems(), { max: 5 });
     box.querySelector('h3').textContent = `Related \u00b7 ${pluralize(count, 'related item', 'related items')} in 90 days`;
     if (items.length) {

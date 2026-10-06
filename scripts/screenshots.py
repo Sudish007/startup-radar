@@ -51,6 +51,7 @@ import re
 import struct
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -932,6 +933,7 @@ class Data:
 
     def __init__(self, request):
         api = Api(request)
+        self.api = api
         self.items = api.data("items.json")
         self.sources = api.data("sources.json")
         self.stats = api.data("stats.json")
@@ -943,6 +945,16 @@ class Data:
         self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
         self.sectors = self.stats.get("sectors") or []  # [{id, label, count}] (FEAT-001)
         self.sector_labels = set(s["label"] for s in self.sectors)
+
+    def tiles(self):
+        """The four home stat tiles as the page should print them (feed, last 24 h, last 7 d, sources OK/enabled)."""
+        return [self.feed_tile, str(self.stats["last24h"]), str(self.stats["last7d"]), self.sources_tile]
+
+    def refresh_stats(self):
+        """Re-fetch stats.json: on Express the rolling 24 h / 7 d counts move while a long matrix run is in progress."""
+        self.stats = self.api.data("stats.json")
+        self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
+        return self.tiles()
 
     def within_48h(self, now, slack_s=0):
         n = 0
@@ -1777,9 +1789,9 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
     if kind == "home":
         # the 600 ms count-up is requestAnimationFrame-driven (not a WAAPI animation): wait for the final numbers
         try:
-            page.wait_for_function("(exp) => [...document.querySelectorAll('.stat-n')].map((n) => n.textContent.trim()).join('|') === exp", arg="|".join([data.feed_tile, str(data.stats["last24h"]), str(data.stats["last7d"]), data.sources_tile]), timeout=5000)
-        except Exception:  # noqa: BLE001 - the assertion below reports the mismatch
-            pass
+            page.wait_for_function("(exp) => [...document.querySelectorAll('.stat-n')].map((n) => n.textContent.trim()).join('|') === exp", arg="|".join(data.tiles()), timeout=5000)
+        except Exception:  # noqa: BLE001 - the counts may have moved since Data was fetched (rolling windows); compare with fresh stats
+            data.refresh_stats()
     lay = page.evaluate(LAYOUT_JS, {"width": width})
     con = page.evaluate(CONTRAST_AUDIT_JS, theme)
     pre = page.evaluate(PREMISE_JS, theme)
@@ -1809,8 +1821,15 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
         bad_regions = [r for r in lay["regionBadges"] if r not in data.region_labels]
         check("%s: honest badges (sources, kinds, regions only) and sort options ['', 'points']" % label, not bad_badges and not bad_regions and lay["sortOptions"] == ["", "points"],
               "%d badges%s" % (len(lay["badges"]), ("; bad " + ", ".join((bad_badges + bad_regions)[:3])) if (bad_badges or bad_regions) else ""))
-        bad_sectors = [b for b in lay["sectorBadges"] if not (b["text"] in data.sector_labels or re.match(r"^\+\d+$", b["text"])) or "keyword-tagged" not in b["title"]]
-        check("%s: sector badges use stats.json labels (or +N) and are titled keyword-tagged" % label, not bad_sectors, "%d sector badges%s" % (len(lay["sectorBadges"]), ("; bad " + json.dumps(bad_sectors[:2])) if bad_sectors else ""))
+        # a label badge is titled "keyword-tagged (title + summary)"; a "+N" overflow badge is titled with the N hidden labels (app.js sectorBadges)
+        def sector_badge_ok(b):
+            m = re.match(r"^\+(\d+)$", b["text"])
+            if m:
+                hidden = b["title"].split(", ")
+                return len(hidden) == int(m.group(1)) and all(h in data.sector_labels for h in hidden)
+            return b["text"] in data.sector_labels and "keyword-tagged" in b["title"]
+        bad_sectors = [b for b in lay["sectorBadges"] if not sector_badge_ok(b)]
+        check("%s: sector badges use stats.json labels titled keyword-tagged, or +N titled with the N hidden labels" % label, not bad_sectors, "%d sector badges%s" % (len(lay["sectorBadges"]), ("; bad " + json.dumps(bad_sectors[:2])) if bad_sectors else ""))
         pairs = [[e["href"], data.by_key[e["key"]]["url"]] for e in lay["cardExt"] if e["key"] in data.by_key and e["href"]]
         # a.href is the parsed URL (e.g. a bare origin gains its trailing slash): compare after the same WHATWG normalisation
         ext_ok = len(pairs) == len(lay["cardExt"]) and page.evaluate("(pairs) => pairs.every(([href, url]) => href === new URL(url).href)", pairs)
@@ -1825,8 +1844,8 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
     elif lay["statN"] and not sheet_open:
         texts = [s["text"] for s in lay["statN"]]
         single = all(s["lines"] == 1 and s["ws"] == "nowrap" and not s["overflow"] for s in lay["statN"])
-        honest = texts[0] == data.feed_tile and texts[1] == str(data.stats["last24h"]) and texts[2] == str(data.stats["last7d"]) and texts[3] == data.sources_tile
-        check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s / %s / %s / %s" % (data.feed_tile, data.stats["last24h"], data.stats["last7d"], data.sources_tile))
+        honest = texts == data.tiles()
+        check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s" % " / ".join(data.tiles()))
         if width >= 1024 and not mobile:
             # 268 px tiles at a 976 px content width; headless reserves a 15 px scrollbar gutter at 1024, so the content is 961 px and the tiles 259.5 px
             check("%s: stats 2x2 beside the radar (tiles >= 259px)" % label, lay["tileColumns"] == 2 and lay["tileMinWidth"] >= 259 and lay["radarDisplay"] != "none" and lay.get("radarInSecondColumn"), "%d columns, min %.1fpx, radar %s, layout viewport %s" % (lay["tileColumns"], lay["tileMinWidth"], lay["radarDisplay"], lay["layoutRight"]))
@@ -2487,13 +2506,38 @@ def run_shell(browser):
     page.click("#detail .detail-actions [data-save-key]")
     page.wait_for_function("() => document.querySelector('#toasts .toast p') && document.querySelector('#toasts .toast p').textContent === 'Removed from notebook'", timeout=WAIT_MS)
     check("drawer: toggling in the drawer removes the item, repaints the card button and toasts 'Removed from notebook'", page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).items") == {} and page.get_attribute(btn, "aria-pressed") == "false" and page.get_attribute("#detail .detail-actions [data-save-key]", "aria-pressed") == "false")
-    if d["n"] >= 1:
-        hist = page.evaluate("history.length")
-        page.click("#detail .related-list button.related-item")
-        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=item["title"], timeout=WAIT_MS)
-        check("drawer: a related item opens in the same drawer with a pushed history entry (?item=<key>)", page.evaluate("history.length") == hist + 1 and "item=" in page.evaluate("location.search") and page.evaluate("new URLSearchParams(location.search).get('item')") != first["key"])
     page.keyboard.press("Escape")
     page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    page.wait_for_timeout(300)
+    # related items + history: the first loaded card that has at least one related item (the first card may have none)
+    related_key = None
+    for card in snapshot(page)["cards"]:
+        page.click('#results article.card[data-key="%s"] h2 a' % card["key"])
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        page.wait_for_function("() => /related items? in 90 days$/.test(document.querySelector('#detail .related h3').textContent)", timeout=WAIT_MS)
+        if page.evaluate("document.querySelectorAll('#detail .related-list button.related-item').length") >= 1:
+            related_key = card["key"]
+            break
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+    if related_key is None:
+        check("drawer: related-item history steps", True, "no loaded card has a related item on this data; Back step not exercised")
+    else:
+        rel_item = data.by_key[related_key]
+        hist = page.evaluate("history.length")
+        page.click("#detail .related-list button.related-item")
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: a related item opens in the same drawer with a pushed history entry (?item=<key>)", page.evaluate("history.length") == hist + 1 and "item=" in page.evaluate("location.search") and page.evaluate("new URLSearchParams(location.search).get('item')") != related_key)
+        # Back from the related entry must re-open the previous item in the still-open drawer (review-phase-1 #1)
+        page.go_back()
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: Back after a related item shows the previous item again with its key in the URL",
+              page.evaluate("document.querySelector('dialog#detail').open") and page.evaluate("new URLSearchParams(location.search).get('item')") == related_key)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        check("drawer: Esc after Back leaves no ?item in the URL", page.evaluate("new URLSearchParams(location.search).get('item')") is None)
     errors.check("shell desktop")
     ctx.close()
 
@@ -3430,7 +3474,9 @@ def main():
                 try:
                     fn(browser)
                 except Exception as e:  # noqa: BLE001 - one broken scenario must not hide the others
-                    check("%s completed without an exception" % name, False, ("%s: %s" % (type(e).__name__, e)).replace("\n", " ")[:400])
+                    frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == __file__]
+                    where = " (screenshots.py:%d)" % frames[-1].lineno if frames else ""
+                    check("%s completed without an exception" % name, False, ("%s: %s%s" % (type(e).__name__, e, where)).replace("\n", " ")[:400])
         finally:
             browser.close()
 
