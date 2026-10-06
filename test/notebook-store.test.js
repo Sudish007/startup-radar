@@ -176,6 +176,20 @@ describe('notebook-store: storage adapter', () => {
     assert.deepEqual(load(s), nb);
   });
 
+  test('load coerces stored canvases like items (missing linkedKeys / fields, bad timestamps; non-objects dropped)', () => {
+    const s = fakeStorage();
+    s.setItem(STORAGE_KEY, JSON.stringify({ version: 1, items: {}, canvases: { a: { title: 'Hand-edited', updatedAt: 'nope' }, b: 'junk', c: { id: 'c', title: 'Full', problem: 7, linkedKeys: ['k', 'k', 3, ''], createdAt: T0, updatedAt: T1 } } }));
+    const nb = load(s);
+    assert.deepEqual(Object.keys(nb.canvases).sort(), ['a', 'c']);
+    const a = nb.canvases.a;
+    assert.equal(a.id, 'a');
+    assert.deepEqual(a.linkedKeys, []);
+    for (const f of CANVAS_FIELDS) assert.equal(typeof a[f], 'string', `${f} is a string`);
+    assert.ok(!Number.isNaN(Date.parse(a.createdAt)) && !Number.isNaN(Date.parse(a.updatedAt)));
+    assert.deepEqual(nb.canvases.c, { id: 'c', createdAt: T0, updatedAt: T1, linkedKeys: ['k', '3'], title: 'Full', problem: '7', who: '', whyNow: '', existing: '', distribution: '', moat: '', firstTen: '' });
+    assert.equal(toMarkdown(nb).includes('### Hand-edited'), true, 'export works on the loaded notebook');
+  });
+
   test('save throws a readable Error on quota / unavailable storage', () => {
     const quota = { setItem: () => { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; } };
     assert.throws(() => save(emptyNotebook(), quota), /Could not save to this browser.s storage \(it is full\)/);

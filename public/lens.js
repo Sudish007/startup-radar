@@ -4,7 +4,7 @@
 
 import { createDrawer, keyOf, openExternal } from './drawer.js';
 import { mountShell } from './shell.js';
-import { createStatusLine, el, fetchJson, openHelp, pollStats, startPwa, startTicker, tickTimes, toggleTheme } from './ui.js';
+import { createStatusLine, el, fetchJson, openHelp, pollStats, startPwa, startTicker, tickTimes, toast, toggleTheme } from './ui.js';
 
 export const STATS_URL = './data/stats.json';
 export const ITEMS_URL = './data/items.json';
@@ -100,9 +100,11 @@ export function createLensPage({ page, help = HELP, getList, findItem, buildUrl,
     },
   });
 
-  function open(key, from = null) {
+  async function open(key, from = null) {
     opener = from instanceof HTMLElement ? from : null;
-    return drawer.open(key, { push: true, from: 'card' });
+    const ok = await drawer.open(key, { push: true, from: 'card' });
+    if (!ok) toast('That item is no longer in the feed'); // key absent from items.json + archive.json
+    return ok;
   }
 
   function replaceUrl(url) {

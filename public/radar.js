@@ -1,9 +1,6 @@
-// Startup Radar live radar panel: pure geometry (unit-tested, DOM-free at module level) plus the SVG
-// renderer and pointer tooltip. Angle = kind sector (launch, funding, news, accelerator clockwise from
-// 12 o'clock) + region sub-wedge sized by sqrt(bucket size), the blip hash-spread inside it; radius =
-// 0.10R (now) .. 0.55R (24 h) .. R (48 h) +/- 2 px hash jitter; newest 400 drawn. The ring captions sit on
-// the 9 o'clock half of the crosshair (the caption channel); blips keep CAPTION_CLEAR px off it and
-// LINE_CLEAR px off the lines at their drawn radius. Dense buckets draw smaller, lighter blips.
+// Startup Radar live radar: pure geometry (DOM-free, unit-tested) + SVG renderer + tooltip. Angle = kind quadrant
+// (launch, funding, news, accelerator clockwise from 12) + sqrt-sized region sub-wedge, hash-spread; radius = 0.10R
+// (now) .. 0.55R (24 h) .. R (48 h) +/- 2 px jitter; newest 400 drawn; captions on the 9 o'clock channel.
 
 import { itemKey } from './filter.js';
 import { regionLabel, relativeTime } from './format.js';
@@ -52,9 +49,8 @@ export function sectorSpan(kind, r = RADIUS) {
   return [q0 + (q0 === CAPTION_RAY ? channel : line), q1 - (q1 === CAPTION_RAY ? channel : line)];
 }
 
-/** Sub-wedge widths (deg) per region of one sector: sqrt(count) shares of `width`, >= minDeg when non-empty, 0 when
- * empty, >= MAJORITY_DEG for a bucket holding at least half of the items (as far as the other floors allow), summing to
- * `width`; equal shares when even the floors do not fit (the very centre). */
+/** Sub-wedge widths (deg) per region, summing to `width`: sqrt(count) shares, >= minDeg when non-empty, 0 when empty,
+ * >= MAJORITY_DEG for a bucket with at least half of the items; equal shares when the floors do not fit (the centre). */
 export function allocateSlots(counts, width, minDeg = MIN_SLOT_DEG) {
   const out = counts.map(() => 0);
   let free = counts.map((c, i) => (c > 0 ? i : -1)).filter((i) => i >= 0);
@@ -159,9 +155,8 @@ export function bucketCounts(items) {
   return m;
 }
 
-/** Positions and styles of the drawn items, one per item in order (pure, DOM-free): bucket-sized sub-wedges, then
- * de-stacking in key order - a blip within MIN_GAP px of an earlier one tries, alternating sides, 1 px steps along its
- * ring inside its padded sub-wedge and 0.5 px steps off its radius inside the 2 px jitter budget (32 steps at most). */
+/** Positions + styles per drawn item (pure): bucket-sized sub-wedges, then de-stacking in key order - a blip within
+ * MIN_GAP px of an earlier one steps (alternating sides, <= 32 tries) 1 px along its ring / 0.5 px off its radius. */
 export function layoutRadar(drawn, now = Date.now()) {
   const buckets = bucketCounts(drawn);
   const blips = drawn.map((item) => {

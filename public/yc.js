@@ -119,7 +119,7 @@ function renderGroups(list) {
       ul,
     ]));
   });
-  els.industriesNote.textContent = `${num(list.length)} companies in ${num(ordered.length)} industries${state.batch ? ` (${state.batch})` : ' (all three batches)'}; the largest group is open. Industry, status, stage and location are YC's own fields.`;
+  els.industriesNote.textContent = `${num(list.length)} companies in ${num(ordered.length)} industries${state.batch ? ` (${state.batch})` : ` (all ${num(yc.batches.length)} batches)`}; the largest group is open. Industry, status, stage and location are YC's own fields.`;
 }
 
 function renderTags(list) {

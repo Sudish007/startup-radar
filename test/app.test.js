@@ -149,7 +149,8 @@ describe('app without ADMIN_TOKEN', () => {
     assert.equal(trends.headers.get('cache-control'), 'no-store');
     assert.match(trends.headers.get('content-type'), /application\/json/);
     const t = await trends.json();
-    assert.deepEqual(Object.keys(t), ['generatedAt', 'method', 'thisWeek', 'prior', 'terms', 'weeks', 'partialWeek', 'bySector', 'byKind', 'byRegion', 'items']);
+    assert.deepEqual(Object.keys(t), ['generatedAt', 'method', 'thisWeek', 'prior', 'terms', 'minSupport', 'weeks', 'partialWeek', 'bySector', 'byKind', 'byRegion', 'items']);
+    assert.equal(t.minSupport, 5);
     assert.equal(t.weeks.length, 12);
     assert.equal(t.bySector.length, 15);
     assert.deepEqual(t.terms, []);

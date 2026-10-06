@@ -122,6 +122,7 @@ export function buildTrends(items, { now = new Date() } = {}) {
     thisWeek: { id: currentId, from: isoWeekStart(currentId).toISOString(), to: isoWeekEnd(currentId).toISOString(), partial: true },
     prior: { from: isoWeekStart(priorFirst).toISOString(), to: isoWeekEnd(priorLast).toISOString(), weeks: PRIOR_WEEKS },
     terms: terms.slice(0, MAX_TERMS),
+    minSupport: MIN_SUPPORT,
     weeks,
     partialWeek: currentId,
     bySector: SECTORS.map((s) => ({ id: s.id, label: s.label, counts: bySector.get(s.id) })),

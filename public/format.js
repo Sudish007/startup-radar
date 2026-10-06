@@ -1,5 +1,4 @@
-// Startup Radar formatting helpers. DOM-free ES module shared by app.js,
-// sources.js, radar.js and test/format.test.js (importable from Node).
+// Startup Radar formatting helpers (DOM-free; shared by the pages and test/format.test.js).
 
 export const KIND_LABELS = { launch: 'Launch', funding: 'Funding', news: 'News', accelerator: 'Accelerator' };
 export const REGION_LABELS = { usa: 'USA', europe: 'Europe', asia: 'Asia', india: 'India', latam: 'Latin America', africa: 'Africa', global: 'Global' };

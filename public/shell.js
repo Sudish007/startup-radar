@@ -1,5 +1,5 @@
-// Startup Radar page shell (plan D2/D3): nav list (aria-current), phone menu toggle, footer links, dialog#help,
-// div#toasts, optional dialog#detail, theme/help/sticky init and the `g` + letter go-to chords. DOM via ui.js only.
+// Startup Radar page shell (plan D2/D3): nav + phone menu, footer links, dialog#help, #toasts, optional dialog#detail,
+// theme/help/sticky init, `g` + letter chords.
 
 import { GOTO_ROWS, NAV, pageOf } from './nav.js';
 import { clear, el, fillHelp, icon, initHelp, initTheme, observeSticky } from './ui.js';

@@ -2,9 +2,9 @@
 // Markdown / JSON export, strict JSON import and merge over the ./notebook-store.js notebook shape. DOM-free.
 
 import { tokenize } from './filter.js';
-import { VERSION, emptyNotebook, fromStored, isObject, iso, listItems, str, strList } from './notebook-store.js';
+import { CANVAS_FIELDS, VERSION, canvasRecord, emptyNotebook, fromStored, isObject, iso, listItems, str, strList } from './notebook-store.js';
 
-export const CANVAS_FIELDS = ['title', 'problem', 'who', 'whyNow', 'existing', 'distribution', 'moat', 'firstTen'];
+export { CANVAS_FIELDS };
 const CANVAS_LABELS = { problem: 'Problem', who: 'Who has it', whyNow: 'Why now', existing: 'Existing solutions', distribution: 'Distribution', moat: 'Moat', firstTen: 'First ten customers' };
 const byNewest = (field) => (a, b) => (a[field] < b[field] ? 1 : a[field] > b[field] ? -1 : 0);
 
@@ -70,11 +70,10 @@ export function fromJson(text) {
   if (!isObject(raw)) throw new Error('Not a notebook (expected an object)');
   if (raw.version !== VERSION) throw new Error(`Unsupported notebook version ${JSON.stringify(raw.version ?? null)} (expected ${VERSION})`);
   if (!isObject(raw.items) || !isObject(raw.canvases)) throw new Error('Not a notebook (items and canvases must be objects)');
-  let nb = { ...fromStored(raw), canvases: {} };
+  const nb = { ...fromStored(raw), canvases: {} };
   for (const [id, c] of Object.entries(raw.canvases)) {
     if (!isObject(c)) throw new Error(`Canvas ${JSON.stringify(id)} is malformed`);
-    nb = upsertCanvas(nb, { ...c, id }, c.updatedAt && !Number.isNaN(Date.parse(c.updatedAt)) ? c.updatedAt : Date.now());
-    if (c.createdAt && !Number.isNaN(Date.parse(c.createdAt))) nb.canvases[id].createdAt = c.createdAt;
+    nb.canvases[id] = canvasRecord(c, id); // import is strict (throws above); the record shape is the store's
   }
   return nb;
 }

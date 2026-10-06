@@ -1,6 +1,5 @@
 // Startup Radar notebook store (plan D11): pure functions over { version: 1, items: { key -> saved item }, canvases }
-// (never mutate) + the localStorage adapter ('sr:notebook:v1', this browser only). Canvases, search, export, import
-// and merge live in ./notebook-tools.js (notebook page only).
+// + the localStorage adapter ('sr:notebook:v1', this browser only). Search/export/import/merge: ./notebook-tools.js.
 
 import { itemKey } from './filter.js';
 
@@ -10,7 +9,17 @@ export const isObject = (v) => v !== null && typeof v === 'object' && !Array.isA
 export const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
 export const iso = (now) => (now instanceof Date ? now : new Date(now ?? Date.now())).toISOString();
 export const strList = (v) => (Array.isArray(v) ? [...new Set(v.map((t) => str(t).trim()).filter(Boolean))] : []);
+export const validIso = (v, fallback) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : fallback);
+export const CANVAS_FIELDS = ['title', 'problem', 'who', 'whyNow', 'existing', 'distribution', 'moat', 'firstTen'];
 const byNewest = (field) => (a, b) => (a[field] < b[field] ? 1 : a[field] > b[field] ? -1 : 0);
+
+/** Loose canvas object -> record (string fields, clean linkedKeys, valid timestamps). */
+export function canvasRecord(c, id, now = Date.now()) {
+  const at = iso(now);
+  const out = { id, createdAt: validIso(c.createdAt, at), updatedAt: validIso(c.updatedAt, at), linkedKeys: strList(c.linkedKeys) };
+  for (const f of CANVAS_FIELDS) out[f] = str(c[f] ?? '');
+  return out;
+}
 
 export function emptyNotebook() {
   return { version: VERSION, items: {}, canvases: {} };
@@ -59,9 +68,9 @@ export function fromStored(raw) {
   const nb = emptyNotebook();
   for (const [key, it] of Object.entries(raw.items)) {
     if (!isObject(it) || typeof it.url !== 'string' || !it.url) throw new Error(`Saved item ${JSON.stringify(key)} is malformed`);
-    nb.items[key] = { ...savedItem({ ...it, key }, it.savedAt && !Number.isNaN(Date.parse(it.savedAt)) ? it.savedAt : Date.now()), note: str(it.note), tags: strList(it.tags) };
+    nb.items[key] = { ...savedItem({ ...it, key }, validIso(it.savedAt, Date.now())), note: str(it.note), tags: strList(it.tags) };
   }
-  nb.canvases = raw.canvases;
+  for (const [id, c] of Object.entries(raw.canvases)) if (isObject(c)) nb.canvases[id] = canvasRecord(c, id); // a non-object canvas is dropped
   return nb;
 }
 

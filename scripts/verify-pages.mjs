@@ -275,6 +275,7 @@ async function main() {
       check('data/trends.json generatedAt is ISO and method is a sentence', isIso(body.generatedAt) && typeof body.method === 'string' && body.method.length > 40, `generatedAt ${body.generatedAt}`);
       const badTerms = body.terms.filter((t) => typeof t.term !== 'string' || !Number.isInteger(t.thisWeek) || typeof t.priorWeeklyAvg !== 'number' || typeof t.rise !== 'number' || !Array.isArray(t.examples) || t.examples.length > 5);
       check('data/trends.json terms carry term, thisWeek, priorWeeklyAvg, rise and <= 5 examples', badTerms.length === 0, `${body.terms.length} terms, ${badTerms.length} bad`);
+      check('data/trends.json minSupport is a positive integer and every term meets it', Number.isInteger(body.minSupport) && body.minSupport > 0 && body.terms.every((t) => t.thisWeek >= body.minSupport), `minSupport ${body.minSupport}`);
     }
   } catch (err) {
     check('data/trends.json -> 200 with terms[], weeks[], bySector[]', false, err.message);
