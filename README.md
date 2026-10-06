@@ -117,7 +117,8 @@ step and no third-party script. What it does:
 - **Funding lens** (`funding.html`, from `data/funding.json`). Every `funding`-kind item of
   the window with the amount, currency and stage parsed from its headline (then its summary) by
   text rules (`src/lib/funding-parse.js`; USD, EUR, GBP, INR, "crore" / "lakh" imply INR);
-  each parsed value is labelled `parsed from headline` / `parsed from summary`, and a headline
+  the amount and the stage are each labelled `parsed from headline` / `parsed from summary` for
+  the field they were actually read from (they can differ on one row), and a headline
   that names a valuation or fund size is parsed as such, so the sums are "headline amounts".
   Approximate USD uses the static ECB reference rates of 2026-10-05 printed in the page's FX
   table (`src/lib/fx-rates.js`) and is used only to sort and to sum. Filters (stage, sector,
@@ -141,8 +142,12 @@ step and no third-party script. What it does:
   new / duplicate / delete. Export Markdown or JSON downloads a file; Import JSON validates and
   merges an export back (later edits win, tags are unioned); Remove, Delete canvas and Delete
   everything ask for confirmation. A storage failure (quota, blocked storage) is shown as an
-  error toast, never swallowed. The service worker never touches `localStorage`, so the notebook
-  survives app updates (checked by `scripts/screenshots.py`). Store code:
+  error toast, never swallowed. Every write (a bookmark on the feed, a note or canvas here)
+  re-reads storage first and both pages re-read it on a cross-tab `storage` event or a
+  back/forward-cache restore, so a feed tab opened earlier cannot overwrite notes written since;
+  a malformed stored item is dropped on load (with a console warning) instead of emptying the
+  notebook, while Import stays strict. The service worker never touches `localStorage`, so the
+  notebook survives app updates (checked by `scripts/screenshots.py`). Store code:
   `public/notebook-store.js` (items, storage adapter) and `public/notebook-tools.js` (canvases,
   search, export, import, merge), both DOM-free and unit-tested.
 - **Keyboard layer** (press `?` for the in-app list):
@@ -184,7 +189,7 @@ step and no third-party script. What it does:
   is `public/icons.svg`; `npm run icons:make` renders the PWA icons under `public/icons/` with
   the repo's Playwright venv (`PW_CHANNEL` picks the browser, default `msedge`).
 - **Budget.** Every page set (the HTML + CSS + JS one page loads for its first render) stays
-  under 150 KB uncompressed: home ≈ 149.2 KB, notebook ≈ 126.5 KB, funding ≈ 114 KB, YC ≈ 109 KB,
+  under 150 KB uncompressed: home ≈ 149.4 KB, notebook ≈ 127.2 KB, funding ≈ 114.5 KB, YC ≈ 109 KB,
   trends ≈ 108 KB, sources ≈ 78 KB. The service worker, its client and the lazily loaded
   related-items module share a 16 KB deferred budget; the numbers are enforced and printed by
   `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
@@ -212,7 +217,7 @@ shared runner IPs; see the note in [Hosting on GitHub Pages](#8-hosting-on-githu
 | Hacker News — Show HN | launch | global | JSON API (Algolia `search_by_date`, `tags=show_hn`) | [news.ycombinator.com/show](https://news.ycombinator.com/show) |
 | Hacker News — Launch HN | launch | global | JSON API (Algolia, query `"Launch HN"`) | [news.ycombinator.com](https://news.ycombinator.com/) |
 | Product Hunt | launch | global | Atom feed (`/feed`; GraphQL API when `PRODUCTHUNT_TOKEN` is set) | [producthunt.com](https://www.producthunt.com/) |
-| Y Combinator — newest batches | accelerator | usa | JSON (`yc-oss.github.io/api` meta + the two newest batch files) | [ycombinator.com/companies](https://www.ycombinator.com/companies) |
+| Y Combinator — newest batches | accelerator | usa | JSON (`yc-oss.github.io/api` meta + the three newest batch files) | [ycombinator.com/companies](https://www.ycombinator.com/companies) |
 | BetaList | launch | global | Atom feed (official FeedBurner feed; the on-site `/feed` URLs are 404) | [betalist.com](https://betalist.com/) |
 | Launching Next | launch | global | RSS feed | [launchingnext.com](https://www.launchingnext.com/) |
 | TechCrunch — Startups | news | usa | RSS feed | [techcrunch.com/category/startups](https://techcrunch.com/category/startups/) |
@@ -350,7 +355,7 @@ when the database changed). All filtering, searching and paging happens in the b
 | `GET /data/sources.json` | Exactly the `/api/sources` payload: `{ "sources": [...], "exploreMore": [...] }`. Backs `sources.html`. |
 | `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started), `archiveItems` (number of items in `archive.json`, `0` when there is none) and `sectors` (`[{ id, label, count }]`, the 15 sectors with the number of window items tagged with each; the only place sector labels travel). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
 | `GET /data/trends.json` | Backs `trends.html`. `{ generatedAt, method, thisWeek { id, from, to, partial }, prior { from, to, weeks }, terms [{ term, kind: "token" \| "bigram", thisWeek, priorWeeklyAvg, rise, ratio \| null, examples [item keys, ≤ 5] }], minSupport (the "this week" threshold the page prints), weeks [12 ISO week ids], partialWeek, bySector / byKind / byRegion [{ id, label, counts[12] }], items }`. Computed by `src/trends.js` from the window items. |
-| `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, parsedFrom } + usdApprox \| null], totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
+| `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom } + usdApprox \| null] (`amountFrom` / `stageFrom` are `"title"` \| `"summary"` \| `null`, the field each value was read from; the page labels the amount and the stage separately), totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
 | `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
 Items in `items.json`, `archive.json` and `/api/items` carry `sectors: string[]` (sector ids,
@@ -413,8 +418,8 @@ Response:
 
 Items are ordered by `publishedAt` descending. `extra` holds whatever the source provided and
 nothing else: `points`/`comments`/`author`/`hnUrl` (Hacker News), `batch` (Launch HN, YC),
-`votes`/`website` (Product Hunt API), `batch`/`website`/`location`/`industry`/`teamSize`/`status`
-(YC), `moneyRaisedUsd`/`currency`/`investmentType`/`organization` (Crunchbase API).
+`votes`/`website` (Product Hunt API), `batch`/`website`/`location`/`industry`/`subindustry`/`tags`/
+`teamSize`/`status`/`stage`/`launchedAt`/`oneLiner` (YC), `moneyRaisedUsd`/`currency`/`investmentType`/`organization` (Crunchbase API).
 
 ### `GET /api/sources`
 
@@ -779,7 +784,7 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (371 tests in 71 suites, no network, about three
+Runs `node --test` over `test/*.test.js` (374 tests in 71 suites, no network, about three
 seconds; count with `node --test --test-reporter=tap 2>&1 | Select-String '^# tests'`). The
 GitHub Pages workflow runs the same command before every build.
 
@@ -835,7 +840,8 @@ GitHub Pages workflow runs the same command before every build.
   sector with word boundaries, table order, de-duplication, labels.
 - `funding-parse.test.js`: `parseFunding` over real-looking headlines: amounts in USD / EUR /
   GBP / INR with `k` / `M` / `bn` / `crore` / `lakh`, stages (pre-seed to Series H, bridge and
-  growth only when followed by a round word), `parsedFrom` title or summary, `toUsd` at the
+  growth only when followed by a round word), `amountFrom` / `stageFrom` / `parsedFrom` title
+  or summary (a title amount with a summary-only stage keeps both fields apart), `toUsd` at the
   static rates.
 - `text.test.js`, `weeks.test.js`: `public/text.js` stopwords, significant tokens, singulars
   and bigrams; `src/lib/weeks.js` ISO week ids, Monday starts, the last-N-weeks list.
@@ -852,7 +858,8 @@ GitHub Pages workflow runs the same command before every build.
   remove / note / tags (re-adding keeps the note), canvases with the seven fields and linked
   keys, prefix search over items and canvases, Markdown and JSON export, `fromJson` rejecting
   non-notebooks with readable errors, `merge` (later wins, tags unioned), the storage adapter
-  (`load` never throws, `save` reports quota / blocked storage).
+  (`load` never throws, drops a malformed item but keeps the rest, `save` reports quota /
+  blocked storage).
 - `public-urls.test.js`: every file under `public/` uses relative URLs only (no `href="/..."`,
   `'/api/'`, `'/data/'`, `url(/...)` or `register('/...')`), the manifest has `start_url` and
   `scope` `./`, no `id` and three `./icons/` entries, every page keeps an attribute-free `<h1>`,
@@ -901,7 +908,8 @@ so no browser download is required. Two modes:
   toggle and its persistence, self-hosted fonts, reduced motion, the drawer (focus trap and
   return, history, `?item=` deep links, prev/next, copy link, sectors and related items,
   the save button), the shared shell (phone menu, nav row, `g` chords, sector chips, bookmark
-  round trip), the keyboard map and the one-Esc rule, the 5-minute poll with a fake newer build
+  round trip, Back after a related item, Esc on a deep-link entry staying on the page), the
+  keyboard map and the one-Esc rule, the 5-minute poll with a fake newer build
   (pill, silent replace, failure streak),
   sort / view toggles, skeleton / empty / error states, the radar geometry and plates, the
   sources page layout, and the service worker in a dedicated context (scope, versioned
@@ -917,7 +925,8 @@ so no browser download is required. Two modes:
   `/startup-radar/`; set `STATIC_ROOT` to the served folder to exercise a real version swap),
   `sources.html` lists every source from `data/sources.json`, the trends / funding / YC pages
   show exactly the numbers of their JSON files and open the drawer, the notebook saves an item
-  from the home page, keeps notes and tags across a reload, searches, edits and duplicates
+  from the home page, keeps notes and tags across a reload and across a save from a second feed
+  tab opened before the note was written, searches, edits and duplicates
   canvases, downloads the Markdown and JSON exports, imports the JSON back and deletes behind
   `confirm()`, the 390 px layout of every page has no overflow, and there are no console errors.
   Use it against a `dist/` preview or the live Pages site. On Windows run it with
