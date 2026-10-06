@@ -1,5 +1,4 @@
-// Startup Radar detail drawer (plan D4), shared by every page: dialog#detail rendering, ?item=<key> history
-// (ownsEntry / ignoreNextPop / fromHistory), prev/next, Copy link, toast relocation, focus return; page rows via hooks.
+// Startup Radar detail drawer (plan D4, every page): dialog#detail render, ?item= history, prev/next, Copy link, hooks.
 
 import { itemKey } from './filter.js';
 import { absoluteTime, detailRows, hnDiscussion, hostnameOf, safeHttpUrl } from './format.js';
@@ -28,11 +27,9 @@ export function openExternal(item) {
   a.remove();
 }
 
-/**
- * getList() -> ordered list; findItem(key) -> item | null | Promise; buildUrl(key|null) -> page URL; onOpen({ key, item, from });
+/** getList() -> ordered list; findItem(key) -> item | null | Promise; buildUrl(key|null); onOpen({ key, item, from });
  * onClose({ lastKey, returnTo }) (page does focus return); sections / actions: (item, { key, drawer }) => Node | null;
- * ensureIndexVisible(index). -> { open(key, { push, from }), close, step(dir), isOpen, key, item, rerender, openDeepLink(key), handlePopstate(key), dialog }
- */
+ * ensureIndexVisible(index). -> { open(key, { push, from }), close, step, isOpen, key, item, rerender, openDeepLink, handlePopstate, dialog } */
 export function createDrawer({ dialog, getList, findItem, buildUrl, onOpen = null, onClose = null, sections = [], actions = [], ensureIndexVisible = null }) {
   const panel = dialog.querySelector('.detail-panel');
   const st = { key: null, item: null, returnTo: null, ownsEntry: false, ignoreNextPop: false, fromHistory: false, closing: false };
@@ -205,6 +202,8 @@ export function createDrawer({ dialog, getList, findItem, buildUrl, onOpen = nul
     if (st.ignoreNextPop) { st.ignoreNextPop = false; replaceUrl(buildUrl(dialog.open ? st.key : null)); return true; }
     if (dialog.open && !key) { st.fromHistory = true; st.ownsEntry = false; close(); return true; }
     if (!dialog.open && key) { open(key, { push: false, from: 'history' }); return true; }
+    // Back/Forward between two ?item= entries (a related item opened while already open)
+    if (dialog.open && key && key !== st.key) { open(key, { push: false, from: 'history' }); return true; }
     return false;
   }
 
