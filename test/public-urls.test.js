@@ -34,6 +34,7 @@ function walk(dir) {
 }
 
 const read = (name) => fs.readFileSync(path.join(PUBLIC_DIR, name), 'utf8');
+const HTML_FILES = fs.readdirSync(PUBLIC_DIR).filter((f) => f.endsWith('.html')).sort();
 
 describe('public/ sub-path safety', () => {
   test('no leading-slash or forbidden literals in public/ (incl. sw.js)', () => {
@@ -64,29 +65,30 @@ describe('public/ sub-path safety', () => {
     assert.deepEqual(manifest.icons.map((i) => i.purpose), ['any', 'any', 'maskable']);
   });
 
-  test('index.html/sources.html literal references', () => {
-    const index = read('index.html');
-    for (const needle of ['href="./styles.css"', 'src="./app.js"', 'rel="manifest" href="./manifest.webmanifest"', 'src="./theme.js"', 'viewport-fit=cover', 'href="./icons/favicon.svg"']) {
-      assert.ok(index.includes(needle), `index.html contains ${needle}`);
-    }
-    const sources = read('sources.html');
-    for (const needle of ['href="./styles.css"', 'href="./sources.css"', 'src="./sources.js"', 'rel="manifest" href="./manifest.webmanifest"', 'src="./theme.js"', 'viewport-fit=cover']) {
-      assert.ok(sources.includes(needle), `sources.html contains ${needle}`);
-    }
-    // theme-color precedes theme.js, which precedes the stylesheet (no theme flash)
-    assert.ok(index.indexOf('name="theme-color"') < index.indexOf('src="./theme.js"'));
-    assert.ok(index.indexOf('src="./theme.js"') < index.indexOf('href="./styles.css"'));
-    // the CSP meta is unchanged
+  test('every public/*.html: literal references, head order, CSP, one attribute-free <h1>', () => {
+    assert.ok(HTML_FILES.length >= 5, HTML_FILES.join());
     const csp = `default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'`;
-    assert.ok(index.includes(csp) && sources.includes(csp));
-  });
-
-  test('attribute-free <h1> on both pages', () => {
-    for (const name of ['index.html', 'sources.html']) {
+    for (const name of HTML_FILES) {
       const text = read(name);
+      const script = name === 'index.html' ? 'app.js' : name.replace(/\.html$/, '.js');
+      for (const needle of ['href="./styles.css"', `src="./${script}"`, 'rel="manifest" href="./manifest.webmanifest"', 'src="./theme.js"', 'viewport-fit=cover', 'href="./icons/favicon.svg"', csp]) {
+        assert.ok(text.includes(needle), `${name} contains ${needle}`);
+      }
+      // theme-color precedes theme.js, which precedes the stylesheet (no theme flash)
+      assert.ok(text.indexOf('name="theme-color"') < text.indexOf('src="./theme.js"'), `${name} head order (theme-color before theme.js)`);
+      assert.ok(text.indexOf('src="./theme.js"') < text.indexOf('href="./styles.css"'), `${name} head order (theme.js before styles.css)`);
+      // one module script, this page's own
+      const scripts = [...text.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)].map((m) => m[1]).filter((s) => s !== './theme.js');
+      assert.deepEqual(scripts, [`./${script}`], `${name} loads only its own module`);
+      // attribute-free <h1>, exactly once (test/app.test.js matches /<h1>/)
       assert.match(text, /<h1>/, `${name} has a bare <h1>`);
       assert.doesNotMatch(text, /<h1\s/, `${name} has no attributed <h1`);
       assert.equal((text.match(/<h1[\s>]/g) || []).length, 1, `${name} has exactly one h1`);
+    }
+    assert.ok(read('sources.html').includes('href="./sources.css"'));
+    for (const name of ['trends.html', 'funding.html', 'yc.html', 'notebook.html']) {
+      assert.ok(read(name).includes('href="./pages.css"'), `${name} loads pages.css`);
+      assert.ok(read(name).includes(`<body class="page-${name.replace(/\.html$/, '')}">`), `${name} body.page-<name>`);
     }
   });
 

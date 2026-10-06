@@ -1,10 +1,12 @@
-// Startup Radar home page (vanilla ES module, strict CSP: DOM via ui.js el(), textContent only). Data from
-// ./data/*.json (filtering in ./filter.js); drawer (?item=<key>), keyboard map, filter sheet, stats polling, radar.
+// Startup Radar home page (strict CSP: DOM via ui.js el(), textContent only; ./data/*.json filtered by ./filter.js).
 
-import { SINCE_VALUES, filterItems, itemKey, pointsOf, sortItems } from './filter.js';
-import { KIND_LABELS, REGION_LABELS, absoluteTime, detailRows, hnDiscussion, hostnameOf, kindLabel, metaParts, pluralize, pointsText, regionLabel, relativeTime, safeHttpUrl, votesText } from './format.js';
-import { afterExit, clear, createStatusLine, el, extLink, fetchJson, fillHelp, icon, initHelp, initTheme, moveToastsInto, observeSticky, openHelp, pollStats, reduceMotion, restoreToasts, scrollLock, startPwa, startTicker, tickTimes, toast, toggleTheme } from './ui.js';
+import { SINCE_VALUES, filterItems, pointsOf, sortItems } from './filter.js';
+import { KIND_LABELS, METHOD_LABELS, REGION_LABELS, absoluteTime, hostnameOf, metaParts, pluralize, pointsText, regionLabel, relativeTime, safeHttpUrl, sectorLabels, votesText } from './format.js';
+import { badge, button, clear, createStatusLine, el, extLink, fetchJson, icon, kindBadge, openHelp, pollStats, reduceMotion, regionBadge, scrollLock, sourceBadge, startPwa, startTicker, tickTimes, timeEl, toast, toggleTheme } from './ui.js';
 import { fitPlates, initRadar, radarCount, renderRadar, MAX_BLIPS } from './radar.js';
+import { mountShell } from './shell.js';
+import { createDrawer, keyOf, openExternal } from './drawer.js';
+import * as notebook from './notebook-store.js';
 
 const PAGE_SIZE = 30;
 const DEBOUNCE_MS = 300;
@@ -18,7 +20,7 @@ const EASE_IN_OUT = 'cubic-bezier(.4,0,.2,1)';
 const FLIP_MAX = 60;
 const TEXT_ENTRY = 'textarea, [contenteditable]:not([contenteditable="false"]), input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input[type="number"], input[type="password"]';
 const INERT_SELECTOR = 'header.site-header, section.hero, main > :not(#filter-panel):not(.scrim), footer.site-footer, #new-items, #toasts';
-// The keyboard map (shown in the help dialog; onKeydown implements exactly these rows)
+// Help-dialog rows; onKeydown implements exactly these
 const SHORTCUTS = [
   [['/'], 'Focus the search field'],
   [['j', '\u2193'], 'Next card (at the last card: load more)'],
@@ -42,12 +44,12 @@ const q1 = (sel) => document.querySelector(sel);
 const tx = (s) => document.createTextNode(s);
 const itemParam = () => new URLSearchParams(location.search).get('item');
 // els.<camelCase id> for every id below, plus the class-based lookups.
-const IDS = 'subtitle search-form q filters kind region sort sources-filter source-list reset result-count offline-note results load-more filter-panel filter-panel-title filters-open filters-close filters-apply view-grid view-list stat-feed stat-24h stat-7d stat-sources radar-panel radar-title detail new-items new-items-btn';
+const IDS = 'subtitle search-form q filters kind region sort sources-filter source-list reset result-count offline-note results load-more filter-panel filter-panel-title filters-open filters-close filters-apply view-grid view-list stat-feed stat-24h stat-7d stat-sources radar-panel radar-title new-items new-items-btn sector-chips';
 const els = Object.fromEntries(IDS.split(' ').map((id) => [id.replace(/-(\w)/g, (_, c) => c.toUpperCase()), $(id)]));
 Object.assign(els, {
   scopeButtons: Array.from(document.querySelectorAll('button.scope')), chipButtons: Array.from(document.querySelectorAll('button.chip')),
   sourcesSummary: q1('#sources-filter > summary'), sortNote: q1('.sort-note'), countBadge: q1('#filters-open .count-badge'), scrim: q1('.scrim'),
-  radarSvg: q1('svg.radar'), radarTip: q1('.radar-tip'), detailPanel: q1('#detail .detail-panel'), newItemsDismiss: q1('#new-items .pill-dismiss'),
+  radarSvg: q1('svg.radar'), radarTip: q1('.radar-tip'), newItemsDismiss: q1('#new-items .pill-dismiss'),
 });
 
 const BASE_TITLE = document.title;
@@ -56,7 +58,7 @@ const radarMq = matchMedia('(min-width: 1024px) and (hover: hover) and (pointer:
 const sheetMq = matchMedia('(max-width: 639.98px)');
 const wideMq = matchMedia('(min-width: 640px)');
 
-const state = { kind: '', region: '', sources: [], q: '', since: '', sort: '', page: 1, highlightKey: null, view: readView() };
+const state = { kind: '', region: '', sources: [], sectors: [], q: '', since: '', sort: '', page: 1, highlightKey: null, view: readView() };
 const data = {
   primary: [],
   archive: null, // null = not loaded yet; [] = loaded (or none exists)
@@ -69,9 +71,13 @@ const data = {
   pending: null, // { items, stats, at } behind the new-items pill
   allSources: null, // sources.json payload (null = failed)
 };
-const detail = { key: null, item: null, returnTo: null, ownsEntry: false, ignoreNextPop: false, fromHistory: false, closing: false };
 const sheet = { isOpen: false, pillSuppressed: false, inertEls: [] };
+let drawer = null; // createDrawer() result (init)
 let knownSources = [];
+let knownSectors = []; // stats.sectors ids (chip order)
+let sectorLabel = {}; // id -> label from stats.json
+let nb = notebook.emptyNotebook(); // the browser-only notebook (localStorage)
+let relatedMod = null; // lazy ./related.js
 let lastView = null;
 let firstRender = true;
 let refetchFailStreak = 0;
@@ -80,13 +86,7 @@ let platesFitted = false;
 let historyBroken = false;
 let pendingDeepKey = null; // ?item= at boot, kept in the URL until the drawer opened (or missed)
 const statusLine = createStatusLine();
-const keyCache = new WeakMap();
 
-function keyOf(item) {
-  let k = keyCache.get(item);
-  if (!k) { k = itemKey(item.url); keyCache.set(item, k); }
-  return k;
-}
 const allItems = () => (data.archive ? data.primary.concat(data.archive) : data.primary);
 const currentList = () => sortItems(filterItems(allItems(), state), state.sort);
 const findItem = (key) => allItems().find((it) => keyOf(it) === key) ?? null;
@@ -124,6 +124,9 @@ function readStateFromLocation() {
     const known = new Set(knownSources.map((s) => s.id));
     state.sources = state.sources.filter((id) => known.has(id));
   }
+  const sec = p.get('sector') || '';
+  state.sectors = sec ? [...new Set(sec.split(',').map((s) => s.trim()).filter(Boolean))] : [];
+  if (knownSectors.length) state.sectors = state.sectors.filter((id) => knownSectors.includes(id));
   state.page = 1;
 }
 
@@ -133,6 +136,7 @@ function buildUrl(st, openKey = null) {
   if (st.kind) p.set('kind', st.kind);
   if (st.region) p.set('region', st.region);
   if (st.sources.length) p.set('source', st.sources.join(','));
+  if (st.sectors.length) p.set('sector', st.sectors.join(','));
   if (st.q) p.set('q', st.q);
   if (st.since) p.set('since', st.since);
   if (st.sort) p.set('sort', st.sort);
@@ -141,17 +145,15 @@ function buildUrl(st, openKey = null) {
   return qs ? `${location.pathname}?${qs}` : location.pathname;
 }
 
-function historyCall(fn) {
-  if (historyBroken) return false;
-  try { fn(); return true; } catch (err) { historyBroken = true; console.warn('[radar] history unavailable:', err?.message ?? err); return false; }
+function replaceUrl(url) {
+  if (historyBroken) return;
+  try { history.replaceState(null, '', url); } catch (err) { historyBroken = true; console.warn('[radar] history unavailable:', err?.message ?? err); }
 }
-const replaceUrl = (url) => historyCall(() => history.replaceState(null, '', url));
-const syncLocation = () => replaceUrl(buildUrl(state, els.detail.open ? detail.key : pendingDeepKey));
-const dropItemParam = () => { if (itemParam() !== null) replaceUrl(buildUrl(state, null)); };
+const syncLocation = () => replaceUrl(buildUrl(state, drawer?.isOpen() ? drawer.key() : pendingDeepKey));
 
 // -- controls --
 
-const activeFilterCount = () => (state.kind ? 1 : 0) + (state.region ? 1 : 0) + (state.since ? 1 : 0) + (state.sources.length ? 1 : 0) + (state.q ? 1 : 0);
+const activeFilterCount = () => (state.kind ? 1 : 0) + (state.region ? 1 : 0) + (state.since ? 1 : 0) + (state.sources.length ? 1 : 0) + (state.sectors.length ? 1 : 0) + (state.q ? 1 : 0);
 
 function syncControls() {
   els.q.value = state.q;
@@ -163,6 +165,7 @@ function syncControls() {
     btn.setAttribute('aria-pressed', (scope === '' ? state.region === '' : state.region === scope) ? 'true' : 'false');
   }
   for (const btn of els.chipButtons) btn.setAttribute('aria-pressed', btn.dataset.since === state.since ? 'true' : 'false');
+  for (const btn of els.sectorChips.querySelectorAll('button.chip-sector')) btn.setAttribute('aria-pressed', state.sectors.includes(btn.dataset.sector) ? 'true' : 'false');
   for (const box of els.sourceList.querySelectorAll('input[type="checkbox"]')) {
     box.checked = state.sources.includes(box.value);
     box.closest('label')?.classList.toggle('checked', box.checked);
@@ -187,15 +190,18 @@ function syncIndicators() {
 
 // -- cards --
 
-const badge = (text, className, title = null) => el('span', { className: `badge ${className}`, text, title });
-const sourceBadge = (item) => badge(item.source?.name || item.source?.id || 'Unknown source', 'badge-source');
-const kindBadge = (item) => badge(kindLabel(item.kind), `badge-${item.kind}`, 'Kind assigned by Startup Radar from the source and the text');
-const timeEl = (iso) => el('time', { datetime: iso, title: absoluteTime(iso), 'data-rel': '', text: relativeTime(iso) });
+const SECTOR_TITLE = `${METHOD_LABELS.sectors} (title + summary)`;
+const CARD_SECTORS = 3;
 const titleLink = (item, key) => el('h2', {}, [el('a', { className: 'card-link', href: `?item=${key}`, text: item.title || '(untitled)' })]);
+const sectorBadge = (id) => badge(sectorLabel[id] || id, 'badge-sector', SECTOR_TITLE);
+const itemSectors = (item) => (Array.isArray(item.sectors) ? item.sectors.filter((id) => typeof id === 'string') : []);
 
-function regionBadge(item) {
-  const region = REGIONS.includes(item.region) ? item.region : 'global';
-  return el('span', { className: 'badge badge-region' }, [el('span', { className: `dot dot-${region}`, 'aria-hidden': 'true' }), tx(regionLabel(item.region))]);
+/** <= CARD_SECTORS sector badges + "+N". */
+function sectorBadges(item, max = CARD_SECTORS) {
+  const ids = itemSectors(item);
+  const out = ids.slice(0, max).map(sectorBadge);
+  if (ids.length > max) out.push(badge(`+${ids.length - max}`, 'badge-sector', ids.slice(max).map((id) => sectorLabel[id] || id).join(', ')));
+  return out;
 }
 
 function extButton(item) {
@@ -208,28 +214,60 @@ function extButton(item) {
 
 function renderCard(item, view) {
   const key = keyOf(item);
+  const actions = el('div', { className: 'card-actions' }, [saveButton(item, key, 'card-save btn-ghost icon-btn'), extButton(item)]);
   if (view === 'list') {
     const line = el('p', { className: 'meta meta-line' }, [sourceBadge(item), tx(' \u00b7 '), regionBadge(item)]);
     if (item.publishedAt) line.append(tx(' \u00b7 '), timeEl(item.publishedAt));
     const points = pointsOf(item);
     if (points !== null) line.append(tx(` \u00b7 ${typeof item.extra?.points === 'number' ? pointsText(points) : votesText(points)}`));
+    for (const b of sectorBadges(item)) line.append(tx(' \u00b7 '), b);
     line.title = line.textContent;
-    return el('article', { className: 'card card-row', dataset: { key } }, [kindBadge(item), el('div', { className: 'card-main' }, [titleLink(item, key), line]), extButton(item)]);
+    return el('article', { className: 'card card-row', dataset: { key } }, [kindBadge(item), el('div', { className: 'card-main' }, [titleLink(item, key), line]), actions]);
   }
   const top = el('div', { className: 'card-top' }, [sourceBadge(item), kindBadge(item)]);
   if (item.publishedAt) top.append(timeEl(item.publishedAt));
   const parts = metaParts(item.extra);
-  const bottom = el('div', { className: 'card-bottom' }, [regionBadge(item), parts.length ? el('p', { className: 'meta', text: parts.join(' \u00b7 ') }) : null, extButton(item)]);
+  const bottom = el('div', { className: 'card-bottom' }, [regionBadge(item), ...sectorBadges(item), parts.length ? el('p', { className: 'meta', text: parts.join(' \u00b7 ') }) : null, actions]);
   const children = [top, titleLink(item, key)];
   if (item.summary && String(item.summary).trim()) children.push(el('p', { className: 'summary', text: item.summary }));
   children.push(bottom);
   return el('article', { className: 'card', dataset: { key } }, children);
 }
 
-function button(props, children, onClick) {
-  const b = el('button', { type: 'button', ...props }, children);
-  b.addEventListener('click', onClick);
+// -- bookmarks (./notebook-store.js; save buttons carry data-save-key) --
+
+const isSaved = (key) => Boolean(nb.items[key]);
+
+function paintSave(btn) {
+  const saved = isSaved(btn.dataset.saveKey);
+  btn.setAttribute('aria-pressed', saved ? 'true' : 'false');
+  btn.setAttribute('aria-label', saved ? 'Saved \u2014 remove from notebook' : 'Save to notebook');
+  const label = btn.querySelector('span');
+  if (label) label.textContent = saved ? 'Saved' : 'Save to notebook';
+}
+
+function saveButton(item, key, className, withText = false) {
+  const b = button({ className, dataset: { saveKey: key } }, [icon('bookmark'), withText ? el('span') : null], () => toggleSaved(item, key));
+  paintSave(b);
   return b;
+}
+
+function syncSaveButtons() {
+  for (const b of document.querySelectorAll('button[data-save-key]')) paintSave(b);
+}
+
+function toggleSaved(item, key) {
+  nb = notebook.load(); // the notebook page may have written since boot
+  const next = isSaved(key) ? notebook.removeItem(nb, key) : notebook.addItem(nb, { ...item, key });
+  try {
+    notebook.save(next);
+  } catch (err) {
+    toast(err.message, { variant: 'error' });
+    return;
+  }
+  nb = next;
+  syncSaveButtons();
+  toast(isSaved(key) ? 'Saved to notebook \u00b7 stored in this browser only' : 'Removed from notebook');
 }
 
 function emptyState() {
@@ -250,7 +288,7 @@ function applyHighlight() {
 
 function markOpenCard() {
   for (const c of els.results.querySelectorAll('article.card.is-open')) c.classList.remove('is-open');
-  if (els.detail.open) cardFor(detail.key)?.classList.add('is-open');
+  cardFor(drawer?.key())?.classList.add('is-open');
 }
 
 function updateApplyLabel(total) {
@@ -370,7 +408,7 @@ function renderRadarNow() {
   if (!els.radarSvg || !radarMq.matches) return;
   const now = Date.now();
   const n = radarCount(data.primary, now);
-  renderRadar(els.radarSvg, data.primary, now, els.detail.open ? detail.key : null);
+  renderRadar(els.radarSvg, data.primary, now, drawer?.key() ?? null);
   const items = pluralize(n, 'item', 'items');
   els.radarTitle.textContent = `Last 48 h \u00b7 ${items}${n > MAX_BLIPS ? ` \u00b7 showing newest ${MAX_BLIPS}` : ''}`;
   els.radarSvg.setAttribute('aria-label', `Radar of the ${items} published in the last 48 hours; newest nearest the centre. Hover or click a dot, or browse the same items in the feed below.`);
@@ -380,7 +418,7 @@ function renderRadarNow() {
 function initRadarPanel() {
   if (!els.radarSvg) return;
   q1('.radar-legend').append(...REGIONS.map((r) => el('li', {}, [el('span', { className: `dot dot-${r}` }), tx(regionLabel(r))])));
-  initRadar({ panel: els.radarPanel, svg: els.radarSvg, tip: els.radarTip, onOpen: (key) => openDetail(key, { push: true, from: 'radar' }) });
+  initRadar({ panel: els.radarPanel, svg: els.radarSvg, tip: els.radarTip, onOpen: (key) => drawer.open(key, { push: true, from: 'radar' }) });
   document.fonts?.ready.then(() => { if (radarMq.matches) platesFitted = fitPlates(els.radarSvg) || platesFitted; });
   radarMq.addEventListener('change', (e) => { if (e.matches) { platesFitted = fitPlates(els.radarSvg); renderRadarNow(); } });
 }
@@ -454,9 +492,27 @@ async function loadStats() {
     data.archiveItems = finiteNumber(stats.archiveItems) ?? 0;
     data.seenRefresh = stats.lastRefresh ?? stats.generatedAt ?? null;
     statusLine.update(stats);
+    adoptSectors(stats);
   } catch {
     data.stats = null;
     statusLine.fail();
+  }
+}
+
+/** stats.sectors -> labels + the chip row (real 90-day counts). */
+function adoptSectors(stats) {
+  const list = Array.isArray(stats?.sectors) ? stats.sectors.filter((s) => s && typeof s.id === 'string') : [];
+  if (!list.length) return;
+  sectorLabel = sectorLabels(stats);
+  knownSectors = list.map((s) => s.id);
+  for (const s of list) {
+    const text = `${s.label} \u00b7 ${finiteNumber(s.count) ?? 0}`;
+    const existing = els.sectorChips.querySelector(`button[data-sector="${s.id}"]`);
+    if (existing) { existing.textContent = text; continue; }
+    els.sectorChips.append(button({ className: 'chip chip-sector', dataset: { sector: s.id }, 'aria-pressed': 'false', text }, [], () => {
+      state.sectors = state.sectors.includes(s.id) ? state.sectors.filter((id) => id !== s.id) : [...state.sectors, s.id];
+      applyChange();
+    }));
   }
 }
 
@@ -536,6 +592,7 @@ function applyPending() {
   data.primary = pending.items;
   data.seenRefresh = pending.at;
   const hadArchive = adoptArchiveFrom(pending.stats);
+  adoptSectors(pending.stats);
   state.page = 1;
   render();
   updateTiles();
@@ -566,183 +623,86 @@ function tick() {
   renderRadarNow();
 }
 
-// -- detail drawer --
+// -- detail drawer (./drawer.js; this page wires its hooks) --
 
 const setTitle = (item) => { document.title = item ? `${item.title || '(untitled)'} \u2014 Startup Radar` : BASE_TITLE; };
 
-function renderDetail(item) {
-  const panel = els.detailPanel;
-  clear(panel);
-  const key = keyOf(item);
-  const head = el('header', { className: 'detail-head' }, [
-    el('div', { className: 'detail-badges' }, [sourceBadge(item), kindBadge(item), regionBadge(item)]),
-    button({ id: 'detail-close', className: 'btn-ghost icon-btn', 'aria-label': 'Close' }, [icon('close')], closeDetail),
-  ]);
-  const body = el('div', { className: 'detail-body' }, [el('h2', { id: 'detail-title', tabindex: '-1', text: item.title || '(untitled)' })]);
-  // relative time only (title = absolute); the absolute "Published" value lives in the metadata table below
-  if (item.publishedAt && absoluteTime(item.publishedAt)) body.append(el('p', { className: 'detail-time' }, [timeEl(item.publishedAt)]));
-  const summary = item.summary && String(item.summary).trim();
-  body.append(summary ? el('p', { id: 'detail-summary', className: 'detail-summary', text: item.summary }) : el('p', { id: 'detail-summary', className: 'detail-empty', text: 'No summary provided by the source.' }));
-  const rows = detailRows(item);
-  if (rows.length) {
-    const dl = el('dl', { className: 'detail-meta' });
-    for (const row of rows) {
-      let value;
-      if (row.href && row.label === 'Website') value = extLink(row.href, row.value, { ariaLabel: `${row.value} (opens in a new tab)` });
-      else if (row.href) value = el('a', { href: row.href, text: row.value });
-      dl.append(el('dt', { text: row.label }), el('dd', { className: row.label === 'Destination' ? 'mono' : null, text: value ? null : row.value }, [value]));
-    }
-    body.append(dl);
-  }
-  const actions = el('div', { className: 'detail-actions' });
-  const url = safeHttpUrl(item.url);
-  if (url) {
-    const host = hostnameOf(url);
-    const open = extLink(url, '', { className: 'btn btn-primary', ariaLabel: `Open original on ${host} (opens in a new tab)` });
-    open.append(el('span', { text: `Open on ${host}` }), icon('external'));
-    actions.append(open);
-  }
-  const hn = hnDiscussion(item);
-  if (hn) actions.append(extLink(hn, 'Discussion on Hacker News', { className: 'btn btn-ghost' }));
-  actions.append(button({ id: 'detail-copy', className: 'btn-secondary' }, [icon('copy'), el('span', { text: 'Copy link' })], () => copyLink(key)));
-  body.append(actions);
-
-  const list = currentList();
-  const index = list.findIndex((it) => keyOf(it) === key);
-  const prev = button({ id: 'detail-prev', className: 'btn-secondary' }, [icon('chevron-left'), el('span', { text: 'Previous' })], () => stepDetail(-1));
-  const next = button({ id: 'detail-next', className: 'btn-secondary' }, [el('span', { text: 'Next' }), icon('chevron-right')], () => stepDetail(1));
-  prev.disabled = index <= 0;
-  next.disabled = index < 0 || index >= list.length - 1;
-  const pos = el('span', { className: 'detail-pos', text: `${index >= 0 ? index + 1 : '\u2014'} of ${list.length}` });
-  panel.append(head, body, el('footer', { className: 'detail-nav' }, [prev, pos, next]));
-}
-
-async function openDetail(key, { push = false, from = 'card' } = {}) {
+/** findItem + the archive fallback. */
+async function findItemOrArchive(key) {
   let item = findItem(key);
   if (!item && data.archiveItems > 0 && data.archive === null && !data.loadError) {
     await ensureArchive();
     item = findItem(key);
   }
-  if (!item) {
-    if (from === 'deeplink' || from === 'history') { toast('That item is no longer in the feed'); dropItemParam(); }
-    return false;
-  }
-  const wasOpen = els.detail.open;
-  detail.key = key;
-  detail.item = item;
-  if (!wasOpen) detail.returnTo = from;
-  renderDetail(item);
-  if (!wasOpen) {
-    try { els.detail.showModal(); } catch { /* already open: content re-rendered in place */ }
-    moveToastsInto(els.detail);
-  }
-  setTitle(item);
-  if (push) detail.ownsEntry = historyCall(() => history.pushState({ sr: 'item', key }, '', buildUrl(state, key)));
-  else detail.ownsEntry = from === 'history';
-  markOpenCard();
-  renderRadarNow();
-  $('detail-title')?.focus();
-  return true;
+  return item;
 }
 
-function stepDetail(dir) {
-  if (!els.detail.open || !detail.key) return;
-  const list = currentList();
-  const index = list.findIndex((it) => keyOf(it) === detail.key);
-  const nextIndex = index + dir;
-  if (index < 0 || nextIndex < 0 || nextIndex >= list.length) return;
-  const item = list[nextIndex];
-  const key = keyOf(item);
-  const focusedId = document.activeElement?.id;
-  detail.key = key;
-  detail.item = item;
-  if (nextIndex >= state.page * PAGE_SIZE) {
-    state.page = Math.ceil((nextIndex + 1) / PAGE_SIZE);
-    render({ animate: false });
-  }
-  renderDetail(item);
-  if (supportsAnimate && !reduceMotion.matches) els.detailPanel.querySelector('.detail-body')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: EASE_OUT });
-  replaceUrl(buildUrl(state, key));
-  setTitle(item);
-  markOpenCard();
-  renderRadarNow();
-  const wanted = focusedId === 'detail-prev' || focusedId === 'detail-next' ? $(focusedId) : null;
-  const other = focusedId === 'detail-prev' ? $('detail-next') : $('detail-prev');
-  (wanted && !wanted.disabled ? wanted : wanted && !other.disabled ? other : $('detail-title')).focus();
+/** Drawer section: Sectors row (keyword-tagged). */
+function sectorsSection(item) {
+  const ids = itemSectors(item);
+  if (!ids.length) return null;
+  return el('dl', { className: 'detail-meta detail-sectors' }, [
+    el('dt', { text: 'Sectors' }),
+    el('dd', { title: SECTOR_TITLE }, [el('span', { className: 'badge-row' }, ids.map(sectorBadge))]),
+  ]);
 }
 
-function closeDetail() {
-  if (!els.detail.open || detail.closing) return;
-  detail.closing = true;
-  els.detail.classList.add('closing');
-  afterExit(els.detailPanel, () => { if (els.detail.open) els.detail.close(); });
-}
-
-/** The dialog `close` event is the single cleanup path for every close route. */
-function onDetailClosed() {
-  els.detail.classList.remove('closing');
-  detail.closing = false;
-  setTitle(null);
-  restoreToasts();
-  const { key: lastKey, returnTo, fromHistory } = detail;
-  if (detail.ownsEntry && !fromHistory && !historyBroken) {
-    detail.ownsEntry = false;
-    detail.ignoreNextPop = true;
-    history.back();
-  } else if (!detail.ownsEntry) {
-    dropItemParam();
-  }
-  Object.assign(detail, { fromHistory: false, ownsEntry: false, key: null, item: null, returnTo: null });
-  markOpenCard();
-  const card = cardFor(lastKey);
-  if (returnTo === 'radar' && radarMq.matches) {
-    els.radarPanel.focus();
-  } else if (card) {
-    state.highlightKey = lastKey;
-    applyHighlight();
-    card.scrollIntoView({ block: 'nearest' });
-    card.querySelector('.card-link')?.focus();
-  } else {
-    (radarMq.matches ? els.radarPanel : els.results).focus();
-  }
-  renderRadarNow();
-}
-
-async function copyLink(key) {
-  const url = `${location.origin}${location.pathname}?item=${key}`;
-  try {
-    await navigator.clipboard.writeText(url);
-    toast('Link copied', { duration: 3000 });
-  } catch {
-    let field = $('detail-copy-field');
-    if (!field) {
-      field = el('input', { type: 'text', id: 'detail-copy-field', readonly: true, 'aria-label': 'Link to this item' });
-      els.detailPanel.querySelector('.detail-actions')?.after(field);
+/** Drawer section: related items (lazy ./related.js; real count over the loaded window). */
+function relatedSection(item, { drawer: d }) {
+  const box = el('section', { className: 'related', 'aria-labelledby': 'related-title' }, [el('h3', { id: 'related-title', text: 'Related \u00b7 \u2026' })]);
+  const fill = (mod) => {
+    const { count, items } = mod.relatedItems(item, allItems(), { max: 5 });
+    box.querySelector('h3').textContent = `Related \u00b7 ${pluralize(count, 'related item', 'related items')} in 90 days`;
+    if (items.length) {
+      box.append(el('div', { className: 'related-list' }, items.map((it) => {
+        const k = keyOf(it);
+        return button({ className: 'related-item', title: it.title || '(untitled)' }, [
+          el('span', { className: 'related-title', text: it.title || '(untitled)' }),
+          el('span', { className: 'related-src', text: it.source?.name || it.source?.id || '' }),
+        ], () => d.open(k, { push: true, from: 'related' }));
+      })));
     }
-    field.value = url;
-    field.focus();
-    field.select();
-    toast('Couldn\u2019t copy automatically \u2014 press Ctrl+C / \u2318C');
+    box.append(el('p', { className: 'method', text: mod.RELATED_METHOD }));
+  };
+  if (relatedMod) fill(relatedMod);
+  else {
+    import('./related.js').then((mod) => { relatedMod = mod; fill(mod); }).catch(() => { box.querySelector('h3').textContent = 'Related \u00b7 unavailable'; });
   }
+  return box;
 }
 
-/** `o`: a transient extLink() anchor, never window.open. */
-function openExternal(item) {
-  const url = item ? safeHttpUrl(item.url) : null;
-  if (!url) return;
-  const a = extLink(url, '');
-  a.hidden = true;
-  (q1('dialog[open]') ?? document.body).append(a);
-  a.click();
-  a.remove();
-}
-
-async function openDeepLink() {
-  const key = pendingDeepKey;
-  if (!key) return;
-  const opened = await openDetail(key, { push: false, from: 'deeplink' });
-  pendingDeepKey = null;
-  if (!opened) dropItemParam();
+function initDrawer(dialog) {
+  drawer = createDrawer({
+    dialog,
+    getList: currentList,
+    findItem: findItemOrArchive,
+    buildUrl: (key) => buildUrl(state, key),
+    sections: [sectorsSection, relatedSection],
+    actions: [(item, { key }) => saveButton(item, key, 'btn-secondary', true)],
+    ensureIndexVisible: (index) => {
+      if (index >= state.page * PAGE_SIZE) {
+        state.page = Math.ceil((index + 1) / PAGE_SIZE);
+        render({ animate: false });
+      }
+    },
+    onOpen: ({ item }) => { setTitle(item); markOpenCard(); renderRadarNow(); },
+    onClose: ({ lastKey, returnTo }) => {
+      setTitle(null);
+      markOpenCard();
+      const card = cardFor(lastKey);
+      if (returnTo === 'radar' && radarMq.matches) {
+        els.radarPanel.focus();
+      } else if (card) {
+        state.highlightKey = lastKey;
+        applyHighlight();
+        card.scrollIntoView({ block: 'nearest' });
+        card.querySelector('.card-link')?.focus();
+      } else {
+        (radarMq.matches ? els.radarPanel : els.results).focus();
+      }
+      renderRadarNow();
+    },
+  });
 }
 
 // -- phone filter sheet --
@@ -834,10 +794,10 @@ function onKeydown(e) {
     return; // not handled: #q keeps the native Esc-clears-field
   }
   if (dialogOpen) {
-    if (dialogOpen === els.detail) {
-      if (key === 'j' || key === 'ArrowRight') { e.preventDefault(); stepDetail(1); return; }
-      if (key === 'k' || key === 'ArrowLeft') { e.preventDefault(); stepDetail(-1); return; }
-      if (key === 'o') { e.preventDefault(); openExternal(detail.item); return; }
+    if (dialogOpen === drawer.dialog) {
+      if (key === 'j' || key === 'ArrowRight') { e.preventDefault(); drawer.step(1); return; }
+      if (key === 'k' || key === 'ArrowLeft') { e.preventDefault(); drawer.step(-1); return; }
+      if (key === 'o') { e.preventDefault(); openExternal(drawer.item()); return; }
     }
     if (key === 't') { e.preventDefault(); toggleTheme(); }
     return;
@@ -869,7 +829,7 @@ function applyChange() {
 }
 
 function resetFilters() {
-  Object.assign(state, { kind: '', region: '', sources: [], q: '', since: '', sort: '' });
+  Object.assign(state, { kind: '', region: '', sources: [], sectors: [], q: '', since: '', sort: '' });
   applyChange();
 }
 
@@ -923,7 +883,7 @@ function wireEvents() {
     if (interactive && !interactive.classList.contains('card-link')) return;
     if (e.detail > 0 && document.getSelection()?.toString()) return;
     e.preventDefault();
-    openDetail(card.dataset.key, { push: true, from: 'card' });
+    drawer.open(card.dataset.key, { push: true, from: 'card' });
   });
   els.results.addEventListener('focusin', (e) => {
     const card = e.target instanceof Element && e.target.matches('a.card-link') ? e.target.closest('article.card') : null;
@@ -936,18 +896,13 @@ function wireEvents() {
     if (e.target instanceof Element && e.target.matches('a.card-link')) e.target.closest('article.card')?.classList.remove('has-focus');
   });
 
-  els.detail.addEventListener('cancel', (e) => { e.preventDefault(); closeDetail(); });
-  els.detail.addEventListener('close', onDetailClosed);
-  els.detail.addEventListener('click', (e) => { if (e.target === els.detail) closeDetail(); });
   window.addEventListener('popstate', () => {
-    if (detail.ignoreNextPop) { detail.ignoreNextPop = false; syncLocation(); return; }
-    const key = validKey(itemParam());
-    if (els.detail.open && !key) { detail.fromHistory = true; detail.ownsEntry = false; closeDetail(); return; }
-    if (!els.detail.open && key) { openDetail(key, { push: false, from: 'history' }); return; }
+    if (drawer.handlePopstate(validKey(itemParam()))) return;
     readStateFromLocation();
     syncControls();
     render();
   });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) { nb = notebook.load(); syncSaveButtons(); } }); // bfcache restore
 
   els.filtersOpen.addEventListener('click', openSheet);
   els.filtersClose.addEventListener('click', closeSheet);
@@ -984,10 +939,9 @@ function shellPainted() {
 }
 
 async function init() {
-  initTheme();
-  fillHelp(SHORTCUTS);
-  initHelp();
-  observeSticky();
+  const shell = mountShell({ page: 'feed', drawer: true, help: SHORTCUTS });
+  initDrawer(shell.detail);
+  nb = notebook.load();
   syncSheetMode();
   initRadarPanel();
   pendingDeepKey = validKey(itemParam());
@@ -996,14 +950,15 @@ async function init() {
   wireEvents();
   await shellPainted();
   await Promise.allSettled([loadSources(), loadStats(), loadItems()]);
-  readStateFromLocation(); // drops unknown source ids
+  readStateFromLocation(); // drops unknown source / sector ids
   syncControls();
   syncLocation();
   render();
   updateTiles();
   renderRadarNow();
   if (state.q || state.since === '30d') ensureArchive();
-  await openDeepLink();
+  await drawer.openDeepLink(pendingDeepKey);
+  pendingDeepKey = null;
   pollStats({ url: STATS_URL, onStats: onStatsPolled, onError: onStatsError });
   startTicker(tick);
   startPwa();

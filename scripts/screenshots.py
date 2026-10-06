@@ -9,8 +9,10 @@ Environment:
                   http://localhost:8080/startup-radar is fine)
     PW_CHANNEL    chromium channel, default "msedge" (bundled browsers are not
                   installed on the dev machine; "chrome" also works)
-    SMOKE_ONLY    "1" = static-file checks only (home + sources + mobile + the
-                  deep link + the service worker), usable against GitHub Pages
+    SMOKE_ONLY    "1" = static-file checks only (home + sources + the trends,
+                  funding and YC lens pages against their JSON + the notebook
+                  page over localStorage + mobile + the deep link + the service
+                  worker incl. notebook survival), usable against GitHub Pages
                   or a dist/ preview. Writes no PNGs.
     STATIC_ROOT   smoke mode only: the directory the server serves BASE_URL
                   from. When set, the service-worker update flow is proven by
@@ -49,6 +51,7 @@ import re
 import struct
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -83,8 +86,16 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./styles.css", "./sources.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
-SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192"]
+SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+# page kind -> index of its link in NAV (audit_state asserts aria-current there)
+NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "notebook": 4, "sources": 5}
+# lens pages (FEAT-003/004): (kind, path, selector that proves the data rendered)
+LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details"), ("notebook", "/notebook.html", "#main[data-ready]")]
+NOTEBOOK_KEY = "sr:notebook:v1"
+NOTEBOOK_BANNER = "Stored in this browser only \u2014 export to keep it."
+SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192", "g"]
+# nav.js NAV in order (label, href); every page ships this static list and the shell re-fills it
+NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Sources", "./sources.html")]
 
 KIND_LABELS = [
     ("launch", "Launch"),
@@ -209,7 +220,7 @@ SNAPSHOT_JS = r"""
   const total = m ? parseInt(m[1], 10) : (countText.startsWith('No items') ? 0 : null);
   const cards = Array.from(document.querySelectorAll('#results article')).map((a) => {
     const t = a.querySelector('time');
-    const kindBadge = a.querySelector('.badge:not(.badge-source):not(.badge-region)');
+    const kindBadge = a.querySelector('.badge:not(.badge-source):not(.badge-region):not(.badge-sector)');
     return {
       title: text(a.querySelector('h2 a')),
       source: text(a.querySelector('.badge-source')),
@@ -641,7 +652,22 @@ LAYOUT_JS = r"""
     if (getComputedStyle(links[0], '::after').content !== 'none') out.cardIssues.push('card-link ::after overlay');
   }
   out.cardExt = cards.map((c) => ({ key: c.dataset.key, href: c.querySelector('a.card-ext') ? c.querySelector('a.card-ext').href : null }));
-  out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region), #detail .badge:not(.badge-region)')).map((b) => b.textContent.trim());
+  out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region):not(.badge-sector), #detail .badge:not(.badge-region):not(.badge-sector)')).map((b) => b.textContent.trim());
+  out.sectorBadges = Array.from(document.querySelectorAll('#results .badge-sector, #detail .badge-sector')).map((b) => ({ text: b.textContent.trim(), title: b.title }));
+  // shell: one nav list with the six static links, the phone toggle only below 640, no second help/toasts
+  const navList = document.querySelectorAll('nav.site-nav ul#site-nav-list');
+  out.navLinks = navList.length === 1 ? Array.from(navList[0].querySelectorAll('a')).map((a) => [a.textContent.trim(), a.getAttribute('href'), a.getAttribute('aria-current')]) : null;
+  const toggle = document.getElementById('nav-toggle');
+  if (!toggle) problem('#nav-toggle missing');
+  else if (visible(toggle) !== (innerWidth < 640)) problem('#nav-toggle visibility at ' + innerWidth);
+  if (innerWidth >= 640 && navList.length === 1) {
+    const ul = navList[0];
+    const links = Array.from(ul.querySelectorAll('a'));
+    if (!links.every(visible)) problem('nav links hidden at ' + innerWidth);
+    const brand = document.querySelector('.topbar .brand');
+    if (brand && rect(ul).top < rect(brand).bottom - 1) problem('nav is not a second row under the brand row');
+    for (const sel of ['dialog#help', '#toasts', 'p.footer-links']) if (document.querySelectorAll(sel).length !== 1) problem(sel + ' x' + document.querySelectorAll(sel).length);
+  }
   out.regionBadges = Array.from(document.querySelectorAll('#results .badge-region, #detail .badge-region')).map((b) => b.textContent.trim());
   // AC 19 stat tiles
   out.statN = Array.from(document.querySelectorAll('.stat-n')).map((n) => ({ text: n.textContent.trim(), lines: n.getClientRects().length, ws: getComputedStyle(n).whiteSpace, overflow: n.scrollWidth > n.clientWidth }));
@@ -809,6 +835,14 @@ def goto_sources(page):
     page.wait_for_selector("#explore-list li", timeout=WAIT_MS)
 
 
+def goto_lens(page, kind, query=""):
+    """Open a lens page (trends/funding/yc) and wait until its data rendered."""
+    path, ready = next((p, r) for k, p, r in LENS_PAGES if k == kind)
+    page.goto(BASE + path + query, wait_until="domcontentloaded")
+    page.wait_for_selector(ready, timeout=WAIT_MS)
+    page.wait_for_function("() => /Last refreshed/.test(document.getElementById('last-refreshed').textContent) && !/loading/.test(document.getElementById('last-refreshed').textContent)", timeout=WAIT_MS)
+
+
 def open_sheet(page):
     """Phone contexts: open the filter sheet (the sources disclosure lives inside it)."""
     page.click("#filters-open")
@@ -899,6 +933,7 @@ class Data:
 
     def __init__(self, request):
         api = Api(request)
+        self.api = api
         self.items = api.data("items.json")
         self.sources = api.data("sources.json")
         self.stats = api.data("stats.json")
@@ -908,6 +943,18 @@ class Data:
         enabled = [s for s in self.sources["sources"] if s["enabled"]]
         self.sources_tile = "%d/%d" % (len([s for s in enabled if not s.get("lastError")]), len(enabled))
         self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
+        self.sectors = self.stats.get("sectors") or []  # [{id, label, count}] (FEAT-001)
+        self.sector_labels = set(s["label"] for s in self.sectors)
+
+    def tiles(self):
+        """The four home stat tiles as the page should print them (feed, last 24 h, last 7 d, sources OK/enabled)."""
+        return [self.feed_tile, str(self.stats["last24h"]), str(self.stats["last7d"]), self.sources_tile]
+
+    def refresh_stats(self):
+        """Re-fetch stats.json: on Express the rolling 24 h / 7 d counts move while a long matrix run is in progress."""
+        self.stats = self.api.data("stats.json")
+        self.feed_tile = str(len(self.items) + int(self.stats.get("archiveItems") or 0))
+        return self.tiles()
 
     def within_48h(self, now, slack_s=0):
         n = 0
@@ -930,8 +977,9 @@ def ui_matches_api(snap, api_data):
     return first_title(snap) == first_title(api_data)
 
 
-def audit_page(page, label, want_controls=True, open_details=False, sheet=False):
-    """Font-size, control-height, link-rel and overflow audit for the current page."""
+def audit_page(page, label, want_controls=True, open_details=False, sheet=False, want_links=True):
+    """Font-size, control-height, link-rel and overflow audit for the current page (want_links=False: a page
+    without outbound links by design, e.g. trends/funding - every target=_blank anchor present must still be safe)."""
     if sheet:
         open_sheet(page)
     if open_details and page.locator("#sources-filter").count():
@@ -970,7 +1018,7 @@ def audit_page(page, label, want_controls=True, open_details=False, sheet=False)
             )
     check(
         "%s: target=_blank links carry rel noopener noreferrer" % label,
-        a["blankLinks"] >= 1 and a["badLinks"] == 0,
+        (a["blankLinks"] >= 1 or not want_links) and a["badLinks"] == 0,
         "%d links, %d bad" % (a["blankLinks"], a["badLinks"]),
     )
     check(
@@ -1362,6 +1410,22 @@ def run_live_smoke(browser):
     errors.check("smoke sources")
     ctx.close()
 
+    # --- lens pages (FEAT-003): numbers equal the JSON, drawer opens, no overflow at 1280 ---------------
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    smoke_lens_pages(page, ctx, "smoke", audit=True)
+    errors.check("smoke lens pages desktop")
+    ctx.close()
+
+    # --- notebook (FEAT-004): localStorage only, save on home -> listed, export/import, confirm deletes ---------------
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    smoke_notebook(page, ctx, "smoke", audit=True)
+    errors.check("smoke notebook desktop")
+    ctx.close()
+
     # --- mobile ------------------------------------------------------------
     mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     mpage = mctx.new_page()
@@ -1372,8 +1436,370 @@ def run_live_smoke(browser):
     check("smoke mobile home: at least 1 article rendered", snap["shown"] >= 1, "%d articles" % snap["shown"])
     a = audit_page(mpage, "smoke home mobile 390px", want_controls=True, open_details=True, sheet=True)
     check("smoke mobile home: document.documentElement.scrollWidth <= 390", a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
+    for kind, _, _ in LENS_PAGES:
+        if kind == "notebook":
+            seed_notebook(mpage, Api(mctx.request).data("items.json")[0])
+            goto_lens(mpage, kind)
+            mpage.click("#nb-canvas-list .nb-canvas-row")
+            mpage.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+        else:
+            goto_lens(mpage, kind)
+        a = audit_page(mpage, "smoke %s mobile 390px" % kind, want_controls=True, want_links=(kind == "yc"))
+        check("smoke mobile %s: scrollWidth <= 390" % kind, a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
     merrors.check("smoke mobile")
     mctx.close()
+
+
+LENS_STATE_JS = r"""
+() => {
+  const text = (el) => (el ? el.textContent.trim() : '');
+  const sparks = Array.from(document.querySelectorAll('#sector-grid .sparkline'));
+  const groups = Array.from(document.querySelectorAll('#industry-groups details'));
+  return {
+    method: text(document.getElementById('method')),
+    attribution: text(document.getElementById('attribution')),
+    termRows: document.querySelectorAll('#terms-table tbody tr.term-row').length,
+    sparklines: sparks.length,
+    sparkPoints: sparks.map((s) => (s.querySelector('polyline').getAttribute('points') || '').split(' ').filter(Boolean).length),
+    sparkLabels: sparks.map((s) => s.getAttribute('aria-label') || ''),
+    sparkRole: sparks.every((s) => s.getAttribute('role') === 'img'),
+    sparkAxes: Array.from(document.querySelectorAll('#sector-grid .spark')).map((f) => [Array.from(f.querySelectorAll('.spark-y span')).map(text).join(' '), Array.from(f.querySelectorAll('.spark-x span')).map(text).join(' ')]),
+    weekHeaders: Array.from(document.querySelectorAll('#kind-table thead th')).map(text),
+    kindRows: document.querySelectorAll('#kind-table tbody tr').length,
+    regionRows: document.querySelectorAll('#region-table tbody tr').length,
+    examples: document.querySelectorAll('#terms-table button.example').length,
+    fundingRows: Array.from(document.querySelectorAll('#funding-table tbody tr[data-key]')).map((tr) => ({
+      key: tr.dataset.key,
+      title: text(tr.querySelector('th a')),
+      amount: text(tr.querySelector('td[data-label="Amount"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
+      note: (tr.querySelector('td[data-label="Amount"] .cell-note') || {}).textContent || '',
+      stage: text(tr.querySelector('td[data-label="Stage"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
+      stageNote: (tr.querySelector('td[data-label="Stage"] .cell-note') || {}).textContent || '',
+      usd: text(tr.querySelector('td[data-label="approx. USD"]')),
+    })),
+    fundingCount: text(document.getElementById('count')),
+    coverage: text(document.getElementById('coverage')),
+    usdHeaderTitle: (document.querySelector('#funding-table thead th.num') || {}).title || '',
+    fxNote: text(document.getElementById('fx-note')),
+    fxRows: Array.from(document.querySelectorAll('#fx-table tbody tr')).map((tr) => [text(tr.querySelector('th')), text(tr.querySelector('td'))]),
+    sectorTotalRows: document.querySelectorAll('#sector-totals tbody tr').length,
+    stageTotalRows: document.querySelectorAll('#stage-totals tbody tr').length,
+    stageOptions: Array.from(document.querySelectorAll('#stage option')).map((o) => o.value),
+    industryGroups: groups.map((d) => ({ industry: text(d.querySelector('summary > span')), n: text(d.querySelector('summary .n')), open: d.open, rows: d.querySelectorAll('li.company-row').length })),
+    companyLinks: Array.from(document.querySelectorAll('#industry-groups h3 a')).map((a) => ({ text: text(a), href: a.getAttribute('href'), target: a.getAttribute('target'), openKey: a.dataset.openKey || null })),
+    tagRows: Array.from(document.querySelectorAll('#tag-list li')).map((li) => [text(li.querySelector('.tag')), text(li.querySelector('.n'))]),
+    teamBars: Array.from(document.querySelectorAll('#team-bars .bar-row')).map((r) => [text(r.querySelector('.bar-label')), text(r.querySelector('.bar-n')), (r.querySelector('.bar') || {}).style ? r.querySelector('.bar').style.width : '']),
+    batchChips: Array.from(document.querySelectorAll('#batch-chips button.chip')).map((b) => [b.dataset.batch, b.getAttribute('aria-pressed'), text(b)]),
+    bodyText: document.body.innerText,
+    search: location.search,
+  };
+}
+"""
+
+
+def smoke_lens_pages(page, ctx, prefix, audit=True):
+    """Trends, funding and YC pages against their JSON files (smoke + parity)."""
+    api = Api(ctx.request)
+    trends = api.data("trends.json")
+    funding = api.data("funding.json")
+    yc = api.data("yc.json")
+    items = api.data("items.json")
+    feed_keys = set(item_key(it["url"]) for it in items)
+
+    # --- trends ------------------------------------------------------------
+    goto_lens(page, "trends")
+    s = page.evaluate(LENS_STATE_JS)
+    check("%s trends: one sparkline per sector (%d), role=img, 12 points each" % (prefix, len(trends["bySector"])), s["sparklines"] == len(trends["bySector"]) >= 1 and s["sparkRole"] and all(n == len(trends["weeks"]) for n in s["sparkPoints"]), "%d sparklines, points %s" % (s["sparklines"], sorted(set(s["sparkPoints"]))))
+    expected_labels = ["%s: items per ISO week, %s to %s (partial): %s. Maximum %d." % (r["label"], trends["weeks"][0], trends["weeks"][-1], ", ".join(str(c) for c in r["counts"]), max([0] + r["counts"])) for r in trends["bySector"]]
+    check("%s trends: sparkline aria-labels list the 12 real counts" % prefix, s["sparkLabels"] == expected_labels, (s["sparkLabels"][0] if s["sparkLabels"] else "-")[:120])
+    check("%s trends: axes label 0/max and first/last week (last marked partial)" % prefix, len(s["sparkAxes"]) == len(trends["bySector"]) and all(y == "%d 0" % max([0] + r["counts"]) and x == "%s %s · partial" % (trends["weeks"][0], trends["weeks"][-1]) for (y, x), r in zip(s["sparkAxes"], trends["bySector"])), str(s["sparkAxes"][:2]))
+    check("%s trends: rising-terms rows equal trends.json terms (%d) with <= 5 example buttons each" % (prefix, len(trends["terms"])), s["termRows"] == len(trends["terms"]) and s["examples"] == sum(min(5, len(t["examples"])) for t in trends["terms"]), "%d rows, %d example buttons" % (s["termRows"], s["examples"]))
+    check("%s trends: method sentence equals trends.method" % prefix, s["method"] == trends["method"], s["method"][:100])
+    check("%s trends: weekly tables show the 12 week ids and every kind/region row" % prefix, s["weekHeaders"][1:] == [w + (" (partial)" if w == trends["partialWeek"] else "") for w in trends["weeks"]] and s["kindRows"] == len(trends["byKind"]) and s["regionRows"] == len(trends["byRegion"]), "%d kinds, %d regions" % (s["kindRows"], s["regionRows"]))
+    if trends["terms"]:
+        first = page.evaluate("(() => { const tr = document.querySelector('#terms-table tbody tr.term-row'); return [tr.querySelector('th').textContent.trim(), ...Array.from(tr.querySelectorAll('td')).slice(0, 5).map((td) => td.textContent.trim())]; })()")
+        t = trends["terms"][0]
+        ratio = "new" if t["ratio"] is None else "%s×" % format(t["ratio"], ",")
+        check("%s trends: first row shows this week, prior weekly average, rise and ratio of the JSON" % prefix, first[0] == t["term"] and first[2] == format(t["thisWeek"], ",") and first[3] == format(t["priorWeeklyAvg"], ",") and first[4] == format(t["rise"], ",") and first[5] == ratio, str(first))
+        if s["examples"]:
+            page.click("#terms-table button.example")
+            page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+            key = page.evaluate("document.querySelector('#terms-table button.example').dataset.openKey")
+            title = page.evaluate("document.getElementById('detail-title').textContent")
+            check("%s trends: an example button opens the drawer for its item and the URL carries ?item=<key>" % prefix, bool(title) and ("item=" + key) in page.url and urlsplit(page.url).path == urlsplit(BASE + "/trends.html").path, "%s -> %s" % (key, title[:60]))
+            page.keyboard.press("Escape")
+            page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+            page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+            check("%s trends: Esc closes the drawer and focus returns to the example button" % prefix, page.evaluate("document.activeElement && document.activeElement.classList.contains('example')"))
+    if audit:
+        audit_page(page, "%s trends desktop" % prefix, want_controls=True, want_links=False)
+
+    # --- funding ------------------------------------------------------------
+    goto_lens(page, "funding")
+    s = page.evaluate(LENS_STATE_JS)
+    f_items = funding["items"]
+    check("%s funding: one row per funding.json item for the default filters (%d)" % (prefix, len(f_items)), len(s["fundingRows"]) == len(f_items) and set(r["key"] for r in s["fundingRows"]) == set(item_key(it["url"]) for it in f_items), "%d rows" % len(s["fundingRows"]))
+    by_key = dict((item_key(it["url"]), it) for it in f_items)
+    bad_amounts = [r for r in s["fundingRows"] if r["amount"] != ((by_key[r["key"]]["funding"].get("amountText") or "—"))]
+    check("%s funding: every amount is the headline's original text (amountText) or an em dash" % prefix, not bad_amounts, ("bad %s" % json.dumps(bad_amounts[:2])) if bad_amounts else "%d rows" % len(s["fundingRows"]))
+    FROM_LABEL = {"title": "parsed from headline", "summary": "parsed from summary", None: ""}
+    bad_notes = [r for r in s["fundingRows"] if r["note"] != FROM_LABEL.get(by_key[r["key"]]["funding"].get("amountFrom") if by_key[r["key"]]["funding"].get("amountText") else None)]
+    check("%s funding: every parsed amount is labelled with its own field (amountFrom -> parsed from headline / summary), none otherwise" % prefix, not bad_notes, ("bad %s" % json.dumps(bad_notes[:2])) if bad_notes else "%d labelled" % len([r for r in s["fundingRows"] if r["note"]]))
+    # review-phase-1 iteration 2 #5: the stage carries its own field label (a title amount + summary stage differ)
+    bad_stages = [r for r in s["fundingRows"] if r["stage"] != (by_key[r["key"]]["funding"].get("stage") or "—") or r["stageNote"] != FROM_LABEL.get(by_key[r["key"]]["funding"].get("stageFrom") if by_key[r["key"]]["funding"].get("stage") else None)]
+    check("%s funding: every stage is the parsed stage (or an em dash) labelled with its own field (stageFrom)" % prefix, not bad_stages, ("bad %s" % json.dumps(bad_stages[:2])) if bad_stages else "%d labelled, %d differ from the amount's field" % (len([r for r in s["fundingRows"] if r["stageNote"]]), len([r for r in s["fundingRows"] if r["stageNote"] and r["note"] and r["stageNote"] != r["note"]])))
+    cov = funding["coverage"]
+    expected_cov = "sum of parsed amounts: %s of %s funding items had a parseable amount (%s had a stage)" % (format(cov["withAmount"], ","), format(cov["items"], ","), format(cov["withStage"], ","))
+    check("%s funding: coverage sentence present" % prefix, s["coverage"].startswith(expected_cov), s["coverage"][:120])
+    check("%s funding: approx. USD column titled with the static-rates wording and the FX table shows asOf %s" % (prefix, funding["fx"]["asOf"]), "approx. USD at static rates" in s["usdHeaderTitle"] and funding["fx"]["asOf"] in s["fxNote"] and s["fxRows"] == [[k, str(v)] for k, v in funding["fx"]["rates"].items()], "%s | %s" % (s["usdHeaderTitle"], s["fxNote"][:80]))
+    check("%s funding: totals by sector (%d) and by stage (%d) rendered" % (prefix, len(funding["totals"]["bySector"]), len(funding["totals"]["byStage"])), s["sectorTotalRows"] == len(funding["totals"]["bySector"]) and s["stageTotalRows"] == len(funding["totals"]["byStage"]))
+    check("%s funding: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    stages = [o for o in s["stageOptions"] if o]
+    if stages:
+        stage = stages[0]
+        page.select_option("#stage", stage)
+        page.wait_for_function("(st) => new URLSearchParams(location.search).get('stage') === st", arg=stage, timeout=WAIT_MS)
+        s2 = page.evaluate(LENS_STATE_JS)
+        expected = [it for it in f_items if (it["funding"].get("stage") or "unknown") == stage]
+        check("%s funding: stage=%s filters the rows (%d) and the URL stays under the page path" % (prefix, stage, len(expected)), len(s2["fundingRows"]) == len(expected) and urlsplit(page.url).path == urlsplit(BASE + "/funding.html").path and s2["fundingCount"].startswith("%s of %s" % (format(len(expected), ","), format(len(f_items), ","))), "%d rows, %s" % (len(s2["fundingRows"]), s2["fundingCount"]))
+        page.select_option("#stage", "")
+        page.wait_for_function("() => !new URLSearchParams(location.search).has('stage')", timeout=WAIT_MS)
+    page.select_option("#sort", "usd")
+    page.wait_for_function("() => new URLSearchParams(location.search).get('sort') === 'usd'", timeout=WAIT_MS)
+    s3 = page.evaluate(LENS_STATE_JS)
+    usd_order = [by_key[r["key"]].get("usdApprox") for r in s3["fundingRows"]]
+    numeric = [u for u in usd_order if u is not None]
+    check("%s funding: sort=usd orders by approx. USD descending with unparsed amounts last" % prefix, numeric == sorted(numeric, reverse=True) and usd_order[len(numeric):].count(None) == len(usd_order) - len(numeric), "%d numeric of %d" % (len(numeric), len(usd_order)))
+    page.select_option("#sort", "date")
+    page.wait_for_function("() => !new URLSearchParams(location.search).has('sort')", timeout=WAIT_MS)
+    if s["fundingRows"]:
+        page.click("#funding-table tbody tr[data-key] th a")
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        row = s["fundingRows"][0]
+        title = page.evaluate("document.getElementById('detail-title').textContent")
+        has_section = page.evaluate("!!document.querySelector('#detail .detail-funding')")
+        check("%s funding: the title opens the drawer with the funding rows" % prefix, title == row["title"] and has_section and ("item=" + row["key"]) in page.url, title[:60])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    if audit:
+        audit_page(page, "%s funding desktop" % prefix, want_controls=True, want_links=False)
+
+    # --- yc ------------------------------------------------------------
+    goto_lens(page, "yc")
+    s = page.evaluate(LENS_STATE_JS)
+    check("%s yc: industry group count equals byIndustry.length (%d) with the largest open" % (prefix, len(yc["byIndustry"])), len(s["industryGroups"]) == len(yc["byIndustry"]) and s["industryGroups"][0]["open"] and all(not g["open"] for g in s["industryGroups"][1:]), "%d groups" % len(s["industryGroups"]))
+    expected_groups = [(r["industry"], r["count"]) for r in yc["byIndustry"]]
+    check("%s yc: group labels and counts equal byIndustry, rows per group equal the counts" % prefix, [(g["industry"], int(g["n"].split()[0].replace(",", ""))) for g in s["industryGroups"]] == expected_groups and all(g["rows"] == c for g, (_, c) in zip(s["industryGroups"], expected_groups)), str(s["industryGroups"][:2])[:160])
+    check("%s yc: >= 400 companies rendered" % prefix, sum(g["rows"] for g in s["industryGroups"]) == len(yc["companies"]) >= 400, "%d companies" % sum(g["rows"] for g in s["industryGroups"]))
+    check("%s yc: attribution line verbatim" % prefix, s["attribution"] == "Source: yc-oss open API mirror of ycombinator.com, refreshed hourly" == yc["attribution"], s["attribution"])
+    expected_tags = [[r["tag"], format(r["count"], ",")] for r in yc["tagFrequency"]]
+    check("%s yc: tag list equals tagFrequency (top %d)" % (prefix, len(expected_tags)), s["tagRows"] == expected_tags, str(s["tagRows"][:3]))
+    expected_team = list(zip(yc["teamSize"]["buckets"], yc["teamSize"]["counts"]))
+    check("%s yc: team-size bars equal teamSize buckets/counts incl. unknown, widths proportional" % prefix, [(b[0].replace(" people", ""), int(b[1].replace(",", ""))) for b in s["teamBars"]] == expected_team and all(b[2].endswith("%") for b in s["teamBars"]) and sum(c for _, c in expected_team) == len(yc["companies"]), str(s["teamBars"])[:160])
+    in_feed = [l for l in s["companyLinks"] if l["openKey"]]
+    external = [l for l in s["companyLinks"] if not l["openKey"]]
+    check("%s yc: company names link in-app when the feed has the key, else to the YC page in a new tab" % prefix, all(l["openKey"] in feed_keys and l["href"] == "?item=" + l["openKey"] and l["target"] is None for l in in_feed) and all(l["target"] == "_blank" and l["href"].startswith("https://www.ycombinator.com/") for l in external) and len(in_feed) + len(external) == len(yc["companies"]), "%d in-app, %d external" % (len(in_feed), len(external)))
+    check("%s yc: batch chips = All + %d batches with All pressed" % (prefix, len(yc["batches"])), [c[0] for c in s["batchChips"]] == [""] + [b["batch"] for b in yc["batches"]] and s["batchChips"][0][1] == "true", str(s["batchChips"]))
+    batch = yc["batches"][0]["batch"]
+    page.click('#batch-chips button.chip[data-batch="%s"]' % batch)
+    page.wait_for_function("(b) => new URLSearchParams(location.search).get('batch') === b", arg=batch, timeout=WAIT_MS)
+    s2 = page.evaluate(LENS_STATE_JS)
+    subset = [c for c in yc["companies"] if c["batch"] == batch]
+    industries = set((c["industry"] or "unknown") for c in subset)
+    check("%s yc: ?batch=%s shows only that batch (%d companies in %d industries)" % (prefix, batch, len(subset), len(industries)), sum(g["rows"] for g in s2["industryGroups"]) == len(subset) and len(s2["industryGroups"]) == len(industries) and sum(int(b[1].replace(",", "")) for b in s2["teamBars"]) == len(subset), "%d rows, %d groups" % (sum(g["rows"] for g in s2["industryGroups"]), len(s2["industryGroups"])))
+    page.click('#batch-chips button.chip[data-batch=""]')
+    page.wait_for_function("() => !new URLSearchParams(location.search).has('batch')", timeout=WAIT_MS)
+    if in_feed:
+        page.click('#industry-groups h3 a[data-open-key]')
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        title = page.evaluate("document.getElementById('detail-title').textContent")
+        check("%s yc: an in-feed company opens the drawer for its feed item" % prefix, title == in_feed[0]["text"] and ("item=" + in_feed[0]["openKey"]) in page.url, title[:60])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    if audit:
+        audit_page(page, "%s yc desktop" % prefix, want_controls=True)
+
+
+NOTEBOOK_STATE_JS = r"""
+() => {
+  const text = (el) => (el ? el.textContent.trim() : '');
+  const stored = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null');
+  return {
+    banner: text(document.getElementById('notice')),
+    status: text(document.getElementById('status')),
+    count: text(document.getElementById('nb-items-count')),
+    items: Array.from(document.querySelectorAll('#nb-items article.nb-item')).map((a) => ({
+      key: a.dataset.key, title: text(a.querySelector('h3 a')), href: a.querySelector('h3 a').getAttribute('href'), openKey: a.querySelector('h3 a').dataset.openKey,
+      note: a.querySelector('textarea.nb-note').value, tags: a.querySelector('input.nb-tags').value, chips: Array.from(a.querySelectorAll('.badge-tag')).map(text),
+    })),
+    emptyNote: document.getElementById('nb-items-empty').hidden ? null : text(document.getElementById('nb-items-empty')),
+    canvasRows: Array.from(document.querySelectorAll('#nb-canvas-list .nb-canvas-row')).map((b) => ({ id: b.dataset.canvasId, title: text(b.querySelector('.nb-canvas-title')), pressed: b.getAttribute('aria-pressed'), meta: text(b.querySelector('.meta')) })),
+    formHidden: document.getElementById('nb-canvas-form').hidden,
+    formTitle: text(document.getElementById('nb-canvas-form-title')),
+    linked: Array.from(document.querySelectorAll('#nb-linked-grid input')).map((i) => [i.dataset.linkKey, i.checked]),
+    stored,
+    storedItems: stored ? Object.keys(stored.items) : [],
+    storedCanvases: stored ? Object.values(stored.canvases) : [],
+    bodyText: document.body.innerText,
+  };
+}
+"""
+
+
+def goto_notebook(page, query=""):
+    page.goto(BASE + "/notebook.html" + query, wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+
+
+def seed_notebook(page, item, with_canvas=True):
+    """Write a one-item (+ one canvas) notebook into localStorage from a feed item (the documented saved shape)."""
+    key = item_key(item["url"])
+    saved = {
+        "key": key, "title": item["title"], "url": item["url"], "source": {"id": item["source"]["id"], "name": item["source"].get("name", "")},
+        "kind": item["kind"], "region": item["region"], "publishedAt": item["publishedAt"], "summary": item.get("summary") or "",
+        "sectors": item.get("sectors") or [], "savedAt": "2026-01-01T00:00:00.000Z", "note": "Seeded by the harness", "tags": ["harness", "seed"],
+    }
+    canvases = {}
+    if with_canvas:
+        canvases["c-seed-1"] = {"id": "c-seed-1", "title": "Seed canvas", "problem": "p", "who": "w", "whyNow": "n", "existing": "e", "distribution": "d", "moat": "m", "firstTen": "f",
+                                "linkedKeys": [key], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z"}
+    page.evaluate("(nb) => localStorage.setItem('sr:notebook:v1', JSON.stringify(nb))", {"version": 1, "items": {key: saved}, "canvases": canvases})
+    return key
+
+
+def smoke_notebook(page, ctx, prefix, audit=True):
+    """Notebook page (FEAT-004): save on home -> listed, notes/tags persist, canvases, export/import, delete with confirm."""
+    api = Api(ctx.request)
+    items = api.data("items.json")
+    by_key = dict((item_key(it["url"]), it) for it in items)
+    accepted = []
+
+    def on_dialog(d):
+        accepted.append(d.message)
+        d.accept()
+    page.on("dialog", on_dialog)
+    # empty state (navigate first: about:blank has no localStorage)
+    goto_notebook(page)
+    page.evaluate("localStorage.removeItem('sr:notebook:v1')")
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: banner reads '%s'" % (prefix, NOTEBOOK_BANNER), s["banner"] == NOTEBOOK_BANNER, s["banner"])
+    check("%s notebook empty: status '0 saved items · 0 canvases · stored in this browser only', no cards, empty note" % prefix, s["status"] == "0 saved items \u00b7 0 canvases \u00b7 stored in this browser only" and not s["items"] and s["emptyNote"] is not None and "bookmark" in s["emptyNote"], "%s | %s" % (s["status"], s["emptyNote"]))
+    check("%s notebook: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    # save on the home page, then the notebook lists it
+    goto_home(page)
+    first = snapshot(page)["cards"][0]
+    page.click('#results article.card[data-key="%s"] button.card-save' % first["key"])
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return n && Object.keys(n.items).length === 1; }", timeout=WAIT_MS)
+    # a second feed tab, booted before the note below is written (review-phase-1 iteration 2 #2: its later save must not erase it)
+    feed = ctx.new_page()
+    goto_home(feed)
+    goto_notebook(page)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: the item saved on the home page is listed with its title, opens in-app (?item=<key>), status says 1 saved item" % prefix,
+          len(s["items"]) == 1 and s["items"][0]["key"] == first["key"] and s["items"][0]["title"] == first["title"] and s["items"][0]["href"] == "?item=" + first["key"] and s["items"][0]["openKey"] == first["key"] and s["status"].startswith("1 saved item \u00b7 0 canvases") and s["count"] == "1 saved item",
+          json.dumps(s["items"])[:160])
+    # note + tags persist (debounced 300 ms)
+    page.fill("#nb-items article.nb-item textarea.nb-note", "Follow up next week")
+    page.fill("#nb-items article.nb-item input.nb-tags", "idea, fintech , idea")
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1')); const it = Object.values(n.items)[0]; return it.note === 'Follow up next week' && it.tags.length === 2; }", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    saved = s["stored"]["items"][first["key"]]
+    check("%s notebook: note and comma-separated tags are stored (trimmed, de-duplicated) and shown as chips" % prefix, saved["note"] == "Follow up next week" and saved["tags"] == ["idea", "fintech"] and s["items"][0]["chips"] == ["idea", "fintech"], json.dumps(saved)[:160])
+    # the feed tab (boot-time copy without the note) saves a second item, then removes it again: the note and tags survive both writes
+    second = snapshot(feed)["cards"][1]
+    feed.click('#results article.card[data-key="%s"] button.card-save' % second["key"])
+    feed.wait_for_function("() => Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length === 2", timeout=WAIT_MS)
+    stored = feed.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1'))")
+    check("%s notebook: a save on a feed tab loaded before the note was written keeps the note and tags (re-reads storage first)" % prefix,
+          sorted(stored["items"].keys()) == sorted([first["key"], second["key"]]) and stored["items"][first["key"]]["note"] == "Follow up next week" and stored["items"][first["key"]]["tags"] == ["idea", "fintech"],
+          json.dumps(stored["items"].get(first["key"], {}))[:160])
+    feed.click('#results article.card[data-key="%s"] button.card-save' % second["key"])
+    feed.wait_for_function("() => Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length === 1", timeout=WAIT_MS)
+    stored = feed.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1'))")
+    check("%s notebook: removing it again on the feed tab leaves the first item with its note" % prefix, list(stored["items"].keys()) == [first["key"]] and stored["items"][first["key"]]["note"] == "Follow up next week", json.dumps(stored["items"])[:160])
+    feed.close()
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: reload keeps the note and tags in the fields" % prefix, len(s["items"]) == 1 and s["items"][0]["note"] == "Follow up next week" and s["items"][0]["tags"] == "idea, fintech", json.dumps(s["items"])[:160])
+    # search filters title/summary/note/tags
+    page.fill("#nb-search", "fintech")
+    page.wait_for_function("() => document.getElementById('nb-items-count').textContent.startsWith('1 of 1')", timeout=WAIT_MS)
+    page.fill("#nb-search", "zqxjkvwpyq")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 0", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: search matches a tag, a miss shows the 'no saved item matches' note and '0 of 1 saved item match'" % prefix, s["emptyNote"] is not None and s["emptyNote"].startswith("No saved item matches") and s["count"] == "0 of 1 saved item match", "%s | %s" % (s["count"], s["emptyNote"]))
+    page.fill("#nb-search", "")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
+    # drawer from a saved item (the saved shape carries everything the drawer needs)
+    page.click("#nb-items article.nb-item h3 a")
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    title = page.evaluate("document.getElementById('detail-title').textContent")
+    check("%s notebook: the title opens the drawer for the saved item under the page path with ?item=<key>, with a Saved row" % prefix, title == first["title"] and ("item=" + first["key"]) in page.url and urlsplit(page.url).path == urlsplit(BASE + "/notebook.html").path and page.evaluate("Array.from(document.querySelectorAll('#detail .detail-sectors dt')).some((d) => d.textContent === 'Saved')"), title[:60])
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    # canvases: new, fields saved as typed, link the saved item, duplicate, delete with confirm
+    page.click("#nb-canvas-new")
+    page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+    page.fill("#cv-title", "Payroll for gig workers")
+    page.fill("#cv-problem", "Weekly pay is late")
+    page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1')); const c = Object.values(n.canvases)[0]; return c && c.title === 'Payroll for gig workers' && c.problem === 'Weekly pay is late'; }", timeout=WAIT_MS)
+    page.check("#nb-linked-grid input")
+    page.wait_for_function("() => Object.values(JSON.parse(localStorage.getItem('sr:notebook:v1')).canvases)[0].linkedKeys.length === 1", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    c = s["storedCanvases"][0]
+    check("%s notebook: a new canvas stores the typed fields, links the saved item and shows up in the list as pressed" % prefix,
+          len(s["canvasRows"]) == 1 and s["canvasRows"][0]["title"] == "Payroll for gig workers" and s["canvasRows"][0]["pressed"] == "true" and s["canvasRows"][0]["meta"] == "1 linked item" and c["linkedKeys"] == [first["key"]] and all(k in c for k in ("problem", "who", "whyNow", "existing", "distribution", "moat", "firstTen")) and s["status"].startswith("1 saved item \u00b7 1 canvas"),
+          json.dumps(s["canvasRows"])[:160])
+    page.click("#nb-canvas-duplicate")
+    page.wait_for_function("() => document.querySelectorAll('#nb-canvas-list .nb-canvas-row').length === 2", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Duplicate adds '(copy)' with the same fields and links" % prefix, len(s["storedCanvases"]) == 2 and sorted(x["title"] for x in s["storedCanvases"]) == ["Payroll for gig workers", "Payroll for gig workers (copy)"] and all(x["linkedKeys"] == [first["key"]] and x["problem"] == "Weekly pay is late" for x in s["storedCanvases"]), json.dumps([x["title"] for x in s["storedCanvases"]]))
+    # export JSON and Markdown really download, and the JSON round-trips through import (merge)
+    with page.expect_download(timeout=WAIT_MS) as dl:
+        page.click("#nb-export-json")
+    d = dl.value
+    exported = Path(d.path()).read_text(encoding="utf-8")
+    parsed = json.loads(exported)
+    check("%s notebook: Export JSON downloads startup-radar-notebook-<date>.json holding the saved item and both canvases" % prefix, re.match(r"^startup-radar-notebook-\d{4}-\d{2}-\d{2}\.json$", d.suggested_filename) is not None and parsed["version"] == 1 and list(parsed["items"].keys()) == [first["key"]] and len(parsed["canvases"]) == 2, d.suggested_filename)
+    with page.expect_download(timeout=WAIT_MS) as dl:
+        page.click("#nb-export-md")
+    d = dl.value
+    md = Path(d.path()).read_text(encoding="utf-8")
+    check("%s notebook: Export Markdown downloads .md with the item link, note, tags, canvases and the browser-only line" % prefix, d.suggested_filename.endswith(".md") and md.startswith("# Startup Radar notebook") and ("](%s)" % by_key[first["key"]]["url"]) in md and "note: Follow up next week" in md and "tags: idea, fintech" in md and "### Payroll for gig workers" in md and "Saved in the browser only" in md, d.suggested_filename)
+    # delete the item with confirm, then import the export to get it back (merge reports counts)
+    page.click("#nb-items article.nb-item .nb-danger")
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 0", timeout=WAIT_MS)
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Remove asks for confirmation and removes the item from the page and from localStorage" % prefix, len(accepted) == 1 and accepted[0].startswith('Remove "') and s["storedItems"] == [] and s["status"].startswith("0 saved items \u00b7 2 canvases"), accepted[-1][:80] if accepted else "no confirm dialog")
+    page.set_input_files("#nb-import-file", {"name": "notebook.json", "mimeType": "application/json", "buffer": exported.encode("utf-8")})
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
+    page.wait_for_function("() => Array.from(document.querySelectorAll('#toasts .toast p')).some((p) => p.textContent.startsWith('Imported'))", timeout=WAIT_MS)
+    toast_text = page.evaluate("Array.from(document.querySelectorAll('#toasts .toast p')).map((p) => p.textContent).find((t) => t.startsWith('Imported'))")
+    s = page.evaluate(NOTEBOOK_STATE_JS)
+    check("%s notebook: Import JSON merges the export back (item with note and tags restored, canvases unchanged) and toasts the counts" % prefix, s["storedItems"] == [first["key"]] and s["stored"]["items"][first["key"]]["note"] == "Follow up next week" and len(s["storedCanvases"]) == 2 and toast_text.startswith("Imported 1 saved item and 2 canvases (1 new items, 0 new canvases"), toast_text[:120])
+    page.set_input_files("#nb-import-file", {"name": "bad.json", "mimeType": "application/json", "buffer": b"[1,2]"})
+    page.wait_for_function("() => Array.from(document.querySelectorAll('#toasts .toast.error p')).some((p) => p.textContent.startsWith('Import failed:'))", timeout=WAIT_MS)
+    check("%s notebook: a non-notebook file is rejected with an error toast and changes nothing" % prefix, page.evaluate("Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length") == 1)
+    if audit:
+        # toasts animate in (transform); dismiss them so the control audit measures settled boxes
+        page.evaluate("() => document.querySelectorAll('#toasts .toast-close').forEach((b) => b.click())")
+        page.wait_for_function("() => document.querySelectorAll('#toasts .toast').length === 0", timeout=WAIT_MS)
+        audit_page(page, "%s notebook desktop" % prefix, want_controls=True, want_links=False)
+    # delete a canvas and everything, each behind confirm
+    page.click("#nb-canvas-list .nb-canvas-row")
+    page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+    n_before = len(accepted)
+    page.click("#nb-canvas-delete")
+    page.wait_for_function("() => document.querySelectorAll('#nb-canvas-list .nb-canvas-row').length === 1", timeout=WAIT_MS)
+    check("%s notebook: Delete canvas asks for confirmation and removes one canvas; the editor closes" % prefix, len(accepted) == n_before + 1 and page.evaluate("document.getElementById('nb-canvas-form').hidden") is True)
+    page.click("#nb-delete-all")
+    page.wait_for_function("() => document.getElementById('status').textContent.startsWith('0 saved items \u00b7 0 canvases')", timeout=WAIT_MS)
+    check("%s notebook: Delete everything asks for confirmation and empties items and canvases" % prefix, len(accepted) == n_before + 2 and "Export first" in accepted[-1] and page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).items") == {} and page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).canvases") == {}, accepted[-1][:80])
+    page.remove_listener("dialog", on_dialog)
 
 
 # ---------------------------------------------------------------------------
@@ -1386,9 +1812,9 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
     if kind == "home":
         # the 600 ms count-up is requestAnimationFrame-driven (not a WAAPI animation): wait for the final numbers
         try:
-            page.wait_for_function("(exp) => [...document.querySelectorAll('.stat-n')].map((n) => n.textContent.trim()).join('|') === exp", arg="|".join([data.feed_tile, str(data.stats["last24h"]), str(data.stats["last7d"]), data.sources_tile]), timeout=5000)
-        except Exception:  # noqa: BLE001 - the assertion below reports the mismatch
-            pass
+            page.wait_for_function("(exp) => [...document.querySelectorAll('.stat-n')].map((n) => n.textContent.trim()).join('|') === exp", arg="|".join(data.tiles()), timeout=5000)
+        except Exception:  # noqa: BLE001 - the counts may have moved since Data was fetched (rolling windows); compare with fresh stats
+            data.refresh_stats()
     lay = page.evaluate(LAYOUT_JS, {"width": width})
     con = page.evaluate(CONTRAST_AUDIT_JS, theme)
     pre = page.evaluate(PREMISE_JS, theme)
@@ -1418,10 +1844,20 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
         bad_regions = [r for r in lay["regionBadges"] if r not in data.region_labels]
         check("%s: honest badges (sources, kinds, regions only) and sort options ['', 'points']" % label, not bad_badges and not bad_regions and lay["sortOptions"] == ["", "points"],
               "%d badges%s" % (len(lay["badges"]), ("; bad " + ", ".join((bad_badges + bad_regions)[:3])) if (bad_badges or bad_regions) else ""))
+        # a label badge is titled "keyword-tagged (title + summary)"; a "+N" overflow badge is titled with the N hidden labels (app.js sectorBadges)
+        def sector_badge_ok(b):
+            m = re.match(r"^\+(\d+)$", b["text"])
+            if m:
+                hidden = b["title"].split(", ")
+                return len(hidden) == int(m.group(1)) and all(h in data.sector_labels for h in hidden)
+            return b["text"] in data.sector_labels and "keyword-tagged" in b["title"]
+        bad_sectors = [b for b in lay["sectorBadges"] if not sector_badge_ok(b)]
+        check("%s: sector badges use stats.json labels titled keyword-tagged, or +N titled with the N hidden labels" % label, not bad_sectors, "%d sector badges%s" % (len(lay["sectorBadges"]), ("; bad " + json.dumps(bad_sectors[:2])) if bad_sectors else ""))
         pairs = [[e["href"], data.by_key[e["key"]]["url"]] for e in lay["cardExt"] if e["key"] in data.by_key and e["href"]]
         # a.href is the parsed URL (e.g. a bare origin gains its trailing slash): compare after the same WHATWG normalisation
         ext_ok = len(pairs) == len(lay["cardExt"]) and page.evaluate("(pairs) => pairs.every(([href, url]) => href === new URL(url).href)", pairs)
         check("%s: every a.card-ext points at item.url" % label, ext_ok, "%d cards" % len(lay["cardExt"]))
+    check("%s: static nav list equals NAV with aria-current on this page" % label, lay["navLinks"] is not None and [(l[0], l[1]) for l in lay["navLinks"]] == NAV and [l[2] for l in lay["navLinks"]].count("page") == 1 and lay["navLinks"][NAV_INDEX[kind]][2] == "page", str(lay["navLinks"])[:160])
     if kind == "sources" and lay["statN"]:
         texts = [s["text"] for s in lay["statN"]]
         src = data.sources["sources"]
@@ -1431,8 +1867,8 @@ def audit_state(page, label, theme, width, data, expect_columns=None, sheet_open
     elif lay["statN"] and not sheet_open:
         texts = [s["text"] for s in lay["statN"]]
         single = all(s["lines"] == 1 and s["ws"] == "nowrap" and not s["overflow"] for s in lay["statN"])
-        honest = texts[0] == data.feed_tile and texts[1] == str(data.stats["last24h"]) and texts[2] == str(data.stats["last7d"]) and texts[3] == data.sources_tile
-        check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s / %s / %s / %s" % (data.feed_tile, data.stats["last24h"], data.stats["last7d"], data.sources_tile))
+        honest = texts == data.tiles()
+        check("%s: stat tiles honest (%s) and single-line" % (label, " / ".join(texts)), single and honest, "expected %s" % " / ".join(data.tiles()))
         if width >= 1024 and not mobile:
             # 268 px tiles at a 976 px content width; headless reserves a 15 px scrollbar gutter at 1024, so the content is 961 px and the tiles 259.5 px
             check("%s: stats 2x2 beside the radar (tiles >= 259px)" % label, lay["tileColumns"] == 2 and lay["tileMinWidth"] >= 259 and lay["radarDisplay"] != "none" and lay.get("radarInSecondColumn"), "%d columns, min %.1fpx, radar %s, layout viewport %s" % (lay["tileColumns"], lay["tileMinWidth"], lay["radarDisplay"], lay["layoutRight"]))
@@ -1512,6 +1948,31 @@ def run_matrix(browser, scheme):
         page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
         goto_sources(page)
         audit_state(page, "sources %s" % tag, scheme, width, data, kind="sources")
+        # FEAT-003 lens pages: the same computed-style audit (font floor, controls, contrast, overflow, shell)
+        for kind, _, _ in LENS_PAGES:
+            if kind == "notebook":
+                # a seeded saved item + canvas so the cards, chips, textareas and the open editor are audited too
+                seed_notebook(page, data.items[0])
+                goto_lens(page, kind)
+                page.click("#nb-canvas-list .nb-canvas-row")
+                page.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
+            else:
+                goto_lens(page, kind)
+            audit_state(page, "%s %s" % (kind, tag), scheme, width, data, kind=kind)
+            if kind == "trends":
+                check("%s %s: sparklines present with HTML axis labels (no scaled SVG text)" % (kind, tag), page.evaluate("document.querySelectorAll('#sector-grid .sparkline').length >= 1 && document.querySelectorAll('#sector-grid svg text').length === 0"))
+            if kind == "yc" and width >= 1024:
+                page.click("#industry-groups details:nth-of-type(2) summary")
+                page.wait_for_function("() => document.querySelectorAll('#industry-groups details[open]').length >= 2", timeout=WAIT_MS)
+                audit_state(page, "%s %s second group open" % (kind, tag), scheme, width, data, kind=kind)
+            if kind == "funding" and width in (390, 1280):
+                key = page.evaluate("document.querySelector('#funding-table tbody tr[data-key]') && document.querySelector('#funding-table tbody tr[data-key]').dataset.key")
+                if key:
+                    goto_lens(page, kind, "?item=" + key)
+                    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+                    audit_state(page, "%s %s drawer open" % (kind, tag), scheme, width, data, kind=kind)
+                    page.keyboard.press("Escape")
+                    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
         errors.check("matrix %s" % tag)
         ctx.close()
 
@@ -1769,7 +2230,9 @@ def run_drawer(browser):
         check("AC 22 %dpx: dialog semantics (aria-modal, labelledby=detail-title, describedby=detail-summary present), badges, time, copy, prev/next" % width,
               d["modal"] == "true" and d["labelledby"] == "detail-title" and d["describedby"] == "detail-summary" and d["summaryExists"] and d["badges"] == 3 and d["time"] == bool(item.get("publishedAt")) and d["copy"] and d["prev"] and not d["next"],
               "pos %s, rows %s" % (d["pos"], d["rows"]))
-        check("AC 22 %dpx: primary action is item.url in a new tab, no duplicate hrefs, hostname row" % width, d["primary"] and d["primary"]["href"] == item["url"] and d["primary"]["target"] == "_blank" and d["primary"]["rel"] == "noopener noreferrer" and not d["dupHref"] and d["hostnameRow"], str(d["primary"]))
+        # a.href is the parsed URL (a bare origin gains its trailing slash): compare after the same WHATWG normalisation
+        item_href = page.evaluate("(u) => new URL(u).href", item["url"])
+        check("AC 22 %dpx: primary action is item.url in a new tab, no duplicate hrefs, hostname row" % width, d["primary"] and d["primary"]["href"] == item_href and d["primary"]["target"] == "_blank" and d["primary"]["rel"] == "noopener noreferrer" and not d["dupHref"] and d["hostnameRow"], str(d["primary"]))
         check("AC 22 %dpx: 'n of N' equals the filtered total" % width, d["pos"] == "1 of %d" % base["total"], d["pos"])
         check("AC 23 %dpx: open pushed one history entry with item=<key>, title swapped, focus on the title" % width, page.evaluate("history.length") == hist + 1 and "item=" + base["cards"][0]["key"] in page.evaluate("location.search") and d["activeId"] == "detail-title" and d["title2"].startswith(item["title"][:20]), "%s -> %s" % (hist, page.evaluate("history.length")))
         # D6: measured against the layout viewport's right edge (documentElement.getBoundingClientRect().right), never
@@ -1910,6 +2373,217 @@ def run_drawer(browser):
             shot(page, "detail.png")
         errors.check("drawer %dpx" % width)
         ctx.close()
+
+
+NAV_STATE_JS = r"""
+() => {
+  const nav = document.querySelector('nav.site-nav');
+  const ul = document.getElementById('site-nav-list');
+  const btn = document.getElementById('nav-toggle');
+  const r = (el) => el.getBoundingClientRect();
+  const vis = (el) => { const b = r(el); return b.width > 0 && b.height > 0; };
+  const links = Array.from(ul.querySelectorAll('a'));
+  return {
+    open: nav.classList.contains('is-open'), expanded: btn.getAttribute('aria-expanded'), controls: btn.getAttribute('aria-controls'), label: btn.getAttribute('aria-label'),
+    btnH: r(btn).height, btnVisible: vis(btn), listVisible: vis(ul), linkHeights: links.map((a) => r(a).height), linksVisible: links.filter(vis).length,
+    listLeft: r(ul).left, listRight: r(ul).right, listTop: r(ul).top, headerBottom: document.querySelector('header.site-header').getBoundingClientRect().bottom,
+    scrollWidth: document.documentElement.scrollWidth, innerWidth, active: document.activeElement ? document.activeElement.id : null,
+    labels: links.map((a) => [a.textContent.trim(), a.getAttribute('href'), a.getAttribute('aria-current')]),
+  };
+}
+"""
+
+
+def run_shell(browser):
+    """FEAT-002: shared shell (phone nav dropdown, nav row, `g` chords), sector chips + badges, bookmarks, drawer sections."""
+    for width in (320, 390):
+        ctx = new_ctx(browser, viewport={"width": width, "height": 844}, mobile=True)
+        page = ctx.new_page()
+        errors = ErrorLog(page)
+        goto_home(page)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: #nav-toggle visible (44px, aria-controls=site-nav-list), list hidden" % width, s["btnVisible"] and abs(s["btnH"] - 44) <= 0.5 and s["controls"] == "site-nav-list" and s["label"] == "Menu" and s["expanded"] == "false" and not s["listVisible"], str({k: s[k] for k in ("btnH", "expanded", "listVisible")}))
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: toggle opens the dropdown (aria-expanded=true, six 44px rows, full width under the header, no overflow)" % width,
+              s["open"] and s["expanded"] == "true" and s["linksVisible"] == 6 and all(abs(h - 44) <= 0.5 for h in s["linkHeights"]) and s["listLeft"] == 0 and abs(s["listRight"] - s["innerWidth"]) <= 16 and abs(s["listTop"] - s["headerBottom"]) <= 1 and s["scrollWidth"] <= s["innerWidth"],
+              "rows %s, list %s-%s top %s header %s, scroll %s/%s" % (s["linkHeights"], s["listLeft"], s["listRight"], s["listTop"], s["headerBottom"], s["scrollWidth"], s["innerWidth"]))
+        check("shell %dpx: dropdown lists NAV in order with aria-current on Feed" % width, [(l[0], l[1]) for l in s["labels"]] == NAV and s["labels"][0][2] == "page", str(s["labels"])[:120])
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx: Esc closes the dropdown, aria-expanded=false, focus on the toggle, highlight untouched" % width, not s["open"] and s["expanded"] == "false" and not s["listVisible"] and s["active"] == "nav-toggle" and page.evaluate("document.querySelectorAll('#results .is-active').length") == 0)
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        # the open panel covers the hero, so a real tap there would hit the panel: dispatch the pointerdown on an outside element
+        page.dispatch_event("footer.site-footer p", "pointerdown")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        check("shell %dpx: an outside pointerdown closes the dropdown (no drawer opened)" % width, not page.evaluate("document.querySelector('dialog#detail').open"))
+        page.click("#nav-toggle")
+        page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        # the shell's Esc only runs while the menu is open: with it closed, Esc on the page stays the page's (one-Esc rule)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
+        goto_sources(page)
+        s = page.evaluate(NAV_STATE_JS)
+        check("shell %dpx sources: toggle present, list hidden, aria-current on Sources" % width, s["btnVisible"] and not s["listVisible"] and s["labels"][5][2] == "page" and [(l[0], l[1]) for l in s["labels"]] == NAV)
+        errors.check("shell %dpx" % width)
+        ctx.close()
+
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    data = Data(ctx.request)
+    goto_home(page)
+    s = page.evaluate(NAV_STATE_JS)
+    check("shell 1280px: nav is a row of six visible links under the brand row, toggle hidden, --topbar-h == header height", s["linksVisible"] == 6 and not s["btnVisible"] and page.evaluate("Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) - document.querySelector('header.site-header').offsetHeight) <= 0.5"), "%d visible, header %s" % (s["linksVisible"], page.evaluate("document.querySelector('header.site-header').offsetHeight")))
+    keys = page.evaluate("(() => { document.getElementById('help-open').click(); return [...document.querySelectorAll('#help dl.help-list dt')].map((d) => d.textContent.trim()); })()")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
+    check("shell 1280px: help lists the g-chords (g h, g t, g f, g y, g n)", all(k in keys for k in ("g h", "g t", "g f", "g y", "g n")), str(keys)[:200])
+    # g + t navigates (routed: trends.html does not exist until FEAT-003; the stub declares an icon so no /favicon.ico probe fires)
+    page.route("**/trends.html", lambda route: route.fulfill(status=200, content_type="text/html", body='<!DOCTYPE html><title>routed</title><link rel="icon" href="./icons/favicon.svg"><h1>routed</h1>'))
+    page.focus("#q")
+    page.keyboard.type("gt")
+    page.wait_for_timeout(300)
+    check("shell 1280px: `g` `t` typed into #q only inserts characters", page.evaluate("document.getElementById('q').value") == "gt" and "trends" not in page.url, page.url)
+    page.fill("#q", "")
+    wait_state(page, {"q": ABSENT})
+    page.evaluate("document.activeElement.blur()")
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=WAIT_MS):
+        page.keyboard.press("g")
+        page.keyboard.press("t")
+    check("shell 1280px: `g` then `t` navigates to ./trends.html (routed)", page.url == BASE + "/trends.html", page.url)
+    page.unroute("**/trends.html")
+    goto_home(page)
+    page.keyboard.press("g")
+    page.wait_for_timeout(900)
+    page.keyboard.press("t")
+    page.wait_for_timeout(200)
+    check("shell 1280px: `g` expires after 800 ms (`t` then toggles the theme, no navigation)", page.url.startswith(BASE + "/") and "trends" not in page.url and page.evaluate("document.documentElement.dataset.theme") == "light")
+    page.keyboard.press("t")
+    # sector chips
+    chips = page.evaluate("[...document.querySelectorAll('#sector-chips button.chip-sector')].map((b) => ({ id: b.dataset.sector, text: b.textContent, pressed: b.getAttribute('aria-pressed') }))")
+    expected_chips = ["%s \u00b7 %d" % (s["label"], s["count"]) for s in data.sectors]
+    check("sectors: one chip per stats.sectors entry labelled '<label> · <count>' under 'Sectors · keyword-tagged'", [c["text"] for c in chips] == expected_chips and all(c["pressed"] == "false" for c in chips) and page.evaluate("document.getElementById('sector-label').textContent") == "Sectors \u00b7 keyword-tagged", "%d chips" % len(chips))
+    base = snapshot(page)
+    pick = next((s for s in data.sectors if 0 < s["count"] < len(data.items)), None)
+    if pick is None:
+        check("sectors: a sector with items exists", False)
+    else:
+        sid = pick["id"]
+        expected_total = len([it for it in data.items if sid in (it.get("sectors") or [])])
+        page.click('#sector-chips button[data-sector="%s"]' % sid)
+        wait_state(page, {"sector": sid})
+        snap = snapshot(page)
+        cards_ok = all(sid in (data.by_key[c["key"]].get("sectors") or []) for c in snap["cards"] if c["key"] in data.by_key)
+        badge_ok = page.evaluate("(label) => [...document.querySelectorAll('#results article.card')].every((c) => [...c.querySelectorAll('.badge-sector')].some((b) => b.textContent.trim() === label || /^\\+\\d+$/.test(b.textContent.trim())))", pick["label"])
+        check("sectors: chip %s -> URL sector=%s, total %d = items carrying it, every card carries it (badge or +N), chip pressed, filter count 1" % (sid, sid, expected_total),
+              snap["total"] == expected_total and snap["total"] < base["total"] and cards_ok and badge_ok and page.get_attribute('#sector-chips button[data-sector="%s"]' % sid, "aria-pressed") == "true" and page.evaluate("document.querySelector('#filters-open .count-badge').textContent") == "1",
+              "UI %s, expected %s, baseline %s" % (snap["total"], expected_total, base["total"]))
+        second = next((s for s in data.sectors if s["id"] != sid and s["count"] > 0), None)
+        if second:
+            page.click('#sector-chips button[data-sector="%s"]' % second["id"])
+            wait_state(page, {"sector": "%s,%s" % (sid, second["id"])})
+            snap2 = snapshot(page)
+            exp2 = len([it for it in data.items if sid in (it.get("sectors") or []) or second["id"] in (it.get("sectors") or [])])
+            check("sectors: two chips = OR within the facet (sector=a,b, total %d)" % exp2, snap2["total"] == exp2, "UI %s" % snap2["total"])
+        page.click("#reset")
+        wait_state(page, {"sector": ABSENT})
+        snap = snapshot(page)
+        check("sectors: Reset clears sector= and restores the baseline", snap["total"] == base["total"] and page.evaluate("document.querySelectorAll('#sector-chips [aria-pressed=\"true\"]').length") == 0)
+        goto_home(page, "?sector=%s,bogus" % sid)
+        wait_state(page, {"sector": sid})
+        check("sectors: ?sector= round trip drops unknown ids and keeps %s pressed" % sid, page.get_attribute('#sector-chips button[data-sector="%s"]' % sid, "aria-pressed") == "true" and snapshot(page)["total"] == expected_total)
+        goto_home(page)
+    # bookmarks
+    page.evaluate("localStorage.removeItem('sr:notebook:v1')")
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    first = snapshot(page)["cards"][0]
+    btn = '#results article.card[data-key="%s"] button.card-save' % first["key"]
+    check("bookmark: every card has button.card-save (aria-pressed=false, label 'Save to notebook')", page.evaluate("[...document.querySelectorAll('#results article.card')].every((c) => { const b = c.querySelector('button.card-save'); return b && b.getAttribute('aria-pressed') === 'false' && b.getAttribute('aria-label') === 'Save to notebook'; })"))
+    page.click(btn)
+    page.wait_for_selector("#toasts .toast", timeout=WAIT_MS)
+    stored = page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null')")
+    saved = (stored or {}).get("items", {}).get(first["key"])
+    check("bookmark: click stores the item in localStorage['sr:notebook:v1'] with the documented fields, toasts 'stored in this browser only', no drawer",
+          stored and stored.get("version") == 1 and saved and saved["url"] == data.by_key[first["key"]]["url"] and all(k in saved for k in ("key", "title", "url", "source", "kind", "region", "publishedAt", "summary", "sectors", "savedAt")) and page.evaluate("document.querySelector('#toasts .toast p').textContent") == "Saved to notebook \u00b7 stored in this browser only" and not page.evaluate("document.querySelector('dialog#detail').open") and page.get_attribute(btn, "aria-pressed") == "true",
+          json.dumps(saved)[:160] if saved else str(stored)[:160])
+    page.reload(wait_until="domcontentloaded")
+    wait_cards(page)
+    check("bookmark: reload keeps the pressed state", page.get_attribute(btn, "aria-pressed") == "true" and page.get_attribute(btn, "aria-label") == "Saved \u2014 remove from notebook")
+    # drawer: sectors row, save action, related section
+    page.click('#results article.card[data-key="%s"] h2 a' % first["key"])
+    page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+    page.wait_for_function("() => /related items? in 90 days$/.test(document.querySelector('#detail .related h3').textContent)", timeout=WAIT_MS)
+    d = page.evaluate("(() => { const p = document.querySelector('#detail .detail-panel'); const rel = p.querySelector('.related'); const save = p.querySelector('.detail-actions [data-save-key]'); const sec = p.querySelector('.detail-sectors'); return { h3: rel.querySelector('h3').textContent, n: rel.querySelectorAll('button.related-item').length, method: (rel.querySelector('p.method') || {}).textContent, afterMeta: !!sec ? sec.compareDocumentPosition(p.querySelector('.detail-actions')) & Node.DOCUMENT_POSITION_FOLLOWING : true, relBeforeActions: !!(rel.compareDocumentPosition(p.querySelector('.detail-actions')) & Node.DOCUMENT_POSITION_FOLLOWING), save: save ? { pressed: save.getAttribute('aria-pressed'), text: save.textContent.trim(), h: save.getBoundingClientRect().height } : null, sectors: sec ? { title: sec.querySelector('dd').title, badges: [...sec.querySelectorAll('.badge-sector')].map((b) => b.textContent.trim()) } : null, itemHeights: [...rel.querySelectorAll('button.related-item')].map((b) => b.getBoundingClientRect().height) }; })()")
+    item = data.by_key[first["key"]]
+    want_sectors = [next(s["label"] for s in data.sectors if s["id"] == sid) for sid in (item.get("sectors") or [])]
+    m = re.match(r"^Related \u00b7 (\d+) related items? in 90 days$", d["h3"])
+    check("drawer: sections render between the metadata and the actions: Sectors row (keyword-tagged, %s), 'Related · N related items in 90 days' with <= 5 40px items and the method sentence" % want_sectors,
+          m is not None and d["n"] <= 5 and d["n"] <= int(m.group(1)) and d["method"].startswith("method: token overlap") and d["relBeforeActions"] and d["afterMeta"] and (d["sectors"] == {"title": "keyword-tagged (title + summary)", "badges": want_sectors} if want_sectors else d["sectors"] is None) and all(abs(h - 40) <= 0.5 for h in d["itemHeights"]),
+          "h3 '%s', %d items, sectors %s" % (d["h3"], d["n"], d["sectors"]))
+    check("drawer: 'Saved' secondary action is pressed for the bookmarked item (40px control)", d["save"] and d["save"]["pressed"] == "true" and d["save"]["text"] == "Saved" and abs(d["save"]["h"] - 40) <= 0.5, str(d["save"]))
+    page.click("#detail .detail-actions [data-save-key]")
+    page.wait_for_function("() => document.querySelector('#toasts .toast p') && document.querySelector('#toasts .toast p').textContent === 'Removed from notebook'", timeout=WAIT_MS)
+    check("drawer: toggling in the drawer removes the item, repaints the card button and toasts 'Removed from notebook'", page.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1')).items") == {} and page.get_attribute(btn, "aria-pressed") == "false" and page.get_attribute("#detail .detail-actions [data-save-key]", "aria-pressed") == "false")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+    page.wait_for_timeout(300)
+    # related items + history: the first loaded card that has at least one related item (the first card may have none)
+    related_key = None
+    for card in snapshot(page)["cards"]:
+        page.click('#results article.card[data-key="%s"] h2 a' % card["key"])
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        page.wait_for_function("() => /related items? in 90 days$/.test(document.querySelector('#detail .related h3').textContent)", timeout=WAIT_MS)
+        if page.evaluate("document.querySelectorAll('#detail .related-list button.related-item').length") >= 1:
+            related_key = card["key"]
+            break
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+    if related_key is None:
+        check("drawer: related-item history steps", True, "no loaded card has a related item on this data; Back step not exercised")
+    else:
+        rel_item = data.by_key[related_key]
+        hist = page.evaluate("history.length")
+        page.click("#detail .related-list button.related-item")
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: a related item opens in the same drawer with a pushed history entry (?item=<key>)", page.evaluate("history.length") == hist + 1 and "item=" in page.evaluate("location.search") and page.evaluate("new URLSearchParams(location.search).get('item')") != related_key)
+        # Back from the related entry must re-open the previous item in the still-open drawer (review-phase-1 #1)
+        page.go_back()
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: Back after a related item shows the previous item again with its key in the URL",
+              page.evaluate("document.querySelector('dialog#detail').open") and page.evaluate("new URLSearchParams(location.search).get('item')") == related_key)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(300)
+        check("drawer: Esc after Back leaves no ?item in the URL", page.evaluate("new URLSearchParams(location.search).get('item')") is None)
+        # review-phase-1 iteration 2 #1: arriving on a deep link (an entry the drawer never pushed), opening a related
+        # item and going Back re-opens the deep-linked item; Esc must then stay on the page (no history.back() out of it)
+        goto_home(page, "?item=%s" % related_key)
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        page.wait_for_selector("#detail .related-list button.related-item", timeout=WAIT_MS)
+        hist = page.evaluate("history.length")
+        page.click("#detail .related-list button.related-item")
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=rel_item["title"], timeout=WAIT_MS)
+        page.go_back()
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: deep link -> related item -> Back shows the deep-linked item again (history.state is not the drawer's)",
+              page.evaluate("document.querySelector('dialog#detail').open") and page.evaluate("new URLSearchParams(location.search).get('item')") == related_key and page.evaluate("history.state === null || history.state.sr !== 'item'"), str(page.evaluate("history.state")))
+        # a history.back() out of the page would load the previous document: the marker proves this document survived Esc
+        page.evaluate("window.__srDeepLinkDoc = true")
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(500)
+        check("drawer: Esc after that Back stays in this document (same path, ?item dropped by replaceState, the related entry kept as Forward)",
+              page.evaluate("window.__srDeepLinkDoc === true") and urlsplit(page.url).path == urlsplit(BASE + "/").path and page.evaluate("new URLSearchParams(location.search).get('item')") is None and page.evaluate("history.length") == hist + 1,
+              "%s, history %s -> %s" % (page.url, hist, page.evaluate("history.length")))
+    errors.check("shell desktop")
+    ctx.close()
 
 
 class Served:
@@ -2082,8 +2756,10 @@ def run_sort_view(browser):
         check("C5 %dpx: #sort sits in a div.select wrapper with appearance:none and the chevron-down icon" % width, c5["wrap"] and c5["appearance"] == "none" and (c5["chevron"] or "").endswith("#chevron-down"), str(c5))
         page.click("#view-list")
         page.wait_for_function("() => document.getElementById('results').classList.contains('view-list')", timeout=WAIT_MS)
-        rows = page.evaluate("(() => { const cards = [...document.querySelectorAll('#results article.card')]; return { n: cards.length, rows: cards.filter((c) => c.classList.contains('card-row')).length, cols: new Set(cards.map((c) => Math.round(c.offsetLeft))).size, ellipsis: [...document.querySelectorAll('.meta-line')].every((m) => m.scrollWidth <= m.clientWidth), selectors: cards.every((a) => a.querySelector('h2 a') && a.querySelector('.badge-source') && a.querySelector('.badge:not(.badge-source):not(.badge-region)') && a.querySelector('.badge-region') && a.querySelector('time[datetime]')), stored: localStorage.getItem('sr:view') }; })()")
-        check("AC 15 %dpx: list view = single column of article.card.card-row, ellipsised meta line, snapshot selectors intact, sr:view=list" % width, rows["n"] >= 1 and rows["rows"] == rows["n"] and rows["cols"] == 1 and rows["ellipsis"] and rows["selectors"] and rows["stored"] == "list", str(rows))
+        rows = page.evaluate("(() => { const cards = [...document.querySelectorAll('#results article.card')]; return { n: cards.length, rows: cards.filter((c) => c.classList.contains('card-row')).length, cols: new Set(cards.map((c) => Math.round(c.offsetLeft))).size, ellipsis: [...document.querySelectorAll('.meta-line')].every((m) => { const cs = getComputedStyle(m); return cs.textOverflow === 'ellipsis' && cs.overflowX === 'hidden' && cs.whiteSpace === 'nowrap' && m.clientWidth <= m.parentElement.clientWidth && m.title === m.textContent; }), selectors: cards.every((a) => a.querySelector('h2 a') && a.querySelector('.badge-source') && a.querySelector('.badge:not(.badge-source):not(.badge-region):not(.badge-sector)') && a.querySelector('.badge-region') && a.querySelector('time[datetime]')), stored: localStorage.getItem('sr:view') }; })()")
+        # the meta line now ends with the sector badges (FEAT-002), so it may legitimately be longer than its box: the contract is the
+        # CSS ellipsis (nowrap + hidden + ellipsis), no layout overflow, and the full line in `title`
+        check("AC 15 %dpx: list view = single column of article.card.card-row, ellipsised meta line (full text in title), snapshot selectors intact, sr:view=list" % width, rows["n"] >= 1 and rows["rows"] == rows["n"] and rows["cols"] == 1 and rows["ellipsis"] and rows["selectors"] and rows["stored"] == "list", str(rows))
         page.reload(wait_until="domcontentloaded")
         wait_cards(page)
         check("AC 15 %dpx: the list choice survives a reload" % width, page.evaluate("document.getElementById('results').classList.contains('view-list')") and page.evaluate("document.getElementById('view-list').getAttribute('aria-pressed')") == "true")
@@ -2653,6 +3329,13 @@ def run_sw(browser, parity):
     page.goto(BASE + "/", wait_until="load")
     wait_cards(page)
     check("AC 34 %s: back online the offline note disappears" % mode, page.evaluate("document.getElementById('offline-note').hidden") is True)
+    # notebook survival (FEAT-004, D11): save an item now; it must still be there after the worker update below
+    page.evaluate("localStorage.removeItem('%s')" % NOTEBOOK_KEY)
+    nb_key = base["cards"][0]["key"]
+    page.click('#results article.card[data-key="%s"] button.card-save' % nb_key)
+    page.wait_for_function("(k) => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return !!(n && n.items[k]); }", arg=nb_key, timeout=WAIT_MS)
+    page.evaluate("() => document.querySelectorAll('#toasts .toast-close').forEach((b) => b.click())")  # the 'Saved to notebook' toast must not count below
+    page.wait_for_function("() => document.querySelectorAll('#toasts .toast').length === 0", timeout=WAIT_MS)
     # update flow: a new sw.js version must yield the toast; Reload activates it exactly once.
     # Browsers fetch sw.js outside page routing, so the new version is really deployed: on disk in smoke mode
     # (STATIC_ROOT, the cache name changes), or in parity mode by registering the same script under a query string
@@ -2710,6 +3393,12 @@ def run_sw(browser, parity):
         controlled = page.evaluate("() => navigator.serviceWorker.controller !== null && navigator.serviceWorker.controller.scriptURL.endsWith('/sw.js')")
         how = "cache swapped to " + expect_cache if restore is not None else "same version " + version + ", a new worker instance took over"
         check("AC 35 %s: Reload activates the new worker exactly once (%s); shell caches: %s" % (mode, how, s2["shell"]), s2["shell"] == [expect_cache] and controlled and len(workers) == 1 and not workers[0][1] and page.evaluate("performance.getEntriesByType('navigation').length") == 1 and not s2["waiting"], "active %s, running workers %s" % (active_url, workers))
+        still = page.evaluate("(k) => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return !!(n && n.items[k]); }", nb_key)
+        page.goto(BASE + "/notebook.html", wait_until="domcontentloaded")
+        page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
+        listed = page.evaluate("document.querySelectorAll('#nb-items article.nb-item[data-key=\"%s\"]').length" % nb_key)
+        check("FEAT-004 %s: the saved item survives the service-worker update (localStorage untouched) and notebook.html lists it under the new worker" % mode, still and listed == 1 and page.evaluate("navigator.serviceWorker.controller !== null"), "stored %s, listed %d" % (still, listed))
+        page.evaluate("localStorage.removeItem('%s')" % NOTEBOOK_KEY)
     finally:
         if restore is not None:
             Path(STATIC_ROOT, "sw.js").write_text(restore, encoding="utf-8")
@@ -2784,6 +3473,7 @@ PARITY_SCENARIOS = [
     ("run_fonts", run_fonts),
     ("run_reduced_motion", run_reduced_motion),
     ("run_drawer", run_drawer),
+    ("run_shell", run_shell),
     ("run_keyboard", run_keyboard),
     ("run_live_data", run_live_data),
     ("run_sort_view", run_sort_view),
@@ -2828,7 +3518,9 @@ def main():
                 try:
                     fn(browser)
                 except Exception as e:  # noqa: BLE001 - one broken scenario must not hide the others
-                    check("%s completed without an exception" % name, False, ("%s: %s" % (type(e).__name__, e)).replace("\n", " ")[:400])
+                    frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == __file__]
+                    where = " (screenshots.py:%d)" % frames[-1].lineno if frames else ""
+                    check("%s completed without an exception" % name, False, ("%s: %s%s" % (type(e).__name__, e, where)).replace("\n", " ")[:400])
         finally:
             browser.close()
 

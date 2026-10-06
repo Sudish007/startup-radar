@@ -1,11 +1,28 @@
-// Startup Radar formatting helpers. DOM-free ES module shared by app.js,
-// sources.js, radar.js and test/format.test.js (importable from Node).
+// Startup Radar formatting helpers (DOM-free; shared by the pages and test/format.test.js).
 
 export const KIND_LABELS = { launch: 'Launch', funding: 'Funding', news: 'News', accelerator: 'Accelerator' };
 export const REGION_LABELS = { usa: 'USA', europe: 'Europe', asia: 'Asia', india: 'India', latam: 'Latin America', africa: 'Africa', global: 'Global' };
 
 export const kindLabel = (kind) => KIND_LABELS[kind] || String(kind ?? '');
 export const regionLabel = (region) => REGION_LABELS[region] || String(region ?? '');
+
+/** Honesty wording, stated once for every page (plan D12): how a derived value was obtained. */
+export const METHOD_LABELS = {
+  sectors: 'keyword-tagged',
+  headline: 'parsed from headline',
+  summary: 'parsed from summary',
+  usd: 'approx. USD at static rates \u2014 see table',
+  related: 'token overlap in the 90-day window',
+};
+
+/** stats.sectors [{ id, label, count }] -> { id: label } (ids travel on items, labels once in stats.json). */
+export function sectorLabels(stats) {
+  const out = {};
+  for (const s of Array.isArray(stats?.sectors) ? stats.sectors : []) {
+    if (s && typeof s.id === 'string' && typeof s.label === 'string') out[s.id] = s.label;
+  }
+  return out;
+}
 
 const localeDate = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
@@ -94,7 +111,7 @@ export function hnDiscussion(item) {
 
 const HN_LABELS = { points: 'HN points', comments: 'HN comments', author: 'HN author' };
 
-/** Drawer row label: source-branded wording only for that source (hn_* -> "HN author", producthunt -> "PH votes"), else generic. */
+/** Drawer row label: source-branded only for that source (hn_* -> "HN author", producthunt -> "PH votes"). */
 export function rowLabel(field, generic, sourceId) {
   const id = String(sourceId ?? '');
   if (id.startsWith('hn_') && HN_LABELS[field]) return HN_LABELS[field];
