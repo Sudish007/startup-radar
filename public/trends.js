@@ -59,12 +59,12 @@ function renderTerms() {
     ]));
   }
   if (!trends.terms.length) {
-    els.termsTbody.append(el('tr', {}, [el('td', { colspan: '7', className: 'dim', text: 'No term reached 5 mentions this week.' })]));
+    els.termsTbody.append(el('tr', {}, [el('td', { colspan: '7', className: 'dim', text: `No term reached ${num(trends.minSupport)} mentions this week.` })]));
   }
   const tw = trends.thisWeek;
   const pr = trends.prior;
   els.termsWindow.textContent = `This week = ISO week ${tw.id} (${dayText(tw.from)} \u2013 ${dayText(tw.to)}, partial); prior = ${pr.weeks} weeks ${dayText(pr.from)} \u2013 ${dayText(pr.to)}. Terms are words or adjacent word pairs from titles and summaries; "new" means no mention in the prior weeks.`;
-  els.termsCaption.textContent = `${trends.terms.length} terms with at least 5 mentions this week, sorted by rise (this week minus the prior weekly average)`;
+  els.termsCaption.textContent = `${trends.terms.length} terms with at least ${num(trends.minSupport)} mentions this week, sorted by rise (this week minus the prior weekly average)`;
 }
 
 // -- sparklines --
@@ -142,7 +142,7 @@ function renderAll() {
 async function loadTrends() {
   try {
     const body = await fetchJson(TRENDS_URL);
-    if (!body || !Array.isArray(body.terms) || !Array.isArray(body.weeks) || !Array.isArray(body.bySector)) throw new Error('unexpected response');
+    if (!body || !Array.isArray(body.terms) || !Array.isArray(body.weeks) || !Array.isArray(body.bySector) || !Number.isInteger(body.minSupport)) throw new Error('unexpected response');
     trends = body;
   } catch (err) {
     trends = null;

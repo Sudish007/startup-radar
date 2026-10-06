@@ -1,6 +1,5 @@
-// Startup Radar client-side filtering (DOM-free; shared with test/filter.test.js). Mirrors the
-// server's /api/items semantics: kind, region incl. the "world" scope, sources, since, word /
-// word-prefix search over title + summary, newest-first ordering.
+// Startup Radar client-side filtering (DOM-free, mirrors /api/items: kind, region + "world" scope, sources, since,
+// word-prefix search over title + summary, newest first).
 
 export const SINCE_VALUES = new Set(['today', '7d', '30d', '']);
 
@@ -61,11 +60,8 @@ export function compareNewestFirst(a, b) {
   return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
-/**
- * Apply { kind, region, sources, q, since, sectors } to `items` -> new array, newest first. region 'world' =
- * every region except 'usa'; sources = array of ids (empty = all); since = a SINCE_VALUES entry; sectors =
- * array of sector ids (empty = all; an item passes when item.sectors carries any of them - OR within, AND across).
- */
+/** Apply { kind, region, sources, q, since, sectors } -> new array, newest first. region 'world' = all but 'usa';
+ * sources / sectors = id arrays (empty = all; sectors OR within the facet, AND with the other filters). */
 export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '', sectors = [] } = {}, now = new Date()) {
   const sinceIso = SINCE_VALUES.has(since) ? sinceToIso(since, now) : null;
   const sourceSet = Array.isArray(sources) && sources.length > 0 ? new Set(sources) : null;

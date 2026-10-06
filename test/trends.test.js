@@ -69,6 +69,7 @@ describe('buildTrends', () => {
     assert.ok(names.includes('fusion reactor'), 'bigram');
     assert.equal(t.terms.find((x) => x.term === 'fusion reactor').kind, 'bigram');
     assert.equal(t.terms.find((x) => x.term === 'fusion').kind, 'token');
+    assert.equal(t.minSupport, MIN_SUPPORT, 'the threshold travels in the payload so the page never hard-codes it');
   });
 
   test('rise = thisWeek - prior weekly average; ratio null when never seen before; ordering', () => {

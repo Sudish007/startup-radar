@@ -1,5 +1,4 @@
-// Startup Radar shared UI module (home + sources). Strict CSP: el() is the only element factory
-// (textContent only), extLink() the only constructor of external anchors, styles via CSSOM/WAAPI.
+// Startup Radar shared UI (strict CSP): el() the only element factory (textContent), extLink() the only external anchor.
 
 import { REGION_LABELS, absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
 
@@ -29,7 +28,7 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> (not focusable in any target browser) */
+/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> */
 export function icon(name, className = 'icon') {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', className);
@@ -101,7 +100,7 @@ function dismissToast(t, immediate = false) {
   afterExit(t, () => t.remove());
 }
 
-/** toast(message, { variant: info|error|update, action: { label, onClick }, duration }); <= 2 auto-dismissing, actioned persist. */
+/** variant: info|error|update; action: { label, onClick }; <= 2 auto-dismissing toasts, actioned ones persist. */
 export function toast(message, { variant = 'info', action = null, duration = 6000 } = {}) {
   const host = toastsEl();
   const t = el('div', { className: `toast ${variant}`, role: variant === 'error' ? 'alert' : null }, [el('p', { text: message })]);

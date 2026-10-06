@@ -184,7 +184,7 @@ step and no third-party script. What it does:
   is `public/icons.svg`; `npm run icons:make` renders the PWA icons under `public/icons/` with
   the repo's Playwright venv (`PW_CHANNEL` picks the browser, default `msedge`).
 - **Budget.** Every page set (the HTML + CSS + JS one page loads for its first render) stays
-  under 150 KB uncompressed: home ≈ 149.7 KB, notebook ≈ 126 KB, funding ≈ 114 KB, YC ≈ 109 KB,
+  under 150 KB uncompressed: home ≈ 149.2 KB, notebook ≈ 126.5 KB, funding ≈ 114 KB, YC ≈ 109 KB,
   trends ≈ 108 KB, sources ≈ 78 KB. The service worker, its client and the lazily loaded
   related-items module share a 16 KB deferred budget; the numbers are enforced and printed by
   `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
@@ -349,7 +349,7 @@ when the database changed). All filtering, searching and paging happens in the b
 | `GET /data/archive.json` | Older items (same shape) when the split happened; otherwise the file does not exist (404). The UI fetches it on demand: when "Load more" runs out of recent items, when the 30-days or All-time chip is selected, or when a search is typed. |
 | `GET /data/sources.json` | Exactly the `/api/sources` payload: `{ "sources": [...], "exploreMore": [...] }`. Backs `sources.html`. |
 | `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started), `archiveItems` (number of items in `archive.json`, `0` when there is none) and `sectors` (`[{ id, label, count }]`, the 15 sectors with the number of window items tagged with each; the only place sector labels travel). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
-| `GET /data/trends.json` | Backs `trends.html`. `{ generatedAt, method, thisWeek { id, from, to, partial }, prior { from, to, weeks }, terms [{ term, kind: "token" \| "bigram", thisWeek, priorWeeklyAvg, rise, ratio \| null, examples [item keys, ≤ 5] }], weeks [12 ISO week ids], partialWeek, bySector / byKind / byRegion [{ id, label, counts[12] }], items }`. Computed by `src/trends.js` from the window items. |
+| `GET /data/trends.json` | Backs `trends.html`. `{ generatedAt, method, thisWeek { id, from, to, partial }, prior { from, to, weeks }, terms [{ term, kind: "token" \| "bigram", thisWeek, priorWeeklyAvg, rise, ratio \| null, examples [item keys, ≤ 5] }], minSupport (the "this week" threshold the page prints), weeks [12 ISO week ids], partialWeek, bySector / byKind / byRegion [{ id, label, counts[12] }], items }`. Computed by `src/trends.js` from the window items. |
 | `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, parsedFrom } + usdApprox \| null], totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
 | `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
@@ -779,7 +779,7 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (370 tests in 71 suites, no network, about three
+Runs `node --test` over `test/*.test.js` (371 tests in 71 suites, no network, about three
 seconds; count with `node --test --test-reporter=tap 2>&1 | Select-String '^# tests'`). The
 GitHub Pages workflow runs the same command before every build.
 
@@ -881,7 +881,7 @@ non-negative integers, `data/funding.json` has consistent coverage counts and `r
 `data/yc.json` stays under 300 KB with ≥ 100 companies in 3 batches, the verbatim attribution and
 industry counts that sum to the company count, every page has one bare `<h1>`, its own script and
 stylesheets, and `notebook.html` carries the browser-only banner. It prints one `PASS`/`FAIL`
-line per check (117 checks) and exits 1 on any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
+line per check (118 checks) and exits 1 on any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
 
 `scripts/screenshots.py` runs the frontend in a real browser. It needs Python with `playwright`
 installed and a local Edge or Chrome; it launches the browser via Playwright's `channel` option
