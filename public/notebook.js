@@ -31,9 +31,10 @@ const lens = createLensPage({ page: 'notebook', getList: () => visibleItems, fin
 
 // -- persistence --
 
-/** Replace the notebook and persist it; a storage failure keeps the in-memory copy and reports it (never silent). */
-function commit(next) {
-  nb = next;
+/** Apply `fn` to a fresh read of storage (the feed page may have written since boot) and persist the result;
+ * a storage failure keeps the in-memory copy and reports it (never silent). */
+function commit(fn) {
+  nb = fn(load());
   try {
     save(nb);
     return true;
@@ -92,19 +93,19 @@ function itemCard(item) {
   if (item.publishedAt) meta.append(document.createTextNode(' \u00b7 published '), timeEl(item.publishedAt));
   const note = el('textarea', { id: noteId, className: 'nb-note', rows: '2', placeholder: 'Why it matters to you' });
   note.value = item.note;
-  note.addEventListener('input', () => debounce(noteId, () => { commit(setNote(nb, key, note.value)); }));
+  note.addEventListener('input', () => debounce(noteId, () => { commit((cur) => setNote(cur, key, note.value)); }));
   let chips = tagChips(item.tags);
   const tags = el('input', { type: 'text', id: tagsId, className: 'nb-input nb-tags', autocomplete: 'off', placeholder: 'idea, follow-up, competitor' });
   tags.value = item.tags.join(', ');
   tags.addEventListener('input', () => debounce(tagsId, () => {
-    commit(setTags(nb, key, splitTags(tags.value)));
+    commit((cur) => setTags(cur, key, splitTags(tags.value)));
     const next = tagChips(nb.items[key]?.tags ?? []);
     chips.replaceWith(next);
     chips = next;
   }));
   const remove = button({ className: 'btn-secondary nb-danger', 'aria-label': `Remove "${item.title || '(untitled)'}" from the notebook` }, [el('span', { text: 'Remove' })], () => {
     if (!confirm(`Remove "${item.title || '(untitled)'}" from the notebook? Its note and tags go with it.`)) return;
-    commit(removeItem(nb, key));
+    commit((cur) => removeItem(cur, key));
     toast('Removed from notebook');
     renderAll();
   });
@@ -132,6 +133,16 @@ function renderItems() {
 }
 
 // -- canvases --
+
+/** Patch the open canvas over a fresh read (fields outside `patch` keep their stored value). */
+const patchCanvas = (patch) => commit((cur) => upsertCanvas(cur, { ...(cur.canvases[canvasId] ?? nb.canvases[canvasId]), ...patch }));
+
+/** Add a canvas and return its id (the one key the fresh read did not have). */
+function addCanvas(record) {
+  let before = null;
+  if (!commit((cur) => { before = new Set(Object.keys(cur.canvases)); return upsertCanvas(cur, record); })) return null;
+  return Object.keys(nb.canvases).find((id) => !before.has(id)) ?? null;
+}
 
 function canvasRow(c) {
   const b = button({ className: 'nb-canvas-row', dataset: { canvasId: c.id }, 'aria-pressed': c.id === canvasId ? 'true' : 'false' }, [
@@ -161,7 +172,7 @@ function renderLinked(c) {
       const cur = nb.canvases[canvasId];
       if (!cur) return;
       const linkedKeys = box.checked ? [...cur.linkedKeys, it.key] : cur.linkedKeys.filter((k) => k !== it.key);
-      commit(upsertCanvas(nb, { ...cur, linkedKeys }));
+      patchCanvas({ linkedKeys });
       renderCanvases();
       markSaved();
     });
@@ -187,9 +198,8 @@ function fillForm() {
 function wireForm() {
   for (const f of CANVAS_FIELDS) {
     fields[f].addEventListener('input', () => debounce(`cv-${f}`, () => {
-      const cur = nb.canvases[canvasId];
-      if (!cur) return;
-      commit(upsertCanvas(nb, { ...cur, [f]: fields[f].value }));
+      if (!nb.canvases[canvasId]) return;
+      patchCanvas({ [f]: fields[f].value });
       if (f === 'title') els.formTitle.textContent = fields[f].value || '(untitled canvas)';
       renderCanvases();
       markSaved();
@@ -197,9 +207,9 @@ function wireForm() {
   }
   els.form.addEventListener('submit', (e) => e.preventDefault());
   $('nb-canvas-new').addEventListener('click', () => {
-    const before = new Set(Object.keys(nb.canvases));
-    if (!commit(upsertCanvas(nb, { title: '' }))) return;
-    canvasId = Object.keys(nb.canvases).find((id) => !before.has(id)) ?? null;
+    const id = addCanvas({ title: '' });
+    if (!id) return;
+    canvasId = id;
     renderStatus();
     renderCanvases();
     fillForm();
@@ -208,10 +218,10 @@ function wireForm() {
   $('nb-canvas-duplicate').addEventListener('click', () => {
     const cur = nb.canvases[canvasId];
     if (!cur) return;
-    const before = new Set(Object.keys(nb.canvases));
     const { id, createdAt, updatedAt, ...rest } = cur;
-    if (!commit(upsertCanvas(nb, { ...rest, title: `${cur.title || '(untitled canvas)'} (copy)` }))) return;
-    canvasId = Object.keys(nb.canvases).find((k) => !before.has(k)) ?? canvasId;
+    const copy = addCanvas({ ...rest, title: `${cur.title || '(untitled canvas)'} (copy)` });
+    if (!copy) return;
+    canvasId = copy;
     toast('Canvas duplicated');
     renderStatus();
     renderCanvases();
@@ -220,7 +230,7 @@ function wireForm() {
   $('nb-canvas-delete').addEventListener('click', () => {
     const cur = nb.canvases[canvasId];
     if (!cur || !confirm(`Delete the canvas "${cur.title || '(untitled canvas)'}"? This cannot be undone.`)) return;
-    commit(removeCanvas(nb, canvasId));
+    commit((cur) => removeCanvas(cur, canvasId));
     canvasId = null;
     toast('Canvas deleted');
     renderStatus();
@@ -257,9 +267,9 @@ function wireTools() {
       toast(`Import failed: ${err.message}`, { variant: 'error' });
       return;
     }
-    const beforeItems = Object.keys(nb.items).length;
-    const beforeCanvases = Object.keys(nb.canvases).length;
-    if (!commit(merge(nb, incoming))) return;
+    let beforeItems = 0;
+    let beforeCanvases = 0;
+    if (!commit((cur) => { beforeItems = Object.keys(cur.items).length; beforeCanvases = Object.keys(cur.canvases).length; return merge(cur, incoming); })) return;
     const n = Object.keys(incoming.items).length;
     const m = Object.keys(incoming.canvases).length;
     toast(`Imported ${pluralize(n, 'saved item', 'saved items')} and ${pluralize(m, 'canvas', 'canvases')} (${Object.keys(nb.items).length - beforeItems} new items, ${Object.keys(nb.canvases).length - beforeCanvases} new canvases; the rest merged)`);
@@ -269,7 +279,7 @@ function wireTools() {
     const n = Object.keys(nb.items).length;
     const m = Object.keys(nb.canvases).length;
     if (!confirm(`Delete everything in this notebook (${pluralize(n, 'saved item', 'saved items')}, ${pluralize(m, 'canvas', 'canvases')})? Export first if you want to keep it.`)) return;
-    commit({ ...nb, items: {}, canvases: {} });
+    commit((cur) => ({ ...cur, items: {}, canvases: {} }));
     canvasId = null;
     toast('Notebook emptied');
     renderAll();
@@ -291,6 +301,7 @@ async function init() {
   wireOpeners($('main'), lens.open);
   // another tab (or the feed page) changed the notebook: re-read it
   window.addEventListener('storage', (e) => { if (e.key === 'sr:notebook:v1') { nb = load(); renderAll(); } });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) { nb = load(); renderAll(); } }); // bfcache Back from the feed page
   renderAll();
   const stats = await lens.loadStats();
   sectorLabel = sectorLabels(stats);

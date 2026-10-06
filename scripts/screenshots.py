@@ -1473,6 +1473,8 @@ LENS_STATE_JS = r"""
       title: text(tr.querySelector('th a')),
       amount: text(tr.querySelector('td[data-label="Amount"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
       note: (tr.querySelector('td[data-label="Amount"] .cell-note') || {}).textContent || '',
+      stage: text(tr.querySelector('td[data-label="Stage"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
+      stageNote: (tr.querySelector('td[data-label="Stage"] .cell-note') || {}).textContent || '',
       usd: text(tr.querySelector('td[data-label="approx. USD"]')),
     })),
     fundingCount: text(document.getElementById('count')),
@@ -1540,8 +1542,12 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
     by_key = dict((item_key(it["url"]), it) for it in f_items)
     bad_amounts = [r for r in s["fundingRows"] if r["amount"] != ((by_key[r["key"]]["funding"].get("amountText") or "—"))]
     check("%s funding: every amount is the headline's original text (amountText) or an em dash" % prefix, not bad_amounts, ("bad %s" % json.dumps(bad_amounts[:2])) if bad_amounts else "%d rows" % len(s["fundingRows"]))
-    bad_notes = [r for r in s["fundingRows"] if by_key[r["key"]]["funding"].get("amountText") and r["note"] not in ("parsed from headline", "parsed from summary")]
-    check("%s funding: every parsed amount is labelled parsed from headline / summary" % prefix, not bad_notes, "%d labelled" % len([r for r in s["fundingRows"] if r["note"]]))
+    FROM_LABEL = {"title": "parsed from headline", "summary": "parsed from summary", None: ""}
+    bad_notes = [r for r in s["fundingRows"] if r["note"] != FROM_LABEL.get(by_key[r["key"]]["funding"].get("amountFrom") if by_key[r["key"]]["funding"].get("amountText") else None)]
+    check("%s funding: every parsed amount is labelled with its own field (amountFrom -> parsed from headline / summary), none otherwise" % prefix, not bad_notes, ("bad %s" % json.dumps(bad_notes[:2])) if bad_notes else "%d labelled" % len([r for r in s["fundingRows"] if r["note"]]))
+    # review-phase-1 iteration 2 #5: the stage carries its own field label (a title amount + summary stage differ)
+    bad_stages = [r for r in s["fundingRows"] if r["stage"] != (by_key[r["key"]]["funding"].get("stage") or "—") or r["stageNote"] != FROM_LABEL.get(by_key[r["key"]]["funding"].get("stageFrom") if by_key[r["key"]]["funding"].get("stage") else None)]
+    check("%s funding: every stage is the parsed stage (or an em dash) labelled with its own field (stageFrom)" % prefix, not bad_stages, ("bad %s" % json.dumps(bad_stages[:2])) if bad_stages else "%d labelled, %d differ from the amount's field" % (len([r for r in s["fundingRows"] if r["stageNote"]]), len([r for r in s["fundingRows"] if r["stageNote"] and r["note"] and r["stageNote"] != r["note"]])))
     cov = funding["coverage"]
     expected_cov = "sum of parsed amounts: %s of %s funding items had a parseable amount (%s had a stage)" % (format(cov["withAmount"], ","), format(cov["items"], ","), format(cov["withStage"], ","))
     check("%s funding: coverage sentence present" % prefix, s["coverage"].startswith(expected_cov), s["coverage"][:120])
@@ -1686,6 +1692,9 @@ def smoke_notebook(page, ctx, prefix, audit=True):
     first = snapshot(page)["cards"][0]
     page.click('#results article.card[data-key="%s"] button.card-save' % first["key"])
     page.wait_for_function("() => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return n && Object.keys(n.items).length === 1; }", timeout=WAIT_MS)
+    # a second feed tab, booted before the note below is written (review-phase-1 iteration 2 #2: its later save must not erase it)
+    feed = ctx.new_page()
+    goto_home(feed)
     goto_notebook(page)
     s = page.evaluate(NOTEBOOK_STATE_JS)
     check("%s notebook: the item saved on the home page is listed with its title, opens in-app (?item=<key>), status says 1 saved item" % prefix,
@@ -1698,6 +1707,20 @@ def smoke_notebook(page, ctx, prefix, audit=True):
     s = page.evaluate(NOTEBOOK_STATE_JS)
     saved = s["stored"]["items"][first["key"]]
     check("%s notebook: note and comma-separated tags are stored (trimmed, de-duplicated) and shown as chips" % prefix, saved["note"] == "Follow up next week" and saved["tags"] == ["idea", "fintech"] and s["items"][0]["chips"] == ["idea", "fintech"], json.dumps(saved)[:160])
+    # the feed tab (boot-time copy without the note) saves a second item, then removes it again: the note and tags survive both writes
+    second = snapshot(feed)["cards"][1]
+    feed.click('#results article.card[data-key="%s"] button.card-save' % second["key"])
+    feed.wait_for_function("() => Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length === 2", timeout=WAIT_MS)
+    stored = feed.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1'))")
+    check("%s notebook: a save on a feed tab loaded before the note was written keeps the note and tags (re-reads storage first)" % prefix,
+          sorted(stored["items"].keys()) == sorted([first["key"], second["key"]]) and stored["items"][first["key"]]["note"] == "Follow up next week" and stored["items"][first["key"]]["tags"] == ["idea", "fintech"],
+          json.dumps(stored["items"].get(first["key"], {}))[:160])
+    feed.click('#results article.card[data-key="%s"] button.card-save' % second["key"])
+    feed.wait_for_function("() => Object.keys(JSON.parse(localStorage.getItem('sr:notebook:v1')).items).length === 1", timeout=WAIT_MS)
+    stored = feed.evaluate("JSON.parse(localStorage.getItem('sr:notebook:v1'))")
+    check("%s notebook: removing it again on the feed tab leaves the first item with its note" % prefix, list(stored["items"].keys()) == [first["key"]] and stored["items"][first["key"]]["note"] == "Follow up next week", json.dumps(stored["items"])[:160])
+    feed.close()
+    page.wait_for_function("() => document.querySelectorAll('#nb-items article.nb-item').length === 1", timeout=WAIT_MS)
     page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
     s = page.evaluate(NOTEBOOK_STATE_JS)
@@ -2538,6 +2561,27 @@ def run_shell(browser):
         page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
         page.wait_for_timeout(300)
         check("drawer: Esc after Back leaves no ?item in the URL", page.evaluate("new URLSearchParams(location.search).get('item')") is None)
+        # review-phase-1 iteration 2 #1: arriving on a deep link (an entry the drawer never pushed), opening a related
+        # item and going Back re-opens the deep-linked item; Esc must then stay on the page (no history.back() out of it)
+        goto_home(page, "?item=%s" % related_key)
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        page.wait_for_selector("#detail .related-list button.related-item", timeout=WAIT_MS)
+        hist = page.evaluate("history.length")
+        page.click("#detail .related-list button.related-item")
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent !== t", arg=rel_item["title"], timeout=WAIT_MS)
+        page.go_back()
+        page.wait_for_function("(t) => document.getElementById('detail-title').textContent === t", arg=rel_item["title"], timeout=WAIT_MS)
+        check("drawer: deep link -> related item -> Back shows the deep-linked item again (history.state is not the drawer's)",
+              page.evaluate("document.querySelector('dialog#detail').open") and page.evaluate("new URLSearchParams(location.search).get('item')") == related_key and page.evaluate("history.state === null || history.state.sr !== 'item'"), str(page.evaluate("history.state")))
+        # a history.back() out of the page would load the previous document: the marker proves this document survived Esc
+        page.evaluate("window.__srDeepLinkDoc = true")
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_timeout(500)
+        check("drawer: Esc after that Back stays in this document (same path, ?item dropped by replaceState, the related entry kept as Forward)",
+              page.evaluate("window.__srDeepLinkDoc === true") and urlsplit(page.url).path == urlsplit(BASE + "/").path and page.evaluate("new URLSearchParams(location.search).get('item')") is None and page.evaluate("history.length") == hist + 1,
+              "%s, history %s -> %s" % (page.url, hist, page.evaluate("history.length")))
     errors.check("shell desktop")
     ctx.close()
 

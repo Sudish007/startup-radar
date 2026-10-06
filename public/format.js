@@ -111,7 +111,7 @@ export function hnDiscussion(item) {
 
 const HN_LABELS = { points: 'HN points', comments: 'HN comments', author: 'HN author' };
 
-/** Drawer row label: source-branded wording only for that source (hn_* -> "HN author", producthunt -> "PH votes"), else generic. */
+/** Drawer row label: source-branded only for that source (hn_* -> "HN author", producthunt -> "PH votes"). */
 export function rowLabel(field, generic, sourceId) {
   const id = String(sourceId ?? '');
   if (id.startsWith('hn_') && HN_LABELS[field]) return HN_LABELS[field];

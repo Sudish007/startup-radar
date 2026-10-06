@@ -190,6 +190,26 @@ describe('notebook-store: storage adapter', () => {
     assert.equal(toMarkdown(nb).includes('### Hand-edited'), true, 'export works on the loaded notebook');
   });
 
+  test('load drops a malformed saved item and keeps the valid ones and the canvases (import stays strict)', () => {
+    const s = fakeStorage();
+    const good = addItem(emptyNotebook(), feedItem, T0).items[KEY];
+    const stored = { version: 1, items: { [KEY]: good, bad: 'x', nourl: { title: 'no url' } }, canvases: { c: { id: 'c', title: 'Keep me', createdAt: T0, updatedAt: T1 } } };
+    s.setItem(STORAGE_KEY, JSON.stringify(stored));
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    let nb;
+    try { nb = load(s); } finally { console.warn = warn; }
+    assert.deepEqual(Object.keys(nb.items), [KEY]);
+    assert.deepEqual(nb.items[KEY], good);
+    assert.equal(nb.canvases.c.title, 'Keep me');
+    assert.equal(warnings.length, 2, 'one warning per dropped item');
+    assert.ok(warnings.every((w) => w.includes('malformed saved item')), warnings.join('; '));
+    save(nb, s);
+    assert.deepEqual(load(s), nb, 'the next save keeps the valid records');
+    assert.throws(() => fromJson(JSON.stringify(stored)), /Saved item "bad" is malformed/, 'an import of the same object is still rejected');
+  });
+
   test('save throws a readable Error on quota / unavailable storage', () => {
     const quota = { setItem: () => { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; } };
     assert.throws(() => save(emptyNotebook(), quota), /Could not save to this browser.s storage \(it is full\)/);

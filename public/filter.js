@@ -92,7 +92,7 @@ const FNV_PRIME = 0x100000001b3n;
 const MASK_64 = 0xffffffffffffffffn;
 const utf8 = new TextEncoder();
 
-/** Stable identity across builds (ids are per-build rowids): 64-bit FNV-1a of String(url ?? '') in base 36 (1-13 chars). */
+/** Stable identity across builds (ids are per-build rowids): 64-bit FNV-1a of String(url ?? '') in base 36. */
 export function itemKey(url) {
   const bytes = utf8.encode(String(url ?? ''));
   let hash = FNV_OFFSET;
