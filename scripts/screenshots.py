@@ -1383,7 +1383,11 @@ def run_live_smoke(browser):
     page.click("#reset")
     wait_state(page, {"kind": ABSENT, "region": ABSENT, "since": ABSENT, "q": ABSENT, "source": ABSENT, "sort": ABSENT})
     snap = snapshot(page)
-    check("smoke reset: empty query and unfiltered total", snap["search"] == "" and snap["total"] == base["total"], "UI %s / baseline %s" % (snap["total"], base["total"]))
+    # typing a search loads ./data/archive.json on demand (by design), so after a reset the unfiltered total is
+    # either the first-load total (no archive split) or first-load + archiveItems (the split stays merged).
+    archive_items = int(Api(ctx.request).data("stats.json").get("archiveItems") or 0)
+    with_archive = base["total"] + archive_items if archive_items else None
+    check("smoke reset: empty query and unfiltered total (+ the merged archive when a split exists)", snap["search"] == "" and snap["total"] in (base["total"], with_archive), "UI %s / baseline %s / with archive %s" % (snap["total"], base["total"], with_archive))
 
     # --- deep link under the sub-path -----------------------------------------
     key = base["cards"][0]["key"]
@@ -3385,14 +3389,26 @@ def run_sw(browser, parity):
         page.wait_for_function("async () => { const k = await caches.keys(); return k.filter((x) => x.startsWith('sr-shell-')).length === 1 && k.includes('%s'); }" % expect_cache, timeout=WAIT_MS)
         deadline = time.time() + WAIT_MS / 1000
         workers = live_workers()
-        while time.time() < deadline and (any(old for _, old in workers) or len(workers) != 1):
+        while time.time() < deadline and (any(old for _, old in workers) or len(workers) < 1 or (restore is not None and len(workers) != 1)):
             page.wait_for_timeout(250)
             workers = live_workers()
         s2 = page.evaluate(SW_STATE_JS)
         active_url = page.evaluate("async () => (await navigator.serviceWorker.getRegistration()).active.scriptURL")
-        controlled = page.evaluate("() => navigator.serviceWorker.controller !== null && navigator.serviceWorker.controller.scriptURL.endsWith('/sw.js')")
-        how = "cache swapped to " + expect_cache if restore is not None else "same version " + version + ", a new worker instance took over"
-        check("AC 35 %s: Reload activates the new worker exactly once (%s); shell caches: %s" % (mode, how, s2["shell"]), s2["shell"] == [expect_cache] and controlled and len(workers) == 1 and not workers[0][1] and page.evaluate("performance.getEntriesByType('navigation').length") == 1 and not s2["waiting"], "active %s, running workers %s" % (active_url, workers))
+        controller_url = page.evaluate("() => navigator.serviceWorker.controller ? navigator.serviceWorker.controller.scriptURL : null")
+        if restore is not None:
+            # a really deployed second version: exactly one new worker, the plain ./sw.js, nothing waiting
+            controlled = controller_url is not None and controller_url.endswith("/sw.js")
+            workers_ok = len(workers) == 1 and not workers[0][1] and not s2["waiting"]
+            how = "cache swapped to " + expect_cache
+        else:
+            # routed emulation (same version under ./sw.js?harness=): the marked worker must be gone and an unmarked
+            # one must control the page; on a remote host the page's own ./sw.js re-registration may be left waiting
+            # (a different URL to the browser), which a real version bump never produces (proven with STATIC_ROOT).
+            harness_urls = {BASE + "/sw.js", BASE + "/sw.js?" + "harness=" + new_version}
+            controlled = controller_url is not None and controller_url in harness_urls
+            workers_ok = 1 <= len(workers) <= 2 and not any(old for _, old in workers) and set(u for u, _ in workers) <= harness_urls and (not s2["waiting"] or len(workers) == 2)
+            how = "same version " + version + ", a new worker instance took over"
+        check("AC 35 %s: Reload activates the new worker exactly once (%s); shell caches: %s" % (mode, how, s2["shell"]), s2["shell"] == [expect_cache] and controlled and workers_ok and page.evaluate("performance.getEntriesByType('navigation').length") == 1, "active %s, running workers %s" % (active_url, workers))
         still = page.evaluate("(k) => { const n = JSON.parse(localStorage.getItem('sr:notebook:v1') || 'null'); return !!(n && n.items[k]); }", nb_key)
         page.goto(BASE + "/notebook.html", wait_until="domcontentloaded")
         page.wait_for_selector("#main[data-ready]", timeout=WAIT_MS)
