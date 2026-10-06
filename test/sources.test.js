@@ -147,6 +147,10 @@ describe('yc', () => {
     assert.equal(picked[0][1], 'https://yc-oss.github.io/api/batches/fall-2026.json');
   });
 
+  test('pickNewestBatches defaults to the 3 newest real batches', () => {
+    assert.deepEqual(pickNewestBatches(meta).map(([slug]) => slug), ['fall-2026', 'summer-2026', 'spring-2026']);
+  });
+
   test('pickNewestBatches handles n larger than available', () => {
     assert.equal(pickNewestBatches(meta, 10).length, 4);
     assert.deepEqual(pickNewestBatches({}, 2), []);
@@ -163,24 +167,49 @@ describe('yc', () => {
       batch: 'Fall 2026',
       all_locations: 'San Francisco, CA, USA',
       industry: 'B2B',
+      subindustry: 'B2B -> Finance and Accounting',
+      tags: ['Fintech', 'SaaS', 'B2B', 'Payments', 'Invoicing', 'Extra tag beyond five'],
       team_size: 3,
       status: 'Active',
+      stage: 'Early',
+      long_description: 'A very long description that must never reach the database.',
     });
     assert.equal(raw.url, 'https://www.ycombinator.com/companies/acme');
     assert.equal(raw.publishedAt, 1700000000000);
-    assert.equal(raw.extra.batch, 'Fall 2026');
-    assert.equal(raw.extra.teamSize, 3);
-    assert.equal(raw.extra.location, 'San Francisco, CA, USA');
+    assert.equal(raw.summary, 'Invoices on autopilot');
+    assert.deepEqual(raw.extra, {
+      batch: 'Fall 2026',
+      website: 'https://acme.io',
+      location: 'San Francisco, CA, USA',
+      industry: 'B2B',
+      subindustry: 'B2B -> Finance and Accounting',
+      tags: ['Fintech', 'SaaS', 'B2B', 'Payments', 'Invoicing'],
+      teamSize: 3,
+      status: 'Active',
+      stage: 'Early',
+      launchedAt: '2023-11-14T22:13:20.000Z',
+      oneLiner: 'Invoices on autopilot',
+    });
+    assert.equal('long_description' in raw.extra, false);
+    assert.equal('longDescription' in raw.extra, false);
   });
 
-  test('adapter fetches meta then the two newest batches concurrently', async () => {
+  test('mapYcCompany omits empty lens fields and falls back to long_description for the summary only', () => {
+    const raw = mapYcCompany({ name: 'Bare', slug: 'bare', url: 'https://www.ycombinator.com/companies/bare', long_description: 'Long text', tags: [], team_size: null, all_locations: '' });
+    assert.equal(raw.summary, 'Long text');
+    assert.equal(raw.publishedAt, null);
+    assert.deepEqual(raw.extra, {});
+  });
+
+  test('adapter fetches meta then the three newest batches concurrently', async () => {
     const urls = [];
     const items = await yc.fetch({
       http: {
         fetchJson: async (url) => {
           urls.push(url);
           if (url.endsWith('meta.json')) return { batches: meta };
-          return [{ name: url.includes('fall') ? 'F' : 'S', slug: 'x', url: 'https://www.ycombinator.com/companies/x' }];
+          const name = url.includes('fall') ? 'F' : url.includes('summer') ? 'S' : 'P';
+          return [{ name, slug: 'x', url: 'https://www.ycombinator.com/companies/x', subindustry: 'B2B -> Infrastructure', stage: 'Early', long_description: 'drop me' }];
         },
       },
     });
@@ -188,8 +217,14 @@ describe('yc', () => {
       'https://yc-oss.github.io/api/meta.json',
       'https://yc-oss.github.io/api/batches/fall-2026.json',
       'https://yc-oss.github.io/api/batches/summer-2026.json',
+      'https://yc-oss.github.io/api/batches/spring-2026.json',
     ]);
-    assert.deepEqual(items.map((i) => i.title), ['F', 'S']);
+    assert.deepEqual(items.map((i) => i.title), ['F', 'S', 'P']);
+    for (const item of items) {
+      assert.equal(item.extra.subindustry, 'B2B -> Infrastructure');
+      assert.equal(item.extra.stage, 'Early');
+      assert.equal(JSON.stringify(item.extra).includes('drop me'), false);
+    }
     assert.equal(yc.kind, 'accelerator');
   });
 });

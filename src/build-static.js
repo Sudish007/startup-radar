@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
+import { buildDerived } from './derived.js';
 import { buildSnapshot } from './export.js';
 import { createHttp } from './lib/http.js';
 import { createRefresh, formatSummaryTable } from './refresh.js';
@@ -17,6 +18,9 @@ function writeJson(filePath, value) {
 }
 
 const kb = (bytes) => (bytes / 1024).toFixed(1);
+
+/** yc.json above this size fails the build (plan: ~230 KB expected for 3 batches). */
+export const YC_JSON_MAX_BYTES = 300_000;
 
 /**
  * Build the static site into `outDir`:
@@ -60,6 +64,7 @@ export async function runBuild({
     }
 
     const snapshot = buildSnapshot({ db, sources, env, now });
+    const derived = buildDerived({ db, sources, env, now });
 
     fs.rmSync(outDir, { recursive: true, force: true });
     fs.cpSync(publicDir, outDir, { recursive: true });
@@ -76,6 +81,14 @@ export async function runBuild({
     const archiveBytes = snapshot.archive ? writeJson(path.join(dataDir, 'archive.json'), snapshot.archive) : 0;
     writeJson(path.join(dataDir, 'sources.json'), snapshot.sources);
     writeJson(path.join(dataDir, 'stats.json'), snapshot.stats);
+    const trendsBytes = writeJson(path.join(dataDir, 'trends.json'), derived.trends);
+    const fundingBytes = writeJson(path.join(dataDir, 'funding.json'), derived.funding);
+    const ycBytes = writeJson(path.join(dataDir, 'yc.json'), derived.yc);
+    log(`[build] derived trends.json ${kb(trendsBytes)} KB, funding.json ${kb(fundingBytes)} KB, yc.json ${kb(ycBytes)} KB`);
+    if (ycBytes > YC_JSON_MAX_BYTES) {
+      log(`[build] FAIL: yc.json is ${ycBytes} bytes (limit ${YC_JSON_MAX_BYTES})`);
+      return { exitCode: 1, summary };
+    }
 
     const liveCount = live.reduce((n, r) => n + r.count, 0);
     const okCount = summary.sources.filter((r) => r.ok).length;
@@ -90,6 +103,9 @@ export async function runBuild({
       itemsBytes,
       archive: snapshot.archive?.length ?? 0,
       archiveBytes,
+      trendsBytes,
+      fundingBytes,
+      ycBytes,
     };
     log(
       `[build] imported ${imported} from snapshot, fetched ${liveCount} live (${okCount} sources OK of ${summary.sources.length} enabled), ` +

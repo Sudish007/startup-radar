@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Notebook — Startup Radar</title>
+<meta name="description" content="Items you saved from the Startup Radar feed with your notes, tags and idea canvases. Stored in this browser only; export to keep it.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0B0F17">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Radar">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+<script src="./theme.js"></script>
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./pages.css">
+</head>
+<body class="page-notebook">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+<div class="topbar">
+<div class="wrap">
+<p class="brand"><a class="brand-link" href="./index.html"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></a></p>
+<nav class="site-nav" aria-label="Main">
+<ul id="site-nav-list">
+<li><a href="./index.html">Feed</a></li>
+<li><a href="./trends.html">Trends</a></li>
+<li><a href="./funding.html">Funding</a></li>
+<li><a href="./yc.html">YC</a></li>
+<li><a href="./notebook.html" aria-current="page">Notebook</a></li>
+<li><a href="./sources.html">Sources</a></li>
+</ul>
+</nav>
+<button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use href="./icons.svg#sun"/></svg></button>
+<p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+<span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+<button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true"><use href="./icons.svg#keyboard"/></svg></button>
+</div>
+</div>
+</header>
+
+<main class="wrap" id="main" tabindex="-1">
+<h1>Notebook</h1>
+<p class="notice" id="notice">Stored in this browser only — export to keep it.</p>
+<p class="intro">Items you saved from the feed with your own notes and tags, plus idea canvases: one page per idea with the seven questions worth answering before you build. Nothing here leaves this browser unless you export it.</p>
+<p id="status" class="status-line" aria-live="polite">Loading notebook…</p>
+
+<div class="lens-controls nb-tools" id="nb-tools" role="group" aria-label="Notebook file actions">
+<button type="button" id="nb-export-md" class="btn-secondary">Export Markdown</button>
+<button type="button" id="nb-export-json" class="btn-secondary">Export JSON</button>
+<button type="button" id="nb-import" class="btn-secondary">Import JSON</button>
+<input type="file" id="nb-import-file" accept="application/json,.json" hidden>
+<button type="button" id="nb-delete-all" class="btn-secondary nb-danger">Delete everything</button>
+</div>
+
+<section class="lens-section" id="saved" aria-labelledby="saved-heading">
+<h2 id="saved-heading">Saved items</h2>
+<p class="intro">Save an item with the bookmark button on a feed card or in its detail panel. Notes and tags are saved as you type.</p>
+<form class="lens-controls" id="nb-search-form" role="search" aria-label="Search saved items">
+<div class="select nb-field">
+<label class="select-label" for="nb-search">Search title, summary, note and tags</label>
+<input type="search" id="nb-search" class="nb-input" name="q" autocomplete="off" spellcheck="false" placeholder="Search saved items">
+</div>
+<p class="status-line" id="nb-items-count"></p>
+</form>
+<div class="nb-list" id="nb-items"></div>
+<p class="empty-note" id="nb-items-empty" hidden></p>
+</section>
+
+<section class="lens-section" id="canvases" aria-labelledby="canvases-heading">
+<h2 id="canvases-heading">Idea canvases</h2>
+<p class="intro">Seven fields per idea: the problem, who has it, why now, existing solutions, distribution, moat and the first ten customers. Link saved items as evidence. Every field is saved as you type.</p>
+<div class="two-col nb-canvas-layout">
+<div class="nb-canvas-side">
+<div class="lens-controls nb-tools"><button type="button" id="nb-canvas-new" class="btn-primary">New canvas</button></div>
+<ul class="nb-canvas-list" id="nb-canvas-list"></ul>
+<p class="empty-note" id="nb-canvas-empty" hidden>No canvases yet. Start one with "New canvas".</p>
+</div>
+<form class="nb-canvas-form" id="nb-canvas-form" aria-labelledby="nb-canvas-form-title" hidden>
+<h3 id="nb-canvas-form-title">Canvas</h3>
+<p class="status-line" id="nb-canvas-saved"></p>
+<div class="nb-field">
+<label class="select-label" for="cv-title">Title</label>
+<input type="text" id="cv-title" class="nb-input" name="title" autocomplete="off" placeholder="One line that names the idea">
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-problem">Problem</label>
+<textarea id="cv-problem" name="problem" rows="3" placeholder="What is broken, for whom, how often?"></textarea>
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-who">Who has it</label>
+<textarea id="cv-who" name="who" rows="3" placeholder="The specific person or team that feels this most"></textarea>
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-whyNow">Why now</label>
+<textarea id="cv-whyNow" name="whyNow" rows="3" placeholder="What changed (technology, regulation, cost, behaviour) that makes this possible today?"></textarea>
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-existing">Existing solutions</label>
+<textarea id="cv-existing" name="existing" rows="3" placeholder="How people solve it today and where that falls short"></textarea>
+</div>
+<fieldset class="source-list nb-linked" id="nb-linked">
+<legend>Linked saved items (evidence for this canvas)</legend>
+<div class="source-grid" id="nb-linked-grid"></div>
+<p class="empty-note" id="nb-linked-empty" hidden>No saved items to link yet.</p>
+</fieldset>
+<div class="nb-field">
+<label class="select-label" for="cv-distribution">Distribution</label>
+<textarea id="cv-distribution" name="distribution" rows="3" placeholder="How the first users find it"></textarea>
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-moat">Moat</label>
+<textarea id="cv-moat" name="moat" rows="3" placeholder="What gets harder to copy over time"></textarea>
+</div>
+<div class="nb-field">
+<label class="select-label" for="cv-firstTen">First ten customers</label>
+<textarea id="cv-firstTen" name="firstTen" rows="3" placeholder="Names or very specific descriptions"></textarea>
+</div>
+<div class="nb-actions">
+<button type="button" id="nb-canvas-duplicate" class="btn-secondary">Duplicate</button>
+<button type="button" id="nb-canvas-delete" class="btn-secondary nb-danger">Delete canvas</button>
+</div>
+</form>
+</div>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="wrap">
+<p>Everything on this page lives in this browser's local storage and is never sent anywhere; clearing site data removes it. Export Markdown or JSON to keep a copy, import JSON to merge it back. <a href="./index.html">Back to the feed</a>.</p>
+</div>
+</footer>
+
+<script src="./notebook.js" type="module"></script>
+</body>
+</html>

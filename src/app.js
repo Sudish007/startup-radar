@@ -4,9 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { KINDS, REGIONS } from './lib/classify.js';
-import { buildSnapshot, itemsPayload, sourcesPayload } from './export.js';
+import { buildDerived } from './derived.js';
+import { buildSnapshot, decorateItem, itemsPayload, sourcesPayload } from './export.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook'];
 
 const CSP = "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
@@ -136,11 +138,38 @@ export function createApp({ db, sources, config, refresh, env = process.env, swV
     res.json(buildSnapshot({ db, sources, env }).stats);
   });
 
+  // Derived files (trends/funding/yc) are computed once per DB state: the cache key changes whenever a
+  // refresh succeeded or the item count moved, which is exactly when the static build would differ.
+  const derivedCache = { key: null, value: null };
+  function derived() {
+    const key = `${db.lastRefresh()}|${db.countItems()}`;
+    if (derivedCache.key !== key) {
+      derivedCache.value = buildDerived({ db, sources, env });
+      derivedCache.key = key;
+    }
+    return derivedCache.value;
+  }
+
+  app.get('/data/trends.json', (req, res) => {
+    res.json(derived().trends);
+  });
+
+  app.get('/data/funding.json', (req, res) => {
+    res.json(derived().funding);
+  });
+
+  app.get('/data/yc.json', (req, res) => {
+    res.json(derived().yc);
+  });
+
   app.use(express.static(PUBLIC_DIR, { maxAge: '1h', index: 'index.html' }));
 
-  app.get('/sources', (req, res) => {
-    res.sendFile(path.join(PUBLIC_DIR, 'sources.html'));
-  });
+  // Extensionless page routes (/sources -> public/sources.html, ... /notebook -> public/notebook.html).
+  for (const page of PAGES) {
+    app.get(`/${page}`, (req, res) => {
+      res.sendFile(path.join(PUBLIC_DIR, `${page}.html`));
+    });
+  }
 
   app.get('/health', (req, res) => {
     res.json({ ok: true, items: db.countItems(), lastRefresh: db.lastRefresh() });
@@ -151,7 +180,10 @@ export function createApp({ db, sources, config, refresh, env = process.env, swV
     if (!parsed.ok) return res.status(400).json({ error: parsed.error });
     const { params } = parsed;
     const { items, total } = db.queryItems(params);
-    for (const item of items) item.source.name = nameOf(item.source.id);
+    for (const item of items) {
+      item.source.name = nameOf(item.source.id);
+      decorateItem(item);
+    }
     res.json({
       items,
       page: params.page,

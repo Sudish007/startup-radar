@@ -131,6 +131,29 @@ describe('filterItems', () => {
     assert.deepEqual(ids(filterItems(ITEMS, { sources: ['unknown'] }, NOW)), []);
   });
 
+  test('sectors facet: OR within, AND across, empty = all, items without sectors never match a selection', () => {
+    const tagged = [
+      item(21, { title: 'AI bank', sectors: ['ai', 'fintech'], publishedAt: '2026-10-03T10:00:00.000Z' }),
+      item(22, { title: 'Robot', sectors: ['hardware'], kind: 'funding', publishedAt: '2026-10-03T09:00:00.000Z' }),
+      item(23, { title: 'Payments', sectors: ['fintech'], region: 'europe', publishedAt: '2026-10-03T08:00:00.000Z' }),
+      item(24, { title: 'Untagged', publishedAt: '2026-10-03T07:00:00.000Z' }),
+      item(25, { title: 'Null sectors', sectors: null, publishedAt: '2026-10-03T06:00:00.000Z' }),
+    ];
+    assert.deepEqual(ids(filterItems(tagged, {}, NOW)), [21, 22, 23, 24, 25]);
+    assert.deepEqual(ids(filterItems(tagged, { sectors: [] }, NOW)), [21, 22, 23, 24, 25]);
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['fintech'] }, NOW)), [21, 23]);
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['ai', 'hardware'] }, NOW)), [21, 22], 'OR within the facet');
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['fintech'], region: 'usa' }, NOW)), [21], 'AND with region');
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['hardware'], kind: 'launch' }, NOW)), [], 'AND with kind');
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['fintech'], q: 'pay' }, NOW)), [23], 'AND with search');
+    assert.deepEqual(ids(filterItems(tagged, { sectors: ['space'] }, NOW)), []);
+    assert.deepEqual(ids(filterItems(tagged, { sectors: 'ai' }, NOW)), [21, 22, 23, 24, 25], 'a non-array is ignored');
+    // URL round trip as app.js does it: sector=a,b -> array -> join
+    const fromUrl = new URLSearchParams('sector=ai,fintech').get('sector').split(',');
+    assert.deepEqual(ids(filterItems(tagged, { sectors: fromUrl }, NOW)), [21, 23]);
+    assert.equal(fromUrl.join(','), 'ai,fintech');
+  });
+
   test('each since value against a fixed now', () => {
     assert.deepEqual(ids(filterItems(ITEMS, { since: 'today' }, NOW)), [1, 6, 2]);
     assert.deepEqual(ids(filterItems(ITEMS, { since: '7d' }, NOW)), [1, 6, 2, 3]);

@@ -1,12 +1,13 @@
 // Startup Radar sources page. Vanilla ES module; DOM built with
 // createElement/textContent only (strict CSP). Reads ./data/sources.json and
-// ./data/stats.json (Express or GitHub Pages); the top bar (theme, help,
-// status line, 5-minute stats poll, minute ticker) is shared through ./ui.js.
+// ./data/stats.json (Express or GitHub Pages); the shell (nav, theme, help,
+// toasts) comes from ./shell.js, the status line / stats poll / ticker from ./ui.js.
 
 import { absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
-import {
-  clear, createStatusLine, el, extLink, fetchJson, initHelp, initTheme, observeSticky, openHelp, pollStats, startPwa, startTicker, tickTimes, toggleTheme,
-} from './ui.js';
+import { mountShell } from './shell.js';
+import { clear, createStatusLine, el, extLink, fetchJson, openHelp, pollStats, startPwa, startTicker, tickTimes, toggleTheme } from './ui.js';
+
+const HELP = [[['t'], 'Toggle dark / light theme'], [['?'], 'Show this list'], [['Esc'], 'Close this dialog']];
 
 const SOURCES_URL = './data/sources.json';
 const STATS_URL = './data/stats.json';
@@ -127,9 +128,7 @@ function tick() {
 }
 
 async function init() {
-  initTheme();
-  initHelp();
-  observeSticky();
+  mountShell({ page: 'sources', help: HELP });
   // Keyboard layer of this page: `t` toggles the theme (also inside the help dialog), `?` opens help.
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;

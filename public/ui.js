@@ -1,7 +1,6 @@
-// Startup Radar shared UI module (home + sources). Strict CSP: el() is the only element factory
-// (textContent only), extLink() the only constructor of external anchors, styles via CSSOM/WAAPI.
+// Startup Radar shared UI (strict CSP): el() the only element factory (textContent), extLink() the only external anchor.
 
-import { absoluteTime, relativeTime } from './format.js';
+import { REGION_LABELS, absoluteTime, kindLabel, regionLabel, relativeTime } from './format.js';
 
 export const STATS_POLL_MS = 300_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -29,7 +28,7 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> (not focusable in any target browser) */
+/** <svg class="icon" aria-hidden="true"><use href="./icons.svg#name"/></svg> */
 export function icon(name, className = 'icon') {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', className);
@@ -47,6 +46,25 @@ export function extLink(href, text, { className = null, ariaLabel = null, title 
   a.rel = 'noopener noreferrer';
   if (text) a.textContent = text;
   return a;
+}
+
+/** <button type="button" ...props>children</button> with a click handler. */
+export function button(props, children, onClick) {
+  const b = el('button', { type: 'button', ...props }, children);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// -- item badges (cards + drawer on every page) --
+
+export const badge = (text, className, title = null) => el('span', { className: `badge ${className}`, text, title });
+export const sourceBadge = (item) => badge(item.source?.name || item.source?.id || 'Unknown source', 'badge-source');
+export const kindBadge = (item) => badge(kindLabel(item.kind), `badge-${item.kind}`, 'Kind assigned by Startup Radar from the source and the text');
+export const timeEl = (iso) => el('time', { datetime: iso, title: absoluteTime(iso), 'data-rel': '', text: relativeTime(iso) });
+
+export function regionBadge(item) {
+  const region = Object.hasOwn(REGION_LABELS, item.region) ? item.region : 'global';
+  return el('span', { className: 'badge badge-region' }, [el('span', { className: `dot dot-${region}`, 'aria-hidden': 'true' }), document.createTextNode(regionLabel(item.region))]);
 }
 
 export function scrollLock(on) {
@@ -82,7 +100,7 @@ function dismissToast(t, immediate = false) {
   afterExit(t, () => t.remove());
 }
 
-/** toast(message, { variant: info|error|update, action: { label, onClick }, duration }); <= 2 auto-dismissing, actioned persist. */
+/** variant: info|error|update; action: { label, onClick }; <= 2 auto-dismissing toasts, actioned ones persist. */
 export function toast(message, { variant = 'info', action = null, duration = 6000 } = {}) {
   const host = toastsEl();
   const t = el('div', { className: `toast ${variant}`, role: variant === 'error' ? 'alert' : null }, [el('p', { text: message })]);

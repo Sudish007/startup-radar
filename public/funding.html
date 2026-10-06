@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Funding — Startup Radar</title>
+<meta name="description" content="Funding items from the Startup Radar feed with amounts and stages parsed from the headline, totals by sector and stage, and the static FX table used for approximate USD sums.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0B0F17">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Radar">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+<script src="./theme.js"></script>
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./pages.css">
+</head>
+<body class="page-funding">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+<div class="topbar">
+<div class="wrap">
+<p class="brand"><a class="brand-link" href="./index.html"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></a></p>
+<nav class="site-nav" aria-label="Main">
+<ul id="site-nav-list">
+<li><a href="./index.html">Feed</a></li>
+<li><a href="./trends.html">Trends</a></li>
+<li><a href="./funding.html" aria-current="page">Funding</a></li>
+<li><a href="./yc.html">YC</a></li>
+<li><a href="./notebook.html">Notebook</a></li>
+<li><a href="./sources.html">Sources</a></li>
+</ul>
+</nav>
+<button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use href="./icons.svg#sun"/></svg></button>
+<p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+<span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+<button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true"><use href="./icons.svg#keyboard"/></svg></button>
+</div>
+</div>
+</header>
+
+<main class="wrap" id="main" tabindex="-1">
+<h1>Funding</h1>
+<p class="intro">Every item of kind Funding in the 90-day window. Amounts are shown as written in the headline (original currency); stages and amounts are parsed from the text, so some rows have neither.</p>
+<p class="method" id="method">Loading method…</p>
+<p id="status" class="status-line" aria-live="polite">Loading funding items…</p>
+
+<form class="lens-controls" id="controls" aria-label="Filter funding items">
+<div class="select">
+<label class="select-label" for="stage">Stage</label>
+<select id="stage" name="stage"><option value="">All stages</option></select>
+<svg class="icon chevron" aria-hidden="true"><use href="./icons.svg#chevron-down"/></svg>
+</div>
+<div class="select">
+<label class="select-label" for="sector">Sector · keyword-tagged</label>
+<select id="sector" name="sector"><option value="">All sectors</option></select>
+<svg class="icon chevron" aria-hidden="true"><use href="./icons.svg#chevron-down"/></svg>
+</div>
+<div class="select">
+<label class="select-label" for="region">Region</label>
+<select id="region" name="region">
+<option value="">All regions</option>
+<option value="usa">USA</option>
+<option value="europe">Europe</option>
+<option value="asia">Asia</option>
+<option value="india">India</option>
+<option value="latam">Latin America</option>
+<option value="africa">Africa</option>
+<option value="global">Global</option>
+</select>
+<svg class="icon chevron" aria-hidden="true"><use href="./icons.svg#chevron-down"/></svg>
+</div>
+<div class="group" role="group" aria-labelledby="since-label">
+<span class="group-label" id="since-label">Published within</span>
+<div class="chips">
+<button type="button" class="chip" data-since="7d" aria-pressed="false">7 days</button>
+<button type="button" class="chip" data-since="30d" aria-pressed="false">30 days</button>
+<button type="button" class="chip" data-since="90d" aria-pressed="true">90 days</button>
+</div>
+</div>
+<div class="select">
+<label class="select-label" for="sort">Sort by</label>
+<select id="sort" name="sort">
+<option value="date">Date (newest first)</option>
+<option value="usd">approx. USD (largest first)</option>
+</select>
+<svg class="icon chevron" aria-hidden="true"><use href="./icons.svg#chevron-down"/></svg>
+</div>
+</form>
+
+<p id="count" class="status-line" aria-live="polite"></p>
+<div class="table-scroll">
+<table class="data-table stack" id="funding-table">
+<caption>Funding items (filtered); the approx. USD column exists only to sort and sum</caption>
+<thead>
+<tr>
+<th scope="col">Title</th>
+<th scope="col">Amount</th>
+<th scope="col">Stage</th>
+<th scope="col">Sectors</th>
+<th scope="col">Region</th>
+<th scope="col">Source</th>
+<th scope="col">Date</th>
+<th scope="col" class="num" title="approx. USD at static rates — see table">approx. USD</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+<p class="method" id="usd-note">approx. USD at static rates — see table below; amounts are parsed from the headline (or summary) and may be valuations or fund sizes when the headline reads that way.</p>
+
+<section class="lens-section" id="totals" aria-labelledby="totals-heading">
+<h2 id="totals-heading">Totals</h2>
+<p class="coverage" id="coverage"></p>
+<div class="two-col">
+<div class="table-scroll">
+<table class="data-table" id="sector-totals">
+<caption>By sector (keyword-tagged; an item can count in several sectors; all funding items in the window)</caption>
+<thead><tr><th scope="col">Sector</th><th scope="col" class="num">Items</th><th scope="col" class="num">With parsed amount</th><th scope="col" class="num" title="approx. USD at static rates — see table">Sum (approx. USD)</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+<div class="table-scroll">
+<table class="data-table" id="stage-totals">
+<caption>By stage (parsed from the text; all funding items in the window)</caption>
+<thead><tr><th scope="col">Stage</th><th scope="col" class="num">Items</th><th scope="col" class="num">With parsed amount</th><th scope="col" class="num" title="approx. USD at static rates — see table">Sum (approx. USD)</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+</section>
+
+<section class="lens-section" id="fx" aria-labelledby="fx-heading">
+<h2 id="fx-heading">FX table</h2>
+<p class="intro" id="fx-note"></p>
+<table class="data-table fx-table" id="fx-table">
+<caption>USD per unit of currency (static)</caption>
+<thead><tr><th scope="col">Currency</th><th scope="col" class="num">USD per unit</th></tr></thead>
+<tbody></tbody>
+</table>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="wrap">
+<p>Amounts and stages are read from the source text by rules; nothing here is estimated beyond the labelled approx. USD conversion at the static rates above. <a href="./index.html">Back to the feed</a>.</p>
+</div>
+</footer>
+
+<script src="./funding.js" type="module"></script>
+</body>
+</html>

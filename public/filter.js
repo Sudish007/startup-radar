@@ -1,6 +1,5 @@
-// Startup Radar client-side filtering (DOM-free; shared with test/filter.test.js). Mirrors the
-// server's /api/items semantics: kind, region incl. the "world" scope, sources, since, word /
-// word-prefix search over title + summary, newest-first ordering.
+// Startup Radar client-side filtering (DOM-free, mirrors /api/items: kind, region + "world" scope, sources, since,
+// word-prefix search over title + summary, newest first).
 
 export const SINCE_VALUES = new Set(['today', '7d', '30d', '']);
 
@@ -61,13 +60,12 @@ export function compareNewestFirst(a, b) {
   return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
-/**
- * Apply { kind, region, sources, q, since } to `items` -> new array, newest first. region 'world' =
- * every region except 'usa'; sources = array of ids (empty = all); since = a SINCE_VALUES entry.
- */
-export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '' } = {}, now = new Date()) {
+/** Apply { kind, region, sources, q, since, sectors } -> new array, newest first. region 'world' = all but 'usa';
+ * sources / sectors = id arrays (empty = all; sectors OR within the facet, AND with the other filters). */
+export function filterItems(items, { kind = '', region = '', sources = [], q = '', since = '', sectors = [] } = {}, now = new Date()) {
   const sinceIso = SINCE_VALUES.has(since) ? sinceToIso(since, now) : null;
   const sourceSet = Array.isArray(sources) && sources.length > 0 ? new Set(sources) : null;
+  const sectorSet = Array.isArray(sectors) && sectors.length > 0 ? new Set(sectors) : null;
   const qTokens = queryTokens(q);
 
   const out = [];
@@ -79,6 +77,7 @@ export function filterItems(items, { kind = '', region = '', sources = [], q = '
       continue;
     }
     if (sourceSet && !sourceSet.has(item.source?.id)) continue;
+    if (sectorSet && !(Array.isArray(item.sectors) && item.sectors.some((s) => sectorSet.has(s)))) continue;
     if (sinceIso && !(String(item.publishedAt ?? '') >= sinceIso)) continue;
     if (qTokens.length > 0 && !matchesQuery(item, qTokens)) continue;
     out.push(item);
@@ -93,7 +92,7 @@ const FNV_PRIME = 0x100000001b3n;
 const MASK_64 = 0xffffffffffffffffn;
 const utf8 = new TextEncoder();
 
-/** Stable identity across builds (ids are per-build rowids): 64-bit FNV-1a of String(url ?? '') in base 36 (1-13 chars). */
+/** Stable identity across builds (ids are per-build rowids): 64-bit FNV-1a of String(url ?? '') in base 36. */
 export function itemKey(url) {
   const bytes = utf8.encode(String(url ?? ''));
   let hash = FNV_OFFSET;

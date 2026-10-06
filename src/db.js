@@ -227,13 +227,22 @@ export function openDb(filePath, { warn = console.warn } = {}) {
     return { items: result.rows.map(rowToItem), total: result.total };
   }
 
-  /** Newest-first list for exports: no 100 clamp, `limit` defaults to 3000. */
-  function listItems({ since, limit = 3000 } = {}) {
+  /** Newest-first list for exports: no 100 clamp, `limit` defaults to 3000; optional `sourceId` filter. */
+  function listItems({ since, limit = 3000, sourceId } = {}) {
     const safeLimit = Math.max(1, Number(limit) || 3000);
-    const where = since ? 'WHERE published_at >= ?' : '';
-    const params = since ? [since, safeLimit] : [safeLimit];
+    const clauses = [];
+    const params = [];
+    if (since) {
+      clauses.push('published_at >= ?');
+      params.push(since);
+    }
+    if (sourceId) {
+      clauses.push('source_id = ?');
+      params.push(sourceId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const sql = `SELECT ${ITEM_COLUMNS} FROM items ${where} ORDER BY published_at DESC, id DESC LIMIT ?`;
-    return sqlite.prepare(sql).all(...params).map(rowToItem);
+    return sqlite.prepare(sql).all(...params, safeLimit).map(rowToItem);
   }
 
   function countItems() {

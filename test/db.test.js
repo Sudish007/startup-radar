@@ -199,4 +199,19 @@ describe('db', () => {
     assert.equal(stats.lastRefresh, null);
     assert.deepEqual(db.itemCountsBySource(), { hn_show: 1, techcrunch: 1 });
   });
+
+  test('listItems filters by sourceId, alone and combined with since', () => {
+    db.upsertItems('hn_show', [
+      row(HN, { url: 'https://a.io/1', title: 'HN new', publishedAt: '2026-10-02T10:00:00Z' }),
+      row(HN, { url: 'https://a.io/2', title: 'HN old', publishedAt: '2020-01-01T00:00:00Z' }),
+    ]);
+    db.upsertItems('techcrunch', [row(TC, { url: 'https://t.io/1', title: 'TC new', publishedAt: '2026-10-02T11:00:00Z' })]);
+    assert.deepEqual(db.listItems({ sourceId: 'hn_show' }).map((i) => i.title), ['HN new', 'HN old']);
+    assert.deepEqual(db.listItems({ sourceId: 'techcrunch' }).map((i) => i.title), ['TC new']);
+    assert.deepEqual(db.listItems({ sourceId: 'hn_show', since: '2026-01-01T00:00:00Z' }).map((i) => i.title), ['HN new']);
+    assert.deepEqual(db.listItems({ sourceId: 'hn_show', limit: 1 }).map((i) => i.title), ['HN new']);
+    assert.deepEqual(db.listItems({ sourceId: 'nope' }), []);
+    assert.equal(db.listItems({}).length, 3, 'no sourceId -> every source');
+    assert.equal(db.listItems({ sourceId: undefined }).length, 3);
+  });
 });

@@ -18,6 +18,8 @@ import {
   hnDiscussion,
   rowLabel,
   detailRows,
+  METHOD_LABELS,
+  sectorLabels,
 } from '../public/format.js';
 
 const NOW = Date.parse('2026-10-03T12:00:00.000Z');
@@ -48,6 +50,27 @@ describe('labels', () => {
     assert.equal(regionLabel(undefined), '');
     assert.deepEqual(Object.keys(KIND_LABELS), ['launch', 'funding', 'news', 'accelerator']);
     assert.deepEqual(Object.keys(REGION_LABELS), ['usa', 'europe', 'asia', 'india', 'latam', 'africa', 'global']);
+  });
+});
+
+describe('METHOD_LABELS / sectorLabels (honesty wording, plan D12)', () => {
+  test('the shared method strings', () => {
+    assert.deepEqual(METHOD_LABELS, {
+      sectors: 'keyword-tagged',
+      headline: 'parsed from headline',
+      summary: 'parsed from summary',
+      usd: 'approx. USD at static rates \u2014 see table',
+      related: 'token overlap in the 90-day window',
+    });
+    for (const v of Object.values(METHOD_LABELS)) assert.doesNotMatch(v, /\b(score|index)\b/i);
+  });
+
+  test('sectorLabels maps stats.sectors to { id: label } and ignores bad entries', () => {
+    const stats = { sectors: [{ id: 'ai', label: 'AI/ML', count: 3 }, { id: 'fintech', label: 'Fintech', count: 0 }, { id: 7, label: 'x' }, null, { id: 'health' }] };
+    assert.deepEqual(sectorLabels(stats), { ai: 'AI/ML', fintech: 'Fintech' });
+    assert.deepEqual(sectorLabels({}), {});
+    assert.deepEqual(sectorLabels(null), {});
+    assert.deepEqual(sectorLabels({ sectors: 'nope' }), {});
   });
 });
 
