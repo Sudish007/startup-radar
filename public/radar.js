@@ -1,6 +1,5 @@
-// Startup Radar live radar: pure geometry (DOM-free, unit-tested) + SVG renderer + tooltip. Angle = kind quadrant
-// (launch, funding, news, accelerator clockwise from 12) + sqrt-sized region sub-wedge, hash-spread; radius = 0.10R
-// (now) .. 0.55R (24 h) .. R (48 h) +/- 2 px jitter; newest 400 drawn; captions on the 9 o'clock channel.
+// Startup Radar live radar: pure geometry (DOM-free, tested) + SVG renderer + tooltip. Angle = kind quadrant + region
+// sub-wedge (hash-spread); radius = 0.10R (now) .. R (48 h) +/- 2 px jitter; newest 400 drawn; captions at 9 o'clock.
 
 import { itemKey } from './filter.js';
 import { regionLabel, relativeTime } from './format.js';
@@ -49,8 +48,8 @@ export function sectorSpan(kind, r = RADIUS) {
   return [q0 + (q0 === CAPTION_RAY ? channel : line), q1 - (q1 === CAPTION_RAY ? channel : line)];
 }
 
-/** Sub-wedge widths (deg) per region, summing to `width`: sqrt(count) shares, >= minDeg when non-empty, 0 when empty,
- * >= MAJORITY_DEG for a bucket with at least half of the items; equal shares when the floors do not fit (the centre). */
+/** Sub-wedge widths (deg) per region summing to `width`: sqrt(count) shares, >= minDeg when non-empty, >= MAJORITY_DEG
+ * for a bucket holding half the items; equal shares when the floors do not fit. */
 export function allocateSlots(counts, width, minDeg = MIN_SLOT_DEG) {
   const out = counts.map(() => 0);
   let free = counts.map((c, i) => (c > 0 ? i : -1)).filter((i) => i >= 0);
@@ -155,8 +154,8 @@ export function bucketCounts(items) {
   return m;
 }
 
-/** Positions + styles per drawn item (pure): bucket-sized sub-wedges, then de-stacking in key order - a blip within
- * MIN_GAP px of an earlier one steps (alternating sides, <= 32 tries) 1 px along its ring / 0.5 px off its radius. */
+/** Positions + styles per drawn item (pure): bucket-sized sub-wedges, then de-stacking in key order (a blip within
+ * MIN_GAP px of an earlier one steps 1 px along its ring / 0.5 px off its radius, alternating sides, <= 32 tries). */
 export function layoutRadar(drawn, now = Date.now()) {
   const buckets = bucketCounts(drawn);
   const blips = drawn.map((item) => {

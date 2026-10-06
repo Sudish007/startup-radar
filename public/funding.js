@@ -47,7 +47,8 @@ const lens = createLensPage({ page: 'funding', getList: () => currentList, findI
 const usdText = (n) => (typeof n === 'number' && Number.isFinite(n) ? `\u2248 $${compactMoney(n)}` : '\u2014');
 const usdTitle = (n) => (typeof n === 'number' && Number.isFinite(n) ? `${METHOD_LABELS.usd}: ${n.toLocaleString()} USD` : 'no parseable amount');
 const sectorText = (item) => (Array.isArray(item.sectors) && item.sectors.length ? item.sectors.map((id) => sectorLabel[id] || id).join(', ') : '\u2014');
-const parsedLabel = (f) => (f?.parsedFrom === 'summary' ? METHOD_LABELS.summary : f?.parsedFrom === 'title' ? METHOD_LABELS.headline : null);
+/** 'title' | 'summary' (funding.amountFrom / stageFrom) -> its method label; the amount and the stage are labelled separately. */
+const parsedLabel = (field) => (field === 'summary' ? METHOD_LABELS.summary : field === 'title' ? METHOD_LABELS.headline : null);
 
 // -- state <-> URL --
 
@@ -107,12 +108,15 @@ function renderRow(item) {
   const key = keyOf(item);
   const f = item.funding || {};
   const amount = el('td', { 'data-label': 'Amount' }, [tx(f.amountText || '\u2014')]);
-  const from = parsedLabel(f);
-  if (from && (f.amountText || f.stage)) amount.append(el('span', { className: 'cell-note', text: from }));
+  const amountFrom = f.amountText ? parsedLabel(f.amountFrom) : null;
+  if (amountFrom) amount.append(el('span', { className: 'cell-note', text: amountFrom }));
+  const stage = textCell('Stage', f.stage || '\u2014', 'nowrap');
+  const stageFrom = f.stage ? parsedLabel(f.stageFrom) : null;
+  if (stageFrom) stage.append(el('span', { className: 'cell-note', text: stageFrom }));
   return el('tr', { dataset: { key } }, [
     el('th', { scope: 'row' }, [itemLink(key, item.title || '(untitled)')]),
     amount,
-    textCell('Stage', f.stage || '\u2014', 'nowrap'),
+    stage,
     el('td', { 'data-label': 'Sectors', title: SECTOR_TITLE }, [tx(sectorText(item))]),
     textCell('Region', regionLabel(item.region), 'nowrap'),
     textCell('Source', item.source?.name || item.source?.id || ''),
@@ -185,10 +189,11 @@ function renderAll() {
 function fundingSection(item) {
   const f = item.funding;
   if (!f) return null;
-  const from = parsedLabel(f);
+  const amountFrom = f.amountText ? parsedLabel(f.amountFrom) : null;
+  const stageFrom = f.stage ? parsedLabel(f.stageFrom) : null;
   const dl = el('dl', { className: 'detail-meta detail-funding' });
-  dl.append(el('dt', { text: 'Amount' }), el('dd', {}, [tx(f.amountText || 'none parsed'), from && f.amountText ? el('span', { className: 'method', text: from }) : null]));
-  dl.append(el('dt', { text: 'Stage' }), el('dd', {}, [tx(f.stage || 'none parsed'), from && f.stage ? el('span', { className: 'method', text: from }) : null]));
+  dl.append(el('dt', { text: 'Amount' }), el('dd', {}, [tx(f.amountText || 'none parsed'), amountFrom ? el('span', { className: 'method', text: amountFrom }) : null]));
+  dl.append(el('dt', { text: 'Stage' }), el('dd', {}, [tx(f.stage || 'none parsed'), stageFrom ? el('span', { className: 'method', text: stageFrom }) : null]));
   dl.append(el('dt', { text: 'approx. USD' }), el('dd', { title: usdTitle(item.usdApprox) }, [tx(usdText(item.usdApprox)), typeof item.usdApprox === 'number' ? el('span', { className: 'method', text: METHOD_LABELS.usd }) : null]));
   if (Array.isArray(item.sectors) && item.sectors.length) dl.append(el('dt', { text: 'Sectors' }), el('dd', { title: SECTOR_TITLE, text: sectorText(item) }));
   return dl;

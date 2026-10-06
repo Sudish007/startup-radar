@@ -62,12 +62,16 @@ export function setTags(nb, key, tags) {
 
 export const listItems = (nb) => Object.values(nb.items).sort(byNewest('savedAt'));
 
-/** Stored object -> notebook (shape checked, records coerced; throws on a non-notebook). */
-export function fromStored(raw) {
+/** Stored object -> notebook (shape checked, records coerced; throws on a non-notebook; a malformed item throws only when `strict`). */
+export function fromStored(raw, { strict = false } = {}) {
   if (!isObject(raw) || raw.version !== VERSION || !isObject(raw.items) || !isObject(raw.canvases)) throw new Error('Not a version-1 notebook');
   const nb = emptyNotebook();
   for (const [key, it] of Object.entries(raw.items)) {
-    if (!isObject(it) || typeof it.url !== 'string' || !it.url) throw new Error(`Saved item ${JSON.stringify(key)} is malformed`);
+    if (!isObject(it) || typeof it.url !== 'string' || !it.url) {
+      if (strict) throw new Error(`Saved item ${JSON.stringify(key)} is malformed`);
+      console.warn('[radar] notebook: dropping malformed saved item', key);
+      continue;
+    }
     nb.items[key] = { ...savedItem({ ...it, key }, validIso(it.savedAt, Date.now())), note: str(it.note), tags: strList(it.tags) };
   }
   for (const [id, c] of Object.entries(raw.canvases)) if (isObject(c)) nb.canvases[id] = canvasRecord(c, id); // a non-object canvas is dropped

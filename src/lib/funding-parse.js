@@ -69,21 +69,22 @@ export function parseStage(text) {
  * parseFunding(title, summary) ->
  * { amount: number|null, currency: 'USD'|'EUR'|'GBP'|'INR'|null, amountText: string|null,
  *   stage: 'pre-seed'|'seed'|'series a'..'series h'|'bridge'|'growth'|'debt'|'grant'|null,
- *   parsedFrom: 'title'|'summary'|null }
- * `parsedFrom` names the field the amount came from (the stage's field when there is no amount).
+ *   amountFrom: 'title'|'summary'|null, stageFrom: 'title'|'summary'|null, parsedFrom: 'title'|'summary'|null }
+ * `amountFrom` / `stageFrom` name the field each value came from (the page labels each with its own field);
+ * `parsedFrom` is the amount's field, or the stage's field when there is no amount.
  */
 export function parseFunding(title, summary = '') {
   const fields = [['title', title], ['summary', summary]];
   let amount = null;
   let stage = null;
-  let parsedFrom = null;
+  let amountFrom = null;
   let stageFrom = null;
   for (const [name, text] of fields) {
     if (!amount) {
       const found = parseAmount(text);
       if (found) {
         amount = found;
-        parsedFrom = name;
+        amountFrom = name;
       }
     }
     if (!stage) {
@@ -99,6 +100,8 @@ export function parseFunding(title, summary = '') {
     currency: amount?.currency ?? null,
     amountText: amount?.amountText ?? null,
     stage,
-    parsedFrom: parsedFrom ?? stageFrom,
+    amountFrom,
+    stageFrom,
+    parsedFrom: amountFrom ?? stageFrom,
   };
 }

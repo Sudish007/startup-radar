@@ -3,45 +3,52 @@ import assert from 'node:assert/strict';
 import { parseFunding, parseAmount, parseStage } from '../src/lib/funding-parse.js';
 import { FX, toUsd } from '../src/lib/fx-rates.js';
 
+/** Expected parseFunding() result: parsedFrom is the amount's field, else the stage's. */
+const exp = (amount, currency, amountText, stage, amountFrom, stageFrom) => ({ amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom: amountFrom ?? stageFrom });
+const NONE = exp(null, null, null, null, null, null);
+
 // [title, summary, expected]
 const FIXTURES = [
-  ['Acme raises $4M seed', '', { amount: 4_000_000, currency: 'USD', amountText: '$4M', stage: 'seed', parsedFrom: 'title' }],
-  ['Beta lands $12 million Series A', '', { amount: 12_000_000, currency: 'USD', amountText: '$12 million', stage: 'series a', parsedFrom: 'title' }],
-  ['Gamma secures Rs 50 crore', '', { amount: 500_000_000, currency: 'INR', amountText: 'Rs 50 crore', stage: null, parsedFrom: 'title' }],
-  ['Delta bags EUR 4M pre-seed', '', { amount: 4_000_000, currency: 'EUR', amountText: 'EUR 4M', stage: 'pre-seed', parsedFrom: 'title' }],
-  ['Epsilon closes £2.5m round', '', { amount: 2_500_000, currency: 'GBP', amountText: '\u00A32.5m', stage: null, parsedFrom: 'title' }],
-  ['Zeta raises $1.2B Series D', '', { amount: 1_200_000_000, currency: 'USD', amountText: '$1.2B', stage: 'series d', parsedFrom: 'title' }],
-  ['Eta raises $750k', '', { amount: 750_000, currency: 'USD', amountText: '$750k', stage: null, parsedFrom: 'title' }],
-  ['Theta nabs US$ 10 mn', '', { amount: 10_000_000, currency: 'USD', amountText: 'US$ 10 mn', stage: null, parsedFrom: 'title' }],
-  ['Iota raises \u20B9120 crore from Peak XV', '', { amount: 1_200_000_000, currency: 'INR', amountText: '\u20B9120 crore', stage: null, parsedFrom: 'title' }],
-  ['Kappa wins grant of $500,000', '', { amount: 500_000, currency: 'USD', amountText: '$500,000', stage: 'grant', parsedFrom: 'title' }],
-  ['Lambda announces funding', 'The startup raised $3.5M in a seed round led by Y.', { amount: 3_500_000, currency: 'USD', amountText: '$3.5M', stage: 'seed', parsedFrom: 'summary' }],
-  ['Mu closes Series B for $30M', '', { amount: 30_000_000, currency: 'USD', amountText: '$30M', stage: 'series b', parsedFrom: 'title' }],
-  ['Nu raises Rs. 25 lakh angel round', '', { amount: 2_500_000, currency: 'INR', amountText: 'Rs. 25 lakh', stage: null, parsedFrom: 'title' }],
-  ['Xi secures 20 crore', '', { amount: 200_000_000, currency: 'INR', amountText: '20 crore', stage: null, parsedFrom: 'title' }],
-  ['Omicron raises 5 million euros', '', { amount: 5_000_000, currency: 'EUR', amountText: '5 million euros', stage: null, parsedFrom: 'title' }],
-  ['Pi lands 12m GBP', '', { amount: 12_000_000, currency: 'GBP', amountText: '12m GBP', stage: null, parsedFrom: 'title' }],
-  ['Rho raises 4 million dollars', '', { amount: 4_000_000, currency: 'USD', amountText: '4 million dollars', stage: null, parsedFrom: 'title' }],
-  ['Sigma secures INR 80 crore Series C', '', { amount: 800_000_000, currency: 'INR', amountText: 'INR 80 crore', stage: 'series c', parsedFrom: 'title' }],
-  ['Tau raises $2bn', '', { amount: 2_000_000_000, currency: 'USD', amountText: '$2bn', stage: null, parsedFrom: 'title' }],
-  ['Upsilon raises $100MM growth round', '', { amount: 100_000_000, currency: 'USD', amountText: '$100MM', stage: 'growth', parsedFrom: 'title' }],
-  ['Phi takes on $15M in venture debt', '', { amount: 15_000_000, currency: 'USD', amountText: '$15M', stage: 'debt', parsedFrom: 'title' }],
-  ['Chi raises \u20AC7.5 million bridge round', '', { amount: 7_500_000, currency: 'EUR', amountText: '\u20AC7.5 million', stage: 'bridge', parsedFrom: 'title' }],
-  ['Psi raises $1,250,000 pre-seed round', '', { amount: 1_250_000, currency: 'USD', amountText: '$1,250,000', stage: 'pre-seed', parsedFrom: 'title' }],
-  ['Omega raises $6M seed extension and pre-seed follow-on', '', { amount: 6_000_000, currency: 'USD', amountText: '$6M', stage: 'pre-seed', parsedFrom: 'title' }],
-  ['Alpha2 raises $8M Series A2', '', { amount: 8_000_000, currency: 'USD', amountText: '$8M', stage: 'series a', parsedFrom: 'title' }],
-  ['Title with $2M', 'Summary with $9M', { amount: 2_000_000, currency: 'USD', amountText: '$2M', stage: null, parsedFrom: 'title' }],
-  ['Stage only in title: Series E', 'Amount only here: $40M', { amount: 40_000_000, currency: 'USD', amountText: '$40M', stage: 'series e', parsedFrom: 'summary' }],
-  ['Seed-stage startup launches', '', { amount: null, currency: null, amountText: null, stage: 'seed', parsedFrom: 'title' }],
+  ['Acme raises $4M seed', '', exp(4_000_000, 'USD', '$4M', 'seed', 'title', 'title')],
+  ['Beta lands $12 million Series A', '', exp(12_000_000, 'USD', '$12 million', 'series a', 'title', 'title')],
+  ['Gamma secures Rs 50 crore', '', exp(500_000_000, 'INR', 'Rs 50 crore', null, 'title', null)],
+  ['Delta bags EUR 4M pre-seed', '', exp(4_000_000, 'EUR', 'EUR 4M', 'pre-seed', 'title', 'title')],
+  ['Epsilon closes £2.5m round', '', exp(2_500_000, 'GBP', '\u00A32.5m', null, 'title', null)],
+  ['Zeta raises $1.2B Series D', '', exp(1_200_000_000, 'USD', '$1.2B', 'series d', 'title', 'title')],
+  ['Eta raises $750k', '', exp(750_000, 'USD', '$750k', null, 'title', null)],
+  ['Theta nabs US$ 10 mn', '', exp(10_000_000, 'USD', 'US$ 10 mn', null, 'title', null)],
+  ['Iota raises \u20B9120 crore from Peak XV', '', exp(1_200_000_000, 'INR', '\u20B9120 crore', null, 'title', null)],
+  ['Kappa wins grant of $500,000', '', exp(500_000, 'USD', '$500,000', 'grant', 'title', 'title')],
+  ['Lambda announces funding', 'The startup raised $3.5M in a seed round led by Y.', exp(3_500_000, 'USD', '$3.5M', 'seed', 'summary', 'summary')],
+  ['Mu closes Series B for $30M', '', exp(30_000_000, 'USD', '$30M', 'series b', 'title', 'title')],
+  ['Nu raises Rs. 25 lakh angel round', '', exp(2_500_000, 'INR', 'Rs. 25 lakh', null, 'title', null)],
+  ['Xi secures 20 crore', '', exp(200_000_000, 'INR', '20 crore', null, 'title', null)],
+  ['Omicron raises 5 million euros', '', exp(5_000_000, 'EUR', '5 million euros', null, 'title', null)],
+  ['Pi lands 12m GBP', '', exp(12_000_000, 'GBP', '12m GBP', null, 'title', null)],
+  ['Rho raises 4 million dollars', '', exp(4_000_000, 'USD', '4 million dollars', null, 'title', null)],
+  ['Sigma secures INR 80 crore Series C', '', exp(800_000_000, 'INR', 'INR 80 crore', 'series c', 'title', 'title')],
+  ['Tau raises $2bn', '', exp(2_000_000_000, 'USD', '$2bn', null, 'title', null)],
+  ['Upsilon raises $100MM growth round', '', exp(100_000_000, 'USD', '$100MM', 'growth', 'title', 'title')],
+  ['Phi takes on $15M in venture debt', '', exp(15_000_000, 'USD', '$15M', 'debt', 'title', 'title')],
+  ['Chi raises \u20AC7.5 million bridge round', '', exp(7_500_000, 'EUR', '\u20AC7.5 million', 'bridge', 'title', 'title')],
+  ['Psi raises $1,250,000 pre-seed round', '', exp(1_250_000, 'USD', '$1,250,000', 'pre-seed', 'title', 'title')],
+  ['Omega raises $6M seed extension and pre-seed follow-on', '', exp(6_000_000, 'USD', '$6M', 'pre-seed', 'title', 'title')],
+  ['Alpha2 raises $8M Series A2', '', exp(8_000_000, 'USD', '$8M', 'series a', 'title', 'title')],
+  ['Title with $2M', 'Summary with $9M', exp(2_000_000, 'USD', '$2M', null, 'title', null)],
+  ['Stage only in title: Series E', 'Amount only here: $40M', exp(40_000_000, 'USD', '$40M', 'series e', 'summary', 'title')],
+  // a title amount with a summary-only stage: each value is labelled with its own field (review-phase-1 iteration 2 #5)
+  ['Acme raises $4M', 'The round is the seed round led by Y.', exp(4_000_000, 'USD', '$4M', 'seed', 'title', 'summary')],
+  ['Seed-stage startup launches', '', exp(null, null, null, 'seed', null, 'title')],
+  ['Startup launches', 'A pre-seed company with no amount.', exp(null, null, null, 'pre-seed', null, 'summary')],
   // the kind filter (classifyKind) decides what is a funding story; a market size still parses
-  ['A $10 billion market for robot lawnmowers', '', { amount: 10_000_000_000, currency: 'USD', amountText: '$10 billion', stage: null, parsedFrom: 'title' }],
+  ['A $10 billion market for robot lawnmowers', '', exp(10_000_000_000, 'USD', '$10 billion', null, 'title', null)],
   // negatives
-  ['Top 5 apps this week', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
-  ['Version 2.5 ships with 3 new features', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
-  ['Series of outages hits the growth team', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
-  ['Bridge the gap: 4 kids build an app', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
-  ['Seeds of change for 10 Monday meetings', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
-  ['', '', { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null }],
+  ['Top 5 apps this week', '', NONE],
+  ['Version 2.5 ships with 3 new features', '', NONE],
+  ['Series of outages hits the growth team', '', NONE],
+  ['Bridge the gap: 4 kids build an app', '', NONE],
+  ['Seeds of change for 10 Monday meetings', '', NONE],
+  ['', '', NONE],
 ];
 
 describe('parseFunding', () => {
@@ -57,7 +64,7 @@ describe('parseFunding', () => {
 
   test('summary defaults to empty and tolerates non-strings', () => {
     assert.equal(parseFunding('raises $1M').amount, 1_000_000);
-    assert.deepEqual(parseFunding(null, undefined), { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null });
+    assert.deepEqual(parseFunding(null, undefined), NONE);
   });
 
   test('parseAmount and parseStage are exported for reuse', () => {

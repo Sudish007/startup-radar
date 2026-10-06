@@ -48,13 +48,13 @@ describe('buildFunding', () => {
     assert.equal(acme.title, items[0].title);
     assert.equal(acme.url, items[0].url);
     assert.equal(acme.region, 'usa');
-    assert.deepEqual(acme.funding, { amount: 4_000_000, currency: 'USD', amountText: '$4M', stage: 'seed', parsedFrom: 'title' });
+    assert.deepEqual(acme.funding, { amount: 4_000_000, currency: 'USD', amountText: '$4M', stage: 'seed', amountFrom: 'title', stageFrom: 'title', parsedFrom: 'title' });
     assert.equal(acme.usdApprox, 4_000_000);
     assert.equal(beta.funding.amount, 500_000_000);
     assert.equal(beta.funding.currency, 'INR');
     assert.equal(beta.usdApprox, Math.round(500_000_000 * FX.rates.INR));
     assert.equal(beta.funding.stage, 'series a');
-    assert.deepEqual(gamma.funding, { amount: null, currency: null, amountText: null, stage: null, parsedFrom: null });
+    assert.deepEqual(gamma.funding, { amount: null, currency: null, amountText: null, stage: null, amountFrom: null, stageFrom: null, parsedFrom: null });
     assert.equal(gamma.usdApprox, null);
     assert.deepEqual(f.coverage, { items: 3, withAmount: 2, withStage: 2 });
   });

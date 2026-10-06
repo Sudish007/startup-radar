@@ -32,7 +32,7 @@ function add(total, usd) {
 /**
  * buildFunding(items, { now }) -> {
  *   generatedAt, method, fx: FX,
- *   items: [item + { funding: { amount, currency, amountText, stage, parsedFrom }, usdApprox }],
+ *   items: [item + { funding: { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom }, usdApprox }],
  *   totals: { bySector: [{ id, label, items, withAmount, sumUsd }], byStage: [{ stage, items, withAmount, sumUsd }] },
  *   coverage: { items, withAmount, withStage } }
  * `byStage` lists only stages that occur, in STAGE_ORDER, with an 'unknown' row last when any item lacks a stage.

@@ -70,7 +70,7 @@ export function fromJson(text) {
   if (!isObject(raw)) throw new Error('Not a notebook (expected an object)');
   if (raw.version !== VERSION) throw new Error(`Unsupported notebook version ${JSON.stringify(raw.version ?? null)} (expected ${VERSION})`);
   if (!isObject(raw.items) || !isObject(raw.canvases)) throw new Error('Not a notebook (items and canvases must be objects)');
-  const nb = { ...fromStored(raw), canvases: {} };
+  const nb = { ...fromStored(raw, { strict: true }), canvases: {} };
   for (const [id, c] of Object.entries(raw.canvases)) {
     if (!isObject(c)) throw new Error(`Canvas ${JSON.stringify(id)} is malformed`);
     nb.canvases[id] = canvasRecord(c, id); // import is strict (throws above); the record shape is the store's

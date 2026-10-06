@@ -28,8 +28,7 @@ export function openExternal(item) {
 }
 
 /** getList() -> ordered list; findItem(key) -> item | null | Promise; buildUrl(key|null); onOpen({ key, item, from });
- * onClose({ lastKey, returnTo }) (page does focus return); sections / actions: (item, { key, drawer }) => Node | null;
- * ensureIndexVisible(index). -> { open(key, { push, from }), close, step, isOpen, key, item, rerender, openDeepLink, handlePopstate, dialog } */
+ * onClose({ lastKey, returnTo }) (page does focus return); sections / actions: (item, { key, drawer }) => Node | null. */
 export function createDrawer({ dialog, getList, findItem, buildUrl, onOpen = null, onClose = null, sections = [], actions = [], ensureIndexVisible = null }) {
   const panel = dialog.querySelector('.detail-panel');
   const st = { key: null, item: null, returnTo: null, ownsEntry: false, ignoreNextPop: false, fromHistory: false, closing: false };
@@ -116,7 +115,7 @@ export function createDrawer({ dialog, getList, findItem, buildUrl, onOpen = nul
       moveToastsInto(dialog);
     }
     if (push) st.ownsEntry = historyCall(() => history.pushState({ sr: 'item', key }, '', buildUrl(key)));
-    else st.ownsEntry = from === 'history';
+    else st.ownsEntry = from === 'history' && history.state?.sr === 'item'; // not a deep-link entry
     onOpen?.({ key, item, from });
     $('detail-title')?.focus();
     return true;
@@ -136,7 +135,7 @@ export function createDrawer({ dialog, getList, findItem, buildUrl, onOpen = nul
     ensureIndexVisible?.(nextIndex);
     render(item);
     if (supportsAnimate && !reduceMotion.matches) panel.querySelector('.detail-body')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: EASE_OUT });
-    replaceUrl(buildUrl(key));
+    historyCall(() => history.replaceState(st.ownsEntry ? { sr: 'item', key } : null, '', buildUrl(key)));
     onOpen?.({ key, item, from: 'step' });
     const wanted = focusedId === 'detail-prev' || focusedId === 'detail-next' ? $(focusedId) : null;
     const other = focusedId === 'detail-prev' ? $('detail-next') : $('detail-prev');

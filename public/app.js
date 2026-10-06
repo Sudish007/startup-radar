@@ -252,11 +252,12 @@ function saveButton(item, key, className, withText = false) {
   return b;
 }
 
-function syncSaveButtons(key) {
-  for (const b of document.querySelectorAll(`button[data-save-key="${key}"]`)) paintSave(b);
+function syncSaveButtons() {
+  for (const b of document.querySelectorAll('button[data-save-key]')) paintSave(b);
 }
 
 function toggleSaved(item, key) {
+  nb = notebook.load(); // the notebook page may have written since boot
   const next = isSaved(key) ? notebook.removeItem(nb, key) : notebook.addItem(nb, { ...item, key });
   try {
     notebook.save(next);
@@ -265,7 +266,7 @@ function toggleSaved(item, key) {
     return;
   }
   nb = next;
-  syncSaveButtons(key);
+  syncSaveButtons();
   toast(isSaved(key) ? 'Saved to notebook \u00b7 stored in this browser only' : 'Removed from notebook');
 }
 
@@ -901,6 +902,7 @@ function wireEvents() {
     syncControls();
     render();
   });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) { nb = notebook.load(); syncSaveButtons(); } }); // bfcache restore
 
   els.filtersOpen.addEventListener('click', openSheet);
   els.filtersClose.addEventListener('click', closeSheet);
