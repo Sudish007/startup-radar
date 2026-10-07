@@ -845,9 +845,9 @@ refreshes); the 1 GB volume in `.railway/railway.ts` assumes the Hobby plan, so 
 
 ## 11. Screenshots
 
-All eight images were captured from the live GitHub Pages site after the polish pass (Edge via
-Playwright, the same viewports and states as `scripts/screenshots.py` parity mode). Every image is
-the viewport only (1280 × 900 unless noted).
+The first eight images were captured from the live GitHub Pages site after the polish pass (Edge via
+Playwright, the same viewports and states as `scripts/screenshots.py` parity mode), the funding and
+digest images after the funding parser fix. Every image is the viewport only (1280 × 900 unless noted).
 
 ![Home page, dark theme: glass top bar with the Startup Radar wordmark, search field, grid/list toggle and theme button; hero with four stat tiles and the radar panel; the sticky filter bar; the first rows of startup cards in three columns](docs/screenshots/home.png)
 
@@ -864,6 +864,10 @@ the viewport only (1280 × 900 unless noted).
 ![Phone viewport with the filter bottom sheet open: Kind and Region selects, Scope and Published chips, the collapsed Sources disclosure, Reset filters and the "Show 985 items" button](docs/screenshots/home-mobile-sheet.png)
 
 ![Sources page: configured / enabled / with-errors status strip, the table of all 21 adapters with enabled state, kind, region, last successful fetch, last error and item count, followed by the links-only list](docs/screenshots/sources.png)
+
+![Funding page sorted by approx. USD: the method and count lines name the valuations (never summed) and the reports folded into grouped rows; the Lambda row shows "$4B" as the amount with the note "valuation $14.5 billion — not a round amount · parsed from summary"](docs/screenshots/funding.png)
+
+![Digest page, week 2026-W40, "Largest parsed funding amounts": one row per story ranked by approx. USD; the ElevenLabs row shows the $300 million tender offer as the amount, the note "valuation $22B — not a round amount", "also reported by Tech.eu, Sifted" links and the grouping rule](docs/screenshots/digest.png)
 
 ## 12. Adding a source
 
