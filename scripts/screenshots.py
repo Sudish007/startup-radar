@@ -86,16 +86,21 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./signals.html", "./digest.html", "./resources.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./signals.js", "./digest.js", "./resources.js", "./resources-data.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
 # page kind -> index of its link in NAV (audit_state asserts aria-current there)
-NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "notebook": 4, "sources": 5}
-# lens pages (FEAT-003/004): (kind, path, selector that proves the data rendered)
-LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details"), ("notebook", "/notebook.html", "#main[data-ready]")]
+NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "notebook": 4, "signals": 5, "digest": 6, "resources": 7, "sources": 8}
+# lens pages (FEAT-003/004/006): (kind, path, selector that proves the data rendered)
+LENS_PAGES = [("trends", "/trends.html", "#sector-grid .sparkline"), ("funding", "/funding.html", "#funding-table tbody tr"), ("yc", "/yc.html", "#industry-groups details"), ("notebook", "/notebook.html", "#main[data-ready]"), ("signals", "/signals.html", "#signals section.signal"), ("digest", "/digest.html", "#rounds-table tbody tr"), ("resources", "/resources.html", "#resource-groups .resource-row")]
+# pages whose outbound links are expected (audit_page want_links); trends/funding/digest have none by design on every week
+LINK_PAGES = ("yc", "signals", "resources")
+FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Startup Radar weekly digest" href="./feed.xml">'
+RESOURCE_LINKS = 16
+SIGNAL_COUNT = 6
 NOTEBOOK_KEY = "sr:notebook:v1"
 NOTEBOOK_BANNER = "Stored in this browser only \u2014 export to keep it."
 SHORTCUT_KEYS = ["/", "j", "k", "\u2193", "\u2191", "Home", "End", "Enter", "o", "Esc", "t", "?", "\u2190", "\u2192", "g"]
 # nav.js NAV in order (label, href); every page ships this static list and the shell re-fills it
-NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Sources", "./sources.html")]
+NAV = [("Feed", "./index.html"), ("Trends", "./trends.html"), ("Funding", "./funding.html"), ("YC", "./yc.html"), ("Notebook", "./notebook.html"), ("Signals", "./signals.html"), ("Digest", "./digest.html"), ("Resources", "./resources.html"), ("Sources", "./sources.html")]
 
 KIND_LABELS = [
     ("launch", "Launch"),
@@ -654,7 +659,7 @@ LAYOUT_JS = r"""
   out.cardExt = cards.map((c) => ({ key: c.dataset.key, href: c.querySelector('a.card-ext') ? c.querySelector('a.card-ext').href : null }));
   out.badges = Array.from(document.querySelectorAll('#results .badge:not(.badge-region):not(.badge-sector), #detail .badge:not(.badge-region):not(.badge-sector)')).map((b) => b.textContent.trim());
   out.sectorBadges = Array.from(document.querySelectorAll('#results .badge-sector, #detail .badge-sector')).map((b) => ({ text: b.textContent.trim(), title: b.title }));
-  // shell: one nav list with the six static links, the phone toggle only below 640, no second help/toasts
+  // shell: one nav list with the nine static links (nav.js NAV), the phone toggle only below 640, no second help/toasts
   const navList = document.querySelectorAll('nav.site-nav ul#site-nav-list');
   out.navLinks = navList.length === 1 ? Array.from(navList[0].querySelectorAll('a')).map((a) => [a.textContent.trim(), a.getAttribute('href'), a.getAttribute('aria-current')]) : null;
   const toggle = document.getElementById('nav-toggle');
@@ -1430,6 +1435,14 @@ def run_live_smoke(browser):
     errors.check("smoke notebook desktop")
     ctx.close()
 
+    # --- signals / digest / resources (FEAT-006): states, ?week= deep link, feed.xml, 16 safe links ---------------
+    ctx = new_ctx(browser, viewport=DESKTOP)
+    page = ctx.new_page()
+    errors = ErrorLog(page)
+    smoke_phase2_pages(page, ctx, "smoke", audit=True)
+    errors.check("smoke signals/digest/resources desktop")
+    ctx.close()
+
     # --- mobile ------------------------------------------------------------
     mctx = new_ctx(browser, viewport=MOBILE, mobile=True)
     mpage = mctx.new_page()
@@ -1448,7 +1461,7 @@ def run_live_smoke(browser):
             mpage.wait_for_selector("#nb-canvas-form:not([hidden])", timeout=WAIT_MS)
         else:
             goto_lens(mpage, kind)
-        a = audit_page(mpage, "smoke %s mobile 390px" % kind, want_controls=True, want_links=(kind == "yc"))
+        a = audit_page(mpage, "smoke %s mobile 390px" % kind, want_controls=True, want_links=(kind in LINK_PAGES))
         check("smoke mobile %s: scrollWidth <= 390" % kind, a["scrollWidth"] <= MOBILE["width"], "scrollWidth %d" % a["scrollWidth"])
     merrors.check("smoke mobile")
     mctx.close()
@@ -1595,7 +1608,7 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
     expected_groups = [(r["industry"], r["count"]) for r in yc["byIndustry"]]
     check("%s yc: group labels and counts equal byIndustry, rows per group equal the counts" % prefix, [(g["industry"], int(g["n"].split()[0].replace(",", ""))) for g in s["industryGroups"]] == expected_groups and all(g["rows"] == c for g, (_, c) in zip(s["industryGroups"], expected_groups)), str(s["industryGroups"][:2])[:160])
     check("%s yc: >= 400 companies rendered" % prefix, sum(g["rows"] for g in s["industryGroups"]) == len(yc["companies"]) >= 400, "%d companies" % sum(g["rows"] for g in s["industryGroups"]))
-    check("%s yc: attribution line verbatim" % prefix, s["attribution"] == "Source: yc-oss open API mirror of ycombinator.com, refreshed hourly" == yc["attribution"], s["attribution"])
+    check("%s yc: attribution line verbatim (yc.json, no 'refreshed hourly' promise)" % prefix, s["attribution"] == yc["attribution"] and s["attribution"].startswith("Source: yc-oss open API mirror of ycombinator.com") and "refreshed hourly" not in s["attribution"], s["attribution"])
     expected_tags = [[r["tag"], format(r["count"], ",")] for r in yc["tagFrequency"]]
     check("%s yc: tag list equals tagFrequency (top %d)" % (prefix, len(expected_tags)), s["tagRows"] == expected_tags, str(s["tagRows"][:3]))
     expected_team = list(zip(yc["teamSize"]["buckets"], yc["teamSize"]["counts"]))
@@ -1622,6 +1635,229 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
         page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
     if audit:
         audit_page(page, "%s yc desktop" % prefix, want_controls=True)
+
+
+PHASE2_STATE_JS = r"""
+() => {
+  const text = (el) => (el ? el.textContent.trim() : '');
+  const feedLink = document.querySelector('head link[rel="alternate"][type="application/atom+xml"]');
+  return {
+    feedHref: feedLink ? feedLink.getAttribute('href') : null,
+    feedTitle: feedLink ? feedLink.getAttribute('title') : null,
+    navCount: document.querySelectorAll('nav.site-nav ul#site-nav-list a').length,
+    // signals.html
+    signals: Array.from(document.querySelectorAll('#signals section.signal')).map((s) => ({
+      id: s.dataset.signal,
+      state: s.dataset.state,
+      heading: text(s.querySelector('h2')),
+      attribution: text(s.querySelector('p.attribution')),
+      attributionLink: (s.querySelector('p.attribution a') || {}).href || null,
+      fetched: (s.querySelector('p.attribution time') || { getAttribute: () => null }).getAttribute('datetime'),
+      method: text(s.querySelector('p.method')),
+      stateLines: Array.from(s.querySelectorAll('p.signal-state')).map((p) => [p.className.replace('signal-state', '').trim(), text(p)]),
+      rows: s.querySelectorAll('tbody tr').length,
+      bars: s.querySelectorAll('.bar-row').length,
+      barWidths: Array.from(s.querySelectorAll('.bar-row .bar')).map((b) => b.style.width),
+      barCounts: Array.from(s.querySelectorAll('.bar-row .bar-n')).map(text),
+      hasTable: !!s.querySelector('table'),
+      hasLinkOnly: !!s.querySelector('p.empty-note a'),
+      bodyText: s.innerText,
+    })),
+    signalsStatus: text(document.getElementById('status')),
+    // digest.html
+    weekValue: document.getElementById('week') ? document.getElementById('week').value : null,
+    weekOptions: Array.from(document.querySelectorAll('#week option')).map((o) => o.value),
+    weekRange: text(document.getElementById('week-range')),
+    prevDisabled: document.getElementById('week-prev') ? document.getElementById('week-prev').disabled : null,
+    nextDisabled: document.getElementById('week-next') ? document.getElementById('week-next').disabled : null,
+    roundRows: Array.from(document.querySelectorAll('#rounds-table tbody tr[data-key]')).map((tr) => ({ key: tr.dataset.key, title: text(tr.querySelector('th')), amount: text(tr.querySelector('td[data-label="Amount"]')), usd: text(tr.querySelector('td[data-label="approx. USD"]')), inApp: !!tr.querySelector('th a[data-open-key]') })),
+    roundsCaption: text(document.getElementById('rounds-caption')),
+    launchRows: Array.from(document.querySelectorAll('#launches-table tbody tr[data-key]')).map((tr) => ({ key: tr.dataset.key, title: text(tr.querySelector('th')), value: text(tr.querySelector('td[data-label="Metric"]')).replace(/\s*(HN points|PH votes)$/, ''), metric: text(tr.querySelector('td[data-label="Metric"] .metric')) })),
+    ycRows: Array.from(document.querySelectorAll('#yc-list li.company-row')).map((li) => ({ name: text(li.querySelector('h3')), inApp: !!li.querySelector('h3 a[data-open-key]'), external: (li.querySelector('h3 a') || {}).target === '_blank' })),
+    termRows: Array.from(document.querySelectorAll('#terms-table tbody tr.term-row')).map((tr) => [text(tr.querySelector('th')), ...Array.from(tr.querySelectorAll('td')).map(text)]),
+    highlightsHidden: document.getElementById('highlights') ? document.getElementById('highlights').hidden : null,
+    highlightTables: document.querySelectorAll('#highlight-lists table').length,
+    highlightRows: document.querySelectorAll('#highlight-lists tbody tr').length,
+    footerFeed: (document.querySelector('footer a[href="./feed.xml"]') || {}).textContent || null,
+    // resources.html
+    groups: Array.from(document.querySelectorAll('#resource-groups section')).map((s) => ({ title: text(s.querySelector('h2')), links: Array.from(s.querySelectorAll('a.resource-name')).map((a) => ({ name: text(a), href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), note: text(a.parentElement.querySelector('.note')) })) })),
+    resourcesStatus: text(document.getElementById('status')),
+    bodyText: document.body.innerText,
+    search: location.search,
+  };
+}
+"""
+
+
+def parse_feed(page, url):
+    """Fetch feed.xml from the page's own origin and parse it with DOMParser('application/xml') -> stats dict."""
+    return page.evaluate(
+        r"""async (url) => {
+          const res = await fetch(url, { cache: 'no-store' });
+          const text = await res.text();
+          const doc = new DOMParser().parseFromString(text, 'application/xml');
+          const err = doc.querySelector('parsererror');
+          const root = doc.documentElement;
+          return {
+            status: res.status,
+            type: res.headers.get('content-type') || '',
+            parserError: err ? err.textContent.slice(0, 200) : null,
+            root: root ? root.tagName : null,
+            ns: root ? root.namespaceURI : null,
+            entries: doc.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'entry').length,
+            titles: Array.from(doc.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'entry')).slice(0, 3).map((e) => (e.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'title')[0] || {}).textContent || ''),
+            links: Array.from(doc.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'entry')).map((e) => (e.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'link')[0] || { getAttribute: () => '' }).getAttribute('href') || ''),
+            startsXml: text.startsWith('<?xml'),
+          };
+        }""",
+        url,
+    )
+
+
+def smoke_phase2_pages(page, ctx, prefix, audit=True):
+    """Signals, digest (+ feed.xml) and resources pages against their JSON files (smoke + parity)."""
+    api = Api(ctx.request)
+    signals = api.data("signals.json")
+    digest = api.data("digest.json")
+    items = api.data("items.json")
+    feed_keys = set(item_key(it["url"]) for it in items)
+
+    # --- signals ------------------------------------------------------------
+    goto_lens(page, "signals")
+    s = page.evaluate(PHASE2_STATE_JS)
+    rows = signals["signals"]
+    by_id = dict((r["id"], r) for r in rows)
+    check("%s signals: feed discovery link and nine nav links on the page" % prefix, s["feedHref"] == "./feed.xml" and s["feedTitle"] == "Startup Radar weekly digest" and s["navCount"] == len(NAV), "%s / %s nav links" % (s["feedHref"], s["navCount"]))
+    check("%s signals: %d sections in signals.json order, one per signal" % (prefix, SIGNAL_COUNT), len(rows) == SIGNAL_COUNT and [x["id"] for x in s["signals"]] == [r["id"] for r in rows], str([x["id"] for x in s["signals"]]))
+    expected_state = lambda r: "not-configured" if not r["enabled"] else ("ok" if r["ok"] else "unavailable")  # noqa: E731
+    bad_state = [x["id"] for x in s["signals"] if x["state"] not in ("ok", "unavailable", "not-configured") or x["state"] != expected_state(by_id[x["id"]])]
+    check("%s signals: every section is in exactly one of the three states and it matches the JSON" % prefix, not bad_state, "; ".join("%s:%s" % (x["id"], x["state"]) for x in s["signals"]))
+    bad_meta = [x["id"] for x in s["signals"] if x["heading"] != by_id[x["id"]]["name"] or x["method"] != by_id[x["id"]]["description"] or not x["attribution"].startswith("Source: ") or x["attributionLink"] is None or x["attributionLink"].rstrip("/") != by_id[x["id"]]["homepage"].rstrip("/")]
+    check("%s signals: heading = name, method = description, attribution links the homepage" % prefix, not bad_meta, ", ".join(bad_meta) or "%d sections" % len(s["signals"]))
+    bad_fetched = [x["id"] for x in s["signals"] if (by_id[x["id"]]["fetchedAt"] and x["fetched"] != by_id[x["id"]]["fetchedAt"]) or (not by_id[x["id"]]["fetchedAt"] and ("not fetched" not in x["attribution"] or x["fetched"]))]
+    check("%s signals: fetched-at time equals fetchedAt (or 'not fetched' when null)" % prefix, not bad_fetched, ", ".join(bad_fetched) or "ok")
+
+    def state_ok(x):
+        r = by_id[x["id"]]
+        kinds = [k for k, _ in x["stateLines"]]
+        texts = [t for _, t in x["stateLines"]]
+        if x["state"] == "ok":
+            return kinds == [] and (x["hasTable"] or x["bars"] > 0 or "No " in x["bodyText"])
+        if x["state"] == "not-configured":
+            return kinds == ["is-off"] and texts[0] == "not configured (%s)" % (r.get("requires") or "disabled") and not x["hasTable"] and x["bars"] == 0
+        # unavailable: the error line, then either the carried-over data labelled with its time or a link-only block
+        if not kinds or kinds[0] != "is-fail" or not texts[0].startswith("unavailable since ") or (r["error"] or "") not in texts[0]:
+            return False
+        if r.get("data"):
+            return kinds == ["is-fail", "is-stale"] and texts[1].startswith("last good data from ") and (x["hasTable"] or x["bars"] > 0)
+        return kinds == ["is-fail"] and x["hasLinkOnly"] and not x["hasTable"]
+
+    bad_lines = [x["id"] for x in s["signals"] if not state_ok(x)]
+    check("%s signals: state lines ('unavailable since … — <error>' / 'last good data from …' / 'not configured (<ENV>)') match each section's state" % prefix, not bad_lines, "; ".join("%s=%s" % (x["id"], x["stateLines"]) for x in s["signals"] if x["id"] in bad_lines) or "ok")
+    # numbers equal the JSON for the ok renderers
+    for x in s["signals"]:
+        r = by_id[x["id"]]
+        if x["state"] != "ok" or not r.get("data"):
+            continue
+        d = r["data"]
+        if x["id"] == "ask_hn":
+            check("%s signals ask_hn: one row per post (%d)" % (prefix, len(d["posts"])), x["rows"] == len(d["posts"]), "%d rows" % x["rows"])
+        elif x["id"] == "github_new_repos":
+            check("%s signals github: one row per repo (%d) under the header '%s'" % (prefix, len(d["repos"]), d["label"]), x["rows"] == len(d["repos"]) and d["label"] in x["bodyText"] and ("unauthenticated" in x["bodyText"]) == (not d["authenticated"]), "%d rows" % x["rows"])
+        elif x["id"] == "hf_trending":
+            check("%s signals hf: ranked rows = models (%d) + spaces (%d)" % (prefix, len(d["models"]), len(d["spaces"])), x["rows"] == len(d["models"]) + len(d["spaces"]), "%d rows" % x["rows"])
+        elif x["id"] == "hn_hiring":
+            mx = max([1] + [k["comments"] for k in d["keywords"]])
+            group_order = list(dict.fromkeys(k["group"] for k in d["keywords"]))  # the page groups by first appearance, keywords in JSON order
+            ordered = [k for g in group_order for k in d["keywords"] if k["group"] == g]
+            got = [float(w.rstrip("%")) for w in x["barWidths"] if w.endswith("%")]
+            want = [k["comments"] / mx * 100 for k in ordered]
+            widths_ok = len(got) == len(want) and all(abs(a - b) < 0.01 for a, b in zip(got, want)) and x["barCounts"] == [format(k["comments"], ",") for k in ordered]  # Blink serialises the % as a float
+            check("%s signals hiring: one bar per keyword (%d), counts printed, widths = count/max, label '%s' shown" % (prefix, len(d["keywords"]), d["label"]), x["bars"] == len(d["keywords"]) and widths_ok and len(x["barCounts"]) == x["bars"] and d["label"] in x["bodyText"], "%d bars" % x["bars"])
+        elif x["id"] == "sbir":
+            check("%s signals sbir: one row per solicitation (%d)" % (prefix, len(d["solicitations"])), x["rows"] == len(d["solicitations"]), "%d rows" % x["rows"])
+        elif x["id"] == "producthunt_topics":
+            check("%s signals producthunt: one row per topic (%d)" % (prefix, len(d["topics"])), x["rows"] == len(d["topics"]), "%d rows" % x["rows"])
+    check("%s signals: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    if audit:
+        audit_page(page, "%s signals desktop" % prefix, want_controls=True)
+
+    # --- digest ------------------------------------------------------------
+    weeks = digest["weeks"]
+    ids = [w["week"] for w in weeks]
+    complete = [w for w in weeks if not w["partial"]]
+    default_week = complete[-1]["week"] if complete else ids[-1]
+    goto_lens(page, "digest")
+    s = page.evaluate(PHASE2_STATE_JS)
+    check("%s digest: week select lists the 12 weeks newest first and defaults to the newest complete week %s" % (prefix, default_week), s["weekOptions"] == list(reversed(ids)) and s["weekValue"] == default_week and ("week=" + default_week) in page.url, "%s, url %s" % (s["weekValue"], page.url))
+    by_week = dict((w["week"], w) for w in weeks)
+
+    def check_week(tag, w):
+        st = page.evaluate(PHASE2_STATE_JS)
+        check("%s digest %s: rounds rows equal the JSON (%d) with the original amount text and approx. USD" % (prefix, tag, len(w["rounds"])), [r["key"] for r in st["roundRows"]] == [r["key"] for r in w["rounds"]] and all(r["amount"].startswith(x["amountText"] or "—") for r, x in zip(st["roundRows"], w["rounds"])) and "approx. USD at static rates" in st["roundsCaption"], "%d rows; %s" % (len(st["roundRows"]), st["roundsCaption"][:80]))
+        check("%s digest %s: launch rows equal the JSON (%d), each labelled 'HN points' / 'PH votes' with its value" % (prefix, tag, len(w["launches"])), [r["key"] for r in st["launchRows"]] == [l["key"] for l in w["launches"]] and all(r["metric"] == l["metric"] and r["value"] == format(l["value"], ",") for r, l in zip(st["launchRows"], w["launches"])), str(st["launchRows"][:2])[:160])
+        check("%s digest %s: YC rows equal ycNew (%d); in-app when the feed has the key, else a new-tab YC link" % (prefix, tag, len(w["ycNew"])), [r["name"] for r in st["ycRows"]] == [c["name"] for c in w["ycNew"]] and all((r["inApp"] and not r["external"]) if (c["key"] in feed_keys) else (r["external"] and not r["inApp"]) for r, c in zip(st["ycRows"], w["ycNew"])), "%d rows, %d in-app" % (len(st["ycRows"]), len([r for r in st["ycRows"] if r["inApp"]])))
+        check("%s digest %s: rising terms equal the JSON (%d) with this week / prior average / rise" % (prefix, tag, len(w["risingTerms"])), st["termRows"] == [[t["term"], {"token": "word", "bigram": "word pair"}.get(t["kind"], t["kind"]), format(t["thisWeek"], ","), format(t["priorWeeklyAvg"], ","), format(t["rise"], ",")] for t in w["risingTerms"]], str(st["termRows"][:2])[:160])
+        hl = w.get("signalHighlights")
+        if w["partial"] and hl:
+            n = len(hl.get("repos") or []) + len(hl.get("models") or [])
+            check("%s digest %s: signal highlights shown on the current week (%d rows, 'current week only' note)" % (prefix, tag, n), st["highlightsHidden"] is False and st["highlightRows"] == n and "Current week only" in st["bodyText"], "%d rows, hidden %s" % (st["highlightRows"], st["highlightsHidden"]))
+        else:
+            check("%s digest %s: signal highlights hidden on a past week" % (prefix, tag), st["highlightsHidden"] is True and st["highlightRows"] == 0, "hidden %s, %d rows" % (st["highlightsHidden"], st["highlightRows"]))
+        check("%s digest %s: week range line names the week" % (prefix, tag), st["weekRange"].startswith(w["week"] + ":") and (("partial" in st["weekRange"]) == bool(w["partial"])), st["weekRange"])
+        return st
+
+    check_week(default_week, by_week[default_week])
+    # ?week= deep link selects that week (an older, non-default one when there is one)
+    target = ids[0] if ids[0] != default_week else ids[-1]
+    goto_lens(page, "digest", "?week=" + target)
+    page.wait_for_function("(w) => document.getElementById('week').value === w", arg=target, timeout=WAIT_MS)
+    st = check_week("?week=" + target, by_week[target])
+    check("%s digest: ?week=%s deep link selects that week, URL kept under the page path" % (prefix, target), st["weekValue"] == target and urlsplit(page.url).path == urlsplit(BASE + "/digest.html").path and st["search"] == "?week=" + target, page.url)
+    # the current (partial) week via the select: highlights appear only there
+    page.select_option("#week", ids[-1])
+    page.wait_for_function("(w) => new URLSearchParams(location.search).get('week') === w", arg=ids[-1], timeout=WAIT_MS)
+    st = check_week("current " + ids[-1], by_week[ids[-1]])
+    check("%s digest: next is disabled on the current week, prev enabled" % prefix, st["nextDisabled"] is True and st["prevDisabled"] is False)
+    page.click("#week-prev")
+    page.wait_for_function("(w) => new URLSearchParams(location.search).get('week') === w", arg=ids[-2], timeout=WAIT_MS)
+    check("%s digest: the prev button steps one week back (%s)" % (prefix, ids[-2]), page.evaluate("document.getElementById('week').value") == ids[-2])
+    # an invalid ?week= falls back to the default
+    goto_lens(page, "digest", "?week=2020-W99")
+    page.wait_for_function("(w) => document.getElementById('week').value === w", arg=default_week, timeout=WAIT_MS)
+    check("%s digest: an unknown ?week= falls back to the default week and the URL is corrected" % prefix, ("week=" + default_week) in page.url and "2020-W99" not in page.url, page.url)
+    # a round or launch opens the drawer
+    st = page.evaluate(PHASE2_STATE_JS)
+    opener = "#rounds-table tbody tr[data-key] th a[data-open-key]" if st["roundRows"] else ("#launches-table tbody tr[data-key] th a[data-open-key]" if st["launchRows"] else None)
+    if opener:
+        row = (st["roundRows"] or st["launchRows"])[0]
+        page.click(opener)
+        page.wait_for_selector("dialog#detail[open]", timeout=WAIT_MS)
+        title = page.evaluate("document.getElementById('detail-title').textContent")
+        check("%s digest: a row title opens the drawer for its item and the URL keeps week= and gains item=" % prefix, title == row["title"] and ("item=" + row["key"]) in page.url and ("week=" + default_week) in page.url, "%s | %s" % (title[:60], page.url))
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => !document.querySelector('dialog#detail').open", timeout=WAIT_MS)
+        page.wait_for_function("() => !location.search.includes('item=')", timeout=WAIT_MS)
+    check("%s digest: footer links ./feed.xml as the Atom feed" % prefix, s["footerFeed"] is not None and "Atom feed" in s["footerFeed"], str(s["footerFeed"]))
+    check("%s digest: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
+    # feed.xml parsed in-page
+    f = parse_feed(page, BASE + "/feed.xml")
+    check("%s feed.xml: 200 with an xml content type, starts with <?xml" % prefix, f["status"] == 200 and "xml" in f["type"].lower() and f["startsXml"], "%s %s" % (f["status"], f["type"]))
+    check("%s feed.xml: DOMParser('application/xml') has no parsererror, Atom root, >= 1 entry" % prefix, f["parserError"] is None and f["root"] == "feed" and f["ns"] == "http://www.w3.org/2005/Atom" and f["entries"] >= 1, "%d entries, %s" % (f["entries"], f["parserError"] or f["titles"][:1]))
+    check("%s feed.xml: one entry per digest week (%d) linking digest.html?week=" % (prefix, len(weeks)), f["entries"] == len(weeks) and all(("digest.html?week=" + w) in "".join(f["links"]) for w in ids), str(f["links"][:2]))
+    if audit:
+        audit_page(page, "%s digest desktop" % prefix, want_controls=True, want_links=False)
+
+    # --- resources ------------------------------------------------------------
+    goto_lens(page, "resources")
+    s = page.evaluate(PHASE2_STATE_JS)
+    links = [l for g in s["groups"] for l in g["links"]]
+    check("%s resources: 4 groups with %d links in total" % (prefix, RESOURCE_LINKS), [g["title"] for g in s["groups"]] == ["Idea sources", "Reports", "Communities", "Learning"] and len(links) == RESOURCE_LINKS and all(len(g["links"]) == 4 for g in s["groups"]), "%d groups, %d links" % (len(s["groups"]), len(links)))
+    check("%s resources: every link is https, opens in a new tab with rel noopener noreferrer and has a note" % prefix, links and all(l["href"].startswith("https://") and l["target"] == "_blank" and l["rel"] == "noopener noreferrer" and len(l["note"]) >= 20 for l in links), "%d links" % len(links))
+    check("%s resources: unique URLs, intro says links only, status counts %d links" % (prefix, RESOURCE_LINKS), len(set(l["href"] for l in links)) == RESOURCE_LINKS and "Links only" in s["bodyText"] and s["resourcesStatus"].startswith("%d links in 4 groups" % RESOURCE_LINKS), s["resourcesStatus"])
+    check("%s resources: no superlatives (best/top/#1/ultimate) and no 'score'" % prefix, not re.search(r"\b(best|top|#1|ultimate|score)\b", "\n".join(l["name"] + " " + l["note"] for l in links), re.I))
+    if audit:
+        audit_page(page, "%s resources desktop" % prefix, want_controls=True)
 
 
 NOTEBOOK_STATE_JS = r"""
@@ -2410,8 +2646,8 @@ def run_shell(browser):
         page.click("#nav-toggle")
         page.wait_for_function("() => document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
         s = page.evaluate(NAV_STATE_JS)
-        check("shell %dpx: toggle opens the dropdown (aria-expanded=true, six 44px rows, full width under the header, no overflow)" % width,
-              s["open"] and s["expanded"] == "true" and s["linksVisible"] == 6 and all(abs(h - 44) <= 0.5 for h in s["linkHeights"]) and s["listLeft"] == 0 and abs(s["listRight"] - s["innerWidth"]) <= 16 and abs(s["listTop"] - s["headerBottom"]) <= 1 and s["scrollWidth"] <= s["innerWidth"],
+        check("shell %dpx: toggle opens the dropdown (aria-expanded=true, %d 44px rows, full width under the header, no overflow)" % (width, len(NAV)),
+              s["open"] and s["expanded"] == "true" and s["linksVisible"] == len(NAV) and all(abs(h - 44) <= 0.5 for h in s["linkHeights"]) and s["listLeft"] == 0 and abs(s["listRight"] - s["innerWidth"]) <= 16 and abs(s["listTop"] - s["headerBottom"]) <= 1 and s["scrollWidth"] <= s["innerWidth"],
               "rows %s, list %s-%s top %s header %s, scroll %s/%s" % (s["linkHeights"], s["listLeft"], s["listRight"], s["listTop"], s["headerBottom"], s["scrollWidth"], s["innerWidth"]))
         check("shell %dpx: dropdown lists NAV in order with aria-current on Feed" % width, [(l[0], l[1]) for l in s["labels"]] == NAV and s["labels"][0][2] == "page", str(s["labels"])[:120])
         page.keyboard.press("Escape")
@@ -2431,7 +2667,7 @@ def run_shell(browser):
         page.wait_for_function("() => !document.querySelector('nav.site-nav').classList.contains('is-open')", timeout=WAIT_MS)
         goto_sources(page)
         s = page.evaluate(NAV_STATE_JS)
-        check("shell %dpx sources: toggle present, list hidden, aria-current on Sources" % width, s["btnVisible"] and not s["listVisible"] and s["labels"][5][2] == "page" and [(l[0], l[1]) for l in s["labels"]] == NAV)
+        check("shell %dpx sources: toggle present, list hidden, aria-current on Sources" % width, s["btnVisible"] and not s["listVisible"] and s["labels"][NAV_INDEX["sources"]][2] == "page" and [(l[0], l[1]) for l in s["labels"]] == NAV)
         errors.check("shell %dpx" % width)
         ctx.close()
 
@@ -2441,11 +2677,11 @@ def run_shell(browser):
     data = Data(ctx.request)
     goto_home(page)
     s = page.evaluate(NAV_STATE_JS)
-    check("shell 1280px: nav is a row of six visible links under the brand row, toggle hidden, --topbar-h == header height", s["linksVisible"] == 6 and not s["btnVisible"] and page.evaluate("Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) - document.querySelector('header.site-header').offsetHeight) <= 0.5"), "%d visible, header %s" % (s["linksVisible"], page.evaluate("document.querySelector('header.site-header').offsetHeight")))
+    check("shell 1280px: nav is a row of %d visible links under the brand row, toggle hidden, --topbar-h == header height" % len(NAV), s["linksVisible"] == len(NAV) and not s["btnVisible"] and page.evaluate("Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) - document.querySelector('header.site-header').offsetHeight) <= 0.5"), "%d visible, header %s" % (s["linksVisible"], page.evaluate("document.querySelector('header.site-header').offsetHeight")))
     keys = page.evaluate("(() => { document.getElementById('help-open').click(); return [...document.querySelectorAll('#help dl.help-list dt')].map((d) => d.textContent.trim()); })()")
     page.keyboard.press("Escape")
     page.wait_for_function("() => !document.querySelector('dialog#help').open", timeout=WAIT_MS)
-    check("shell 1280px: help lists the g-chords (g h, g t, g f, g y, g n)", all(k in keys for k in ("g h", "g t", "g f", "g y", "g n")), str(keys)[:200])
+    check("shell 1280px: help lists the g-chords (g h, g t, g f, g y, g n, g s, g d, g r)", all(k in keys for k in ("g h", "g t", "g f", "g y", "g n", "g s", "g d", "g r")), str(keys)[:200])
     # g + t navigates (routed: trends.html does not exist until FEAT-003; the stub declares an icon so no /favicon.ico probe fires)
     page.route("**/trends.html", lambda route: route.fulfill(status=200, content_type="text/html", body='<!DOCTYPE html><title>routed</title><link rel="icon" href="./icons/favicon.svg"><h1>routed</h1>'))
     page.focus("#q")

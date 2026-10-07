@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Digest — Startup Radar</title>
+<meta name="description" content="One page per ISO week: the biggest parsed funding rounds, the top launches by points or votes, new YC companies and the rising terms of that week, from the Startup Radar feed. Also an Atom feed.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0B0F17">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Radar">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="alternate" type="application/atom+xml" title="Startup Radar weekly digest" href="./feed.xml">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-latin-wght-normal.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/geist-mono-latin-wght-normal.woff2">
+<script src="./theme.js"></script>
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./pages.css">
+</head>
+<body class="page-digest">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+<div class="topbar">
+<div class="wrap">
+<p class="brand"><a class="brand-link" href="./index.html"><span class="radar-mark" aria-hidden="true"><span class="radar-cross"></span><span class="radar-sweep"></span></span><span class="wordmark">Startup Radar</span></a></p>
+<nav class="site-nav" aria-label="Main">
+<ul id="site-nav-list">
+<li><a href="./index.html">Feed</a></li>
+<li><a href="./trends.html">Trends</a></li>
+<li><a href="./funding.html">Funding</a></li>
+<li><a href="./yc.html">YC</a></li>
+<li><a href="./notebook.html">Notebook</a></li>
+<li><a href="./signals.html">Signals</a></li>
+<li><a href="./digest.html" aria-current="page">Digest</a></li>
+<li><a href="./resources.html">Resources</a></li>
+<li><a href="./sources.html">Sources</a></li>
+</ul>
+</nav>
+<button type="button" id="theme-toggle" class="btn-ghost icon-btn" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use href="./icons.svg#sun"/></svg></button>
+<p class="refreshed" id="last-refreshed"><span class="live-dot" aria-hidden="true"></span><span class="status-text">Last refreshed: loading…</span></p>
+<span id="refresh-announce" class="visually-hidden" aria-live="polite"></span>
+<button type="button" id="help-open" class="btn-ghost icon-btn" aria-label="Keyboard shortcuts"><svg class="icon" aria-hidden="true"><use href="./icons.svg#keyboard"/></svg></button>
+</div>
+</div>
+</header>
+
+<main class="wrap" id="main" tabindex="-1">
+<h1>Digest</h1>
+<p class="intro">One page per ISO week for the last 12 weeks: the funding items with the largest headline amounts, the launches with the most points or votes, the YC companies launched that week and the terms that rose most. Every row is a real item of that week and each list says which number it is ordered by.</p>
+<p class="method" id="method">Loading method…</p>
+<p id="status" class="status-line" aria-live="polite">Loading digest…</p>
+
+<form class="lens-controls" id="controls" aria-label="Choose a week">
+<button type="button" id="week-prev" class="btn-secondary icon-btn" aria-label="Previous week"><svg class="icon" aria-hidden="true"><use href="./icons.svg#chevron-left"/></svg></button>
+<div class="select">
+<label class="select-label" for="week">ISO week</label>
+<select id="week" name="week"></select>
+<svg class="icon chevron" aria-hidden="true"><use href="./icons.svg#chevron-down"/></svg>
+</div>
+<button type="button" id="week-next" class="btn-secondary icon-btn" aria-label="Next week"><svg class="icon" aria-hidden="true"><use href="./icons.svg#chevron-right"/></svg></button>
+<p class="status-line" id="week-range"></p>
+</form>
+
+<section class="lens-section" id="rounds" aria-labelledby="rounds-heading">
+<h2 id="rounds-heading">Biggest parsed funding rounds</h2>
+<p class="method">Ranked by approx. USD at static rates (see the FX table on the funding page); the amount is shown as written in the headline, in its original currency. Items whose headline had no parseable amount are not listed.</p>
+<div class="table-scroll">
+<table class="data-table stack" id="rounds-table">
+<caption id="rounds-caption"></caption>
+<thead>
+<tr>
+<th scope="col">Item</th>
+<th scope="col">Amount</th>
+<th scope="col">Stage</th>
+<th scope="col">Source</th>
+<th scope="col">Date</th>
+<th scope="col" class="num" title="approx. USD at static rates — see the FX table on the funding page">approx. USD</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section class="lens-section" id="launches" aria-labelledby="launches-heading">
+<h2 id="launches-heading">Top launches</h2>
+<p class="method">Launch items ordered by the one number their source gives: Hacker News points or Product Hunt votes, each row labelled with which. Launches without either are not listed.</p>
+<div class="table-scroll">
+<table class="data-table stack" id="launches-table">
+<caption id="launches-caption"></caption>
+<thead>
+<tr>
+<th scope="col">Item</th>
+<th scope="col" class="num">Metric</th>
+<th scope="col">Source</th>
+<th scope="col">Date</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section class="lens-section" id="yc" aria-labelledby="yc-heading">
+<h2 id="yc-heading">New YC companies</h2>
+<p class="method">Companies of the three newest batches whose YC launch date falls in this week, from data/yc.json (yc-oss mirror), oldest first. A company that is also a feed item opens in the detail panel; the others link to their YC page.</p>
+<ul class="company-list digest-companies" id="yc-list"></ul>
+<p class="empty-note" id="yc-empty" hidden></p>
+</section>
+
+<section class="lens-section" id="terms" aria-labelledby="terms-heading">
+<h2 id="terms-heading">Rising terms</h2>
+<p class="method">Trends method, computed as of the end of this week: each term is a word or adjacent word pair from item titles and summaries (stopwords removed); "this week" counts the items of the week that mention it at least once, "prior" is the average per week over the 4 preceding ISO weeks and rise is their difference. The current week is partial.</p>
+<div class="table-scroll">
+<table class="data-table stack" id="terms-table">
+<caption id="terms-caption"></caption>
+<thead>
+<tr>
+<th scope="col">Term</th>
+<th scope="col">Kind</th>
+<th scope="col" class="num">This week</th>
+<th scope="col" class="num">Avg/week before</th>
+<th scope="col" class="num">Rise</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</section>
+
+<section class="lens-section" id="highlights" aria-labelledby="highlights-heading" hidden>
+<h2 id="highlights-heading">Signal highlights</h2>
+<p class="method">Current week only: the 5 most-starred new GitHub repositories and the first 5 Hugging Face models of the signals fetch behind this build, as those APIs report them. Earlier weeks have no stored signal snapshot.</p>
+<div class="two-col" id="highlight-lists"></div>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="wrap">
+<p>Every row is an item of the 90-day feed window (data/items.json, data/funding.json, data/yc.json) grouped by ISO week; nothing is estimated. Subscribe with the <a href="./feed.xml" type="application/atom+xml">Atom feed</a>, one entry per week. <a href="./index.html">Back to the feed</a>.</p>
+</div>
+</footer>
+
+<script src="./digest.js" type="module"></script>
+</body>
+</html>

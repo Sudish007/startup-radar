@@ -22,7 +22,11 @@ const FUNDING = ['funding.html', ...LENS_SHARED, 'funding.js'];
 const YC = ['yc.html', ...LENS_SHARED, 'yc.js'];
 // Notebook (FEAT-004): the lens runtime + the store split (notebook-store.js on the home set, notebook-tools.js here only).
 const NOTEBOOK = ['notebook.html', ...LENS_SHARED, 'notebook-store.js', 'notebook-tools.js', 'notebook.js'];
-const PAGE_SETS = { home: HOME, sources: SOURCES, trends: TRENDS, funding: FUNDING, yc: YC, notebook: NOTEBOOK };
+// Phase 2 pages (FEAT-006): the same lens runtime; resources.js also imports the DOM-free resources-data.js.
+const SIGNALS = ['signals.html', ...LENS_SHARED, 'signals.js'];
+const DIGEST = ['digest.html', ...LENS_SHARED, 'digest.js'];
+const RESOURCES = ['resources.html', ...LENS_SHARED, 'resources-data.js', 'resources.js'];
+const PAGE_SETS = { home: HOME, sources: SOURCES, trends: TRENDS, funding: FUNDING, yc: YC, notebook: NOTEBOOK, signals: SIGNALS, digest: DIGEST, resources: RESOURCES };
 // Loaded after `load` like sw.js, or lazily on the first drawer open (related.js + text.js); bounded here.
 const DEFERRED = ['pwa.js', 'sw.js', 'related.js', 'text.js'];
 const DEFERRED_BUDGET = 16_000;
@@ -38,7 +42,7 @@ describe('frontend payload budget', () => {
     console.log('| file | bytes |');
     console.log('|---|---|');
     for (const [f, b] of rows) console.log(`| ${f} | ${b} |`);
-    for (const f of ['pages.css', 'lens.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'notebook-tools.js', 'trends.html', 'funding.html', 'yc.html', 'notebook.html']) console.log(`| ${f} (lens pages) | ${size(f)} |`);
+    for (const f of ['pages.css', 'lens.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'notebook-tools.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']) console.log(`| ${f} (lens pages) | ${size(f)} |`);
     for (const [name, files] of Object.entries(PAGE_SETS)) console.log(`| ${name} total | ${total(files)} |`);
     for (const f of DEFERRED) console.log(`| ${f} (after load, not in the first-render budget) | ${size(f)} |`);
     assert.ok(sum < BUDGET, `home set is ${sum} bytes`);
@@ -62,7 +66,7 @@ describe('frontend payload budget', () => {
   });
 
   test('no third-party scripts or Google Fonts', () => {
-    for (const name of ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html']) {
+    for (const name of ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']) {
       const html = read(name);
       const srcs = [...html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)].map((m) => m[1]);
       assert.ok(srcs.length >= 2, `${name} has script tags`);

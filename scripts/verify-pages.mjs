@@ -13,9 +13,17 @@ const PRIMARY_MAX_ITEMS = 800; // EXPORT_LIMITS.primaryMaxItems
 const MIN_SOURCES = 21;
 const MIN_EXPLORE = 10;
 const REQUIRED_ITEM_FIELDS = ['id', 'title', 'url', 'source', 'kind', 'region', 'publishedAt'];
-const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html'];
+const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html'];
+const LENS_PAGES = ['trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']; // pages.css + own module
 const CSS_FILES = ['styles.css', 'sources.css', 'pages.css'];
-const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'notebook-tools.js', 'related.js', 'pwa.js', 'sw.js'];
+const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'notebook-tools.js', 'related.js', 'pwa.js', 'sw.js'];
+const FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Startup Radar weekly digest" href="./feed.xml">';
+const SIGNAL_COUNT = 6; // src/signals/*.js adapters
+const SIGNAL_FIELDS = ['id', 'name', 'homepage', 'description', 'enabled', 'ok'];
+const DIGEST_WEEKS = 12; // src/digest.js DIGEST_WEEKS
+const WEEK_RE = /^\d{4}-W\d{2}$/;
+const ATOM_NS = '<feed xmlns="http://www.w3.org/2005/Atom"';
+const UNESCAPED_AMP_RE = /&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/;
 const TEXT_FILES = [...HTML_PAGES, ...CSS_FILES, ...JS_FILES, 'icons.svg', 'manifest.webmanifest'];
 const STATIC_FILES = [
   ...TEXT_FILES,
@@ -27,7 +35,7 @@ const SECTOR_COUNT = 15; // src/lib/sectors.js SECTORS
 const YC_JSON_MAX_BYTES = 300_000; // src/build-static.js YC_JSON_MAX_BYTES
 const YC_MIN_COMPANIES = 100;
 const YC_BATCHES = 3; // src/sources/yc.js BATCH_COUNT
-const YC_ATTRIBUTION = 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly';
+const YC_ATTRIBUTION = 'Source: yc-oss open API mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few times a day in practice - see the generated time above.'; // src/yc-lens.js YC_ATTRIBUTION
 const ICON_FILES = ['icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const FETCH_TIMEOUT_MS = 20_000;
 
@@ -121,11 +129,13 @@ async function main() {
   check('index.html links the manifest, theme.js and viewport-fit=cover', index.includes('rel="manifest" href="./manifest.webmanifest"') && index.includes('src="./theme.js"') && index.includes('viewport-fit=cover'));
   const sourcesHtml = files['sources.html']?.text ?? '';
   check('sources.html references ./styles.css and ./sources.js', sourcesHtml.includes('href="./styles.css"') && sourcesHtml.includes('src="./sources.js"'));
-  for (const name of ['trends.html', 'funding.html', 'yc.html', 'notebook.html']) {
+  for (const name of LENS_PAGES) {
     const text = files[name]?.text ?? '';
     const script = name.replace(/\.html$/, '.js');
     check(`${name} references ./styles.css, ./pages.css and ./${script}, has one bare <h1>`, text.includes('href="./styles.css"') && text.includes('href="./pages.css"') && text.includes(`src="./${script}"`) && (text.match(/<h1[\s>]/g) || []).length === 1 && /<h1>/.test(text));
   }
+  const noFeedLink = HTML_PAGES.filter((name) => !(files[name]?.text ?? '').includes(FEED_LINK));
+  check(`every page links the Atom feed in <head> (${HTML_PAGES.length} pages)`, noFeedLink.length === 0, noFeedLink.join(', '));
   const notebookHtml = files['notebook.html']?.text ?? '';
   check("notebook.html carries the browser-only banner 'Stored in this browser only — export to keep it.'", notebookHtml.includes('<p class="notice" id="notice">Stored in this browser only \u2014 export to keep it.</p>'));
   for (const name of HTML_PAGES) {
@@ -316,6 +326,61 @@ async function main() {
     }
   } catch (err) {
     check('data/yc.json -> 200 with companies[], batches[], byIndustry[]', false, err.message);
+  }
+
+  // --- data/signals.json (FEAT-005/006) ------------------------------------------------
+  try {
+    const res = await getJson(new URL('data/signals.json', base).href);
+    const body = res.body;
+    const ok = res.status === 200 && body && typeof body === 'object' && Array.isArray(body.signals);
+    check('data/signals.json -> 200 with signals[]', ok, `HTTP ${res.status}`);
+    if (ok) {
+      const bad = body.signals.filter((s) => !s || SIGNAL_FIELDS.some((f) => s[f] === undefined || s[f] === null) || typeof s.enabled !== 'boolean' || typeof s.ok !== 'boolean' || !('fetchedAt' in s));
+      check(`data/signals.json lists ${SIGNAL_COUNT} signals with id, name, homepage, description, enabled, ok, fetchedAt|null`, body.signals.length === SIGNAL_COUNT && bad.length === 0, `${body.signals.length} signals, ${bad.length} bad; ${body.signals.map((s) => `${s?.id}:${s?.enabled ? (s.ok ? 'ok' : 'unavailable') : 'off'}`).join(' ')}`);
+      const states = body.signals.filter((s) => s && ((!s.enabled && s.ok) || (s.enabled && !s.ok && !s.unavailableSince) || (s.enabled && s.ok && !isIso(s.fetchedAt))));
+      check('data/signals.json states are consistent (disabled never ok; failed carry unavailableSince; ok carry an ISO fetchedAt)', states.length === 0, `${states.length} inconsistent`);
+      check('data/signals.json generatedAt is ISO (or null before the first refresh with no signals)', isIso(body.generatedAt) || (body.generatedAt === null && body.signals.length === 0), String(body.generatedAt));
+    }
+  } catch (err) {
+    check('data/signals.json -> 200 with signals[]', false, err.message);
+  }
+
+  // --- data/digest.json (FEAT-005/006) ------------------------------------------------
+  try {
+    const res = await getJson(new URL('data/digest.json', base).href);
+    const body = res.body;
+    const ok = res.status === 200 && body && Array.isArray(body.weeks);
+    check('data/digest.json -> 200 with weeks[]', ok, `HTTP ${res.status}`);
+    if (ok) {
+      const ids = body.weeks.map((w) => w?.week);
+      check(`data/digest.json has ${DIGEST_WEEKS} weeks with ids YYYY-Www, oldest first, last partial`, body.weeks.length === DIGEST_WEEKS && ids.every((id) => WEEK_RE.test(String(id))) && ids.every((id, i) => i === 0 || id > ids[i - 1]) && body.weeks.at(-1)?.partial === true && body.weeks.slice(0, -1).every((w) => w.partial === false), `${ids[0]} .. ${ids.at(-1)}`);
+      const badWeeks = body.weeks.filter((w) => !isIso(w.from) || !isIso(w.to) || ['rounds', 'launches', 'ycNew', 'risingTerms'].some((k) => !Array.isArray(w[k])));
+      check('data/digest.json weeks carry from, to, rounds[], launches[], ycNew[], risingTerms[]', badWeeks.length === 0, `${badWeeks.length} bad weeks`);
+      const badRows = body.weeks.flatMap((w) => [...w.rounds.filter((r) => typeof r.key !== 'string' || typeof r.usdApprox !== 'number' || r.metric !== 'approx. USD at static rates'), ...w.launches.filter((l) => typeof l.key !== 'string' || typeof l.value !== 'number' || !['HN points', 'PH votes'].includes(l.metric))]);
+      check('data/digest.json rounds carry key, usdApprox and the static-rates metric; launches carry key, value and HN points / PH votes', badRows.length === 0, `${badRows.length} bad rows over ${body.weeks.reduce((n, w) => n + w.rounds.length + w.launches.length, 0)}`);
+      const highlighted = body.weeks.filter((w) => w.signalHighlights !== null && w.signalHighlights !== undefined).map((w) => w.week);
+      check('data/digest.json signalHighlights exist on the current week only', highlighted.length <= 1 && (highlighted.length === 0 || highlighted[0] === ids.at(-1)), highlighted.join(', ') || 'none');
+      check('data/digest.json generatedAt is ISO and method is a sentence', isIso(body.generatedAt) && typeof body.method === 'string' && body.method.length > 40, `generatedAt ${body.generatedAt}`);
+    }
+  } catch (err) {
+    check('data/digest.json -> 200 with weeks[]', false, err.message);
+  }
+
+  // --- feed.xml (FEAT-005/006) ------------------------------------------------
+  try {
+    const res = await get(`${new URL('feed.xml', base).href}?v=${Date.now()}`, 'application/atom+xml, application/xml, text/xml, */*');
+    const type = res.headers.get('content-type') ?? '';
+    const text = res.text;
+    check('feed.xml -> 200 with an xml content type', res.status === 200 && /xml/i.test(type), `HTTP ${res.status}, ${type}, ${Buffer.byteLength(text)} bytes`);
+    check('feed.xml starts with <?xml and its root is <feed xmlns="http://www.w3.org/2005/Atom"', text.startsWith('<?xml') && text.includes(ATOM_NS));
+    const opened = (text.match(/<entry>/g) || []).length;
+    const closed = (text.match(/<\/entry>/g) || []).length;
+    check('feed.xml has >= 1 <entry> and every <entry> is closed', opened >= 1 && opened === closed, `${opened} entries`);
+    const amp = UNESCAPED_AMP_RE.exec(text);
+    check('feed.xml has no unescaped &', !amp, amp ? `at ${amp.index}: ${text.slice(amp.index, amp.index + 20)}` : '');
+    check('feed.xml carries <id>, <updated>, a rel=self link and a digest.html alternate link', /<id>https?:\/\/[^<]+<\/id>/.test(text) && /<updated>[^<]+<\/updated>/.test(text) && /rel="self"/.test(text) && /digest\.html/.test(text));
+  } catch (err) {
+    check('feed.xml -> 200 with an xml content type', false, err.message);
   }
 
   const failed = results.filter((r) => !r).length;

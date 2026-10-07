@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>YC — Startup Radar</title>
-<meta name="description" content="Companies of the three newest Y Combinator batches grouped by industry, with tag frequencies and team-size distribution, from the yc-oss open API mirror.">
+<title>Signals — Startup Radar</title>
+<meta name="description" content="Six outside indicators fetched with every build: Ask HN posts, new GitHub repositories, Hugging Face trending, Who is hiring keyword mentions, SBIR solicitations and Product Hunt topics, each with its source and fetch time.">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0B0F17">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
@@ -22,7 +22,7 @@
 <link rel="stylesheet" href="./styles.css">
 <link rel="stylesheet" href="./pages.css">
 </head>
-<body class="page-yc">
+<body class="page-signals">
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-header">
@@ -34,9 +34,9 @@
 <li><a href="./index.html">Feed</a></li>
 <li><a href="./trends.html">Trends</a></li>
 <li><a href="./funding.html">Funding</a></li>
-<li><a href="./yc.html" aria-current="page">YC</a></li>
+<li><a href="./yc.html">YC</a></li>
 <li><a href="./notebook.html">Notebook</a></li>
-<li><a href="./signals.html">Signals</a></li>
+<li><a href="./signals.html" aria-current="page">Signals</a></li>
 <li><a href="./digest.html">Digest</a></li>
 <li><a href="./resources.html">Resources</a></li>
 <li><a href="./sources.html">Sources</a></li>
@@ -51,43 +51,19 @@
 </header>
 
 <main class="wrap" id="main" tabindex="-1">
-<h1>YC</h1>
-<p class="intro">Companies of the three newest Y Combinator batches, grouped by the industry YC lists for them, with the tags YC assigned and the team sizes YC publishes. Every count is a count of companies in the selected batches.</p>
-<p class="method attribution" id="attribution">Source: yc-oss open API mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few times a day in practice - see the generated time above.</p>
-<p id="status" class="status-line" aria-live="polite">Loading companies…</p>
-
-<div class="lens-controls" id="controls">
-<div class="group" role="group" aria-labelledby="batch-label">
-<span class="group-label" id="batch-label">Batch</span>
-<div class="chips" id="batch-chips"></div>
-</div>
-</div>
-
-<section class="lens-section" id="industries" aria-labelledby="industries-heading">
-<h2 id="industries-heading">Companies by industry</h2>
-<p class="intro" id="industries-note"></p>
-<div id="industry-groups"></div>
-</section>
-
-<section class="lens-section" id="tags" aria-labelledby="tags-heading">
-<h2 id="tags-heading">Tags</h2>
-<p class="intro" id="tags-note"></p>
-<ol class="tag-list" id="tag-list"></ol>
-</section>
-
-<section class="lens-section" id="team" aria-labelledby="team-heading">
-<h2 id="team-heading">Team size</h2>
-<p class="intro" id="team-note"></p>
-<ul class="bar-list" id="team-bars"></ul>
-</section>
+<h1>Signals</h1>
+<p class="intro">Six outside indicators fetched once per build, shown as their sources report them: what people ask on Hacker News, which new repositories and models are being starred and liked, which skills hiring posts mention, which public research grants are open and which Product Hunt topics are followed. Each section names its source, the time it was fetched and what its numbers are; nothing is combined, weighted or ranked by this site.</p>
+<p class="method" id="method">A signal that could not be fetched shows "unavailable since" with the error and keeps its last good data, labelled with that data's time; a signal that needs a token it does not have says "not configured".</p>
+<p id="status" class="status-line" aria-live="polite">Loading signals…</p>
+<div id="signals"></div>
 </main>
 
 <footer class="site-footer">
 <div class="wrap">
-<p>Source: yc-oss open API mirror of ycombinator.com; rebuilt on an hourly schedule that GitHub runs a few times a day in practice. Company pages open on ycombinator.com; items that are also in the feed open in the detail panel. <a href="./index.html">Back to the feed</a>.</p>
+<p>Every number on this page is copied from the named source at the fetch time shown; none is estimated or computed here beyond the keyword counts of the hiring thread, whose method is stated in its section. <a href="./index.html">Back to the feed</a>.</p>
 </div>
 </footer>
 
-<script src="./yc.js" type="module"></script>
+<script src="./signals.js" type="module"></script>
 </body>
 </html>
