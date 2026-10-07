@@ -69,12 +69,13 @@ describe('app without ADMIN_TOKEN', () => {
   });
 
   test('serves the HTML pages', async () => {
-    for (const p of ['/', '/sources', '/trends', '/funding', '/yc', '/notebook']) {
+    for (const p of ['/', '/sources', '/trends', '/funding', '/yc', '/notebook', '/signals', '/digest', '/resources']) {
       const res = await fetch(`${ctx.base}${p}`);
       assert.equal(res.status, 200, p);
       assert.match(res.headers.get('content-type'), /text\/html/);
       const text = await res.text();
       assert.match(text, /<h1>/);
+      assert.ok(text.includes('href="./feed.xml"'), `${p} links the Atom feed`);
     }
   });
 

@@ -10,7 +10,7 @@ import { SIGNALS_KV_KEY } from './refresh.js';
 import { EMPTY_SIGNALS } from './signals/run.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook'];
+export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook', 'signals', 'digest', 'resources'];
 
 const CSP = "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
