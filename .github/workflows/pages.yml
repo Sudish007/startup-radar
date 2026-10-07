@@ -38,6 +38,7 @@ jobs:
         env:
           PUBLIC_URL: https://sudish007.github.io/startup-radar
           PREVIOUS_SNAPSHOT_URL: https://sudish007.github.io/startup-radar/data/items.json
+          GITHUB_TOKEN: ${{ github.token }} # raises the GitHub search limit for the github_new_repos signal (10 -> 30 req/min)
           PRODUCTHUNT_TOKEN: ${{ secrets.PRODUCTHUNT_TOKEN }}
           CRUNCHBASE_API_KEY: ${{ secrets.CRUNCHBASE_API_KEY }}
       - uses: actions/configure-pages@v6

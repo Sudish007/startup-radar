@@ -8,6 +8,8 @@ import { buildDerived } from './derived.js';
 import { buildSnapshot } from './export.js';
 import { createHttp } from './lib/http.js';
 import { createRefresh, formatSummaryTable } from './refresh.js';
+import { EMPTY_SIGNALS, formatSignalsTable, runSignals } from './signals/run.js';
+import { loadSignals } from './signals/index.js';
 import { fetchSnapshot, importSnapshotItems, importSnapshotStatuses } from './snapshot.js';
 import { loadSources } from './sources/index.js';
 
@@ -30,6 +32,7 @@ export const YC_JSON_MAX_BYTES = 300_000;
  */
 export async function runBuild({
   sources,
+  signals = [],
   http,
   env = process.env,
   log = console.log,
@@ -37,12 +40,14 @@ export async function runBuild({
   publicDir,
   dbPath,
   snapshotUrl = null,
+  publicUrl = env.PUBLIC_URL?.trim() || 'http://localhost:3000',
   now = new Date(),
   buildVersion = env.GITHUB_SHA?.slice(0, 12) ?? now.toISOString().replace(/\D/g, '').slice(0, 14),
 }) {
   const db = openDb(dbPath);
   try {
     let imported = 0;
+    let previousSignals = null;
     if (snapshotUrl) {
       const snap = await fetchSnapshot(snapshotUrl, { http, log });
       const previous = [...(snap.items ?? []), ...(snap.archive ?? [])];
@@ -50,6 +55,7 @@ export async function runBuild({
         imported = importSnapshotItems(db, sources, previous, { log, nowIso: now.toISOString(), url: snapshotUrl }).imported;
       }
       importSnapshotStatuses(db, sources, snap.sources);
+      previousSignals = snap.signals ?? null;
     } else {
       log('[build] snapshot: PREVIOUS_SNAPSHOT_URL not set, starting empty');
     }
@@ -63,8 +69,20 @@ export async function runBuild({
       return { exitCode: 1, summary };
     }
 
+    // Signals (plan D8) run after the sources cycle; a failing signal keeps the previous snapshot's payload
+    // and never affects the exit code.
+    let signalsResult = { ...EMPTY_SIGNALS, generatedAt: now.toISOString() };
+    if (signals.length > 0) {
+      try {
+        signalsResult = await runSignals({ signals, http, env, previous: previousSignals, now, log: () => {} });
+      } catch (err) {
+        log(`[build] signals: run failed: ${err?.message ?? err}`);
+      }
+      for (const line of formatSignalsTable(signals, signalsResult)) log(line);
+    }
+
     const snapshot = buildSnapshot({ db, sources, env, now });
-    const derived = buildDerived({ db, sources, env, now });
+    const derived = buildDerived({ db, sources, env, now, signals: signalsResult, publicUrl });
 
     fs.rmSync(outDir, { recursive: true, force: true });
     fs.cpSync(publicDir, outDir, { recursive: true });
@@ -84,7 +102,12 @@ export async function runBuild({
     const trendsBytes = writeJson(path.join(dataDir, 'trends.json'), derived.trends);
     const fundingBytes = writeJson(path.join(dataDir, 'funding.json'), derived.funding);
     const ycBytes = writeJson(path.join(dataDir, 'yc.json'), derived.yc);
+    const signalsBytes = writeJson(path.join(dataDir, 'signals.json'), derived.signals);
+    const digestBytes = writeJson(path.join(dataDir, 'digest.json'), derived.digest);
+    fs.writeFileSync(path.join(outDir, 'feed.xml'), derived.feedXml);
+    const feedBytes = Buffer.byteLength(derived.feedXml);
     log(`[build] derived trends.json ${kb(trendsBytes)} KB, funding.json ${kb(fundingBytes)} KB, yc.json ${kb(ycBytes)} KB`);
+    log(`[build] derived signals.json ${kb(signalsBytes)} KB, digest.json ${kb(digestBytes)} KB, feed.xml ${kb(feedBytes)} KB`);
     if (ycBytes > YC_JSON_MAX_BYTES) {
       log(`[build] FAIL: yc.json is ${ycBytes} bytes (limit ${YC_JSON_MAX_BYTES})`);
       return { exitCode: 1, summary };
@@ -106,6 +129,9 @@ export async function runBuild({
       trendsBytes,
       fundingBytes,
       ycBytes,
+      signalsBytes,
+      digestBytes,
+      feedBytes,
     };
     log(
       `[build] imported ${imported} from snapshot, fetched ${liveCount} live (${okCount} sources OK of ${summary.sources.length} enabled), ` +
@@ -124,9 +150,11 @@ async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'startup-radar-build-'));
   try {
     const sources = await loadSources();
+    const signals = await loadSignals();
     const http = createHttp(config);
     const result = await runBuild({
       sources,
+      signals,
       http,
       env: process.env,
       log: console.log,
@@ -134,6 +162,7 @@ async function main() {
       publicDir: path.resolve('public'),
       dbPath: path.join(tmp, 'startup-radar.db'),
       snapshotUrl: process.env.PREVIOUS_SNAPSHOT_URL?.trim() || null,
+      publicUrl: config.publicUrl,
     });
     return result.exitCode;
   } finally {
