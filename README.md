@@ -18,7 +18,7 @@ metrics.
 ## Contents
 
 1. [What it is](#1-what-it-is) · [The web UI](#the-web-ui)
-2. [Sources](#2-sources)
+2. [Sources](#2-sources) · [Signals](#signals-6-fetched-with-every-build) · [Digest and Atom feed](#digest-and-atom-feed) · [Resources](#resources-links-only)
 3. [Requirements](#3-requirements)
 4. [Quick start](#4-quick-start)
 5. [Configuration](#5-configuration)
@@ -51,8 +51,13 @@ count, followed by an "Explore more" list of directories that are links only. Th
 read the same data from a different angle: `trends.html` (rising terms and weekly counts),
 `funding.html` (funding items with the amounts parsed from their headlines) and `yc.html` (the
 three newest Y Combinator batches). `notebook.html` keeps the items you bookmark, with notes,
-tags and idea canvases, in this browser only. The same UI works unchanged on GitHub Pages and on
-the Node server; the server additionally exposes a read-only JSON API.
+tags and idea canvases, in this browser only. `signals.html` shows six outside indicators fetched
+with every build (Ask HN, new GitHub repositories, Hugging Face trending, "Who is hiring" keyword
+mentions, SBIR solicitations, Product Hunt topics), each with its source and fetch time;
+`digest.html` is one page per ISO week (biggest parsed rounds, top launches, new YC companies,
+rising terms) with an Atom feed at `feed.xml`; `resources.html` is a hand-picked list of 16 links
+for finding startup ideas, fetched and counted by nothing. The same UI works unchanged on GitHub
+Pages and on the Node server; the server additionally exposes a read-only JSON API.
 
 **Honesty rules.** Every number on every page is a real count or sum of the items shown, with its
 basis stated next to it (the 90-day window, the selected batches, "N of M had a parseable
@@ -96,11 +101,15 @@ step and no third-party script. What it does:
   external-link icon for going straight to the source. The drawer writes `?item=<key>` to the
   URL, so a drawer link can be shared and the Back button closes it. The key is a hash of the
   item URL, stable across builds (`itemKey` in `public/filter.js`).
-- **Navigation.** Every page shares the same header: brand, a six-link nav row (Feed, Trends,
-  Funding, YC, Notebook, Sources; a `Menu` button opens it as a dropdown below 640 px), theme
+- **Navigation.** Every page shares the same header: brand, a nine-link nav row (Feed, Trends,
+  Funding, YC, Notebook, Signals, Digest, Resources, Sources; the row scrolls sideways when it
+  does not fit, and a `Menu` button opens it as a dropdown of 44 px rows below 640 px), theme
   toggle, "Last refreshed" and the shortcuts button (`public/nav.js` + `public/shell.js`). Go-to
-  chords work everywhere: press `g` then `h` / `t` / `f` / `y` / `n` within 800 ms to jump to
-  Feed / Trends / Funding / YC / Notebook (ignored while typing or while a dialog is open).
+  chords work everywhere: press `g` then `h` / `t` / `f` / `y` / `n` / `s` / `d` / `r` within
+  800 ms to jump to Feed / Trends / Funding / YC / Notebook / Signals / Digest / Resources
+  (ignored while typing or while a dialog is open). Every page's `<head>` links the Atom feed
+  (`<link rel="alternate" type="application/atom+xml" href="./feed.xml">`) so feed readers find
+  it from any URL.
 - **Sectors (keyword-tagged).** Every item carries up to a few of 15 sector ids (AI/ML, Fintech,
   Health & Bio, Climate & Energy, Devtools & Infra, Security, Edtech, Marketplace & Commerce,
   SaaS & Productivity, Hardware & Robotics, Mobility & Logistics, Media & Creator, Consumer &
@@ -152,6 +161,34 @@ step and no third-party script. What it does:
   notebook survives app updates (checked by `scripts/screenshots.py`). Store code:
   `public/notebook-store.js` (items, storage adapter) and `public/notebook-tools.js` (canvases,
   search, export, import, merge), both DOM-free and unit-tested.
+- **Signals** (`signals.html`, from `data/signals.json`). Six outside indicators, fetched once
+  per build by `src/signals/*.js` and shown as their sources report them (see the
+  [Signals table](#signals-6-fetched-with-every-build) for what each number is). One section per
+  signal: the name, "Source: <host> · fetched <time>", the one-sentence description of what the
+  numbers are, and exactly one of: the data (tables, or horizontal bars for the hiring keyword
+  counts with the number always printed), "unavailable since <time> — <error>" (the last good
+  data, when there is any, stays on the page labelled "last good data from <time>"), or
+  "not configured (<ENV>)". Nothing is combined, weighted or ranked by this site; there is no
+  strip on the home page, only the nav link.
+- **Digest + Atom feed** (`digest.html`, from `data/digest.json`; `feed.xml`). One page per ISO
+  week for the last 12 weeks (`?week=YYYY-Www` deep links, a select plus prev / next buttons;
+  the default is the newest complete week): the funding items with the largest headline amounts
+  ("ranked by approx. USD at static rates", amounts shown as written), the launches with the
+  most points or votes (each row labelled `HN points` or `PH votes`), the YC companies whose
+  launch date falls in the week, and the 15 terms with the largest rise versus the 4 weeks
+  before (trends method, computed as of the week's end). Signal highlights (top GitHub
+  repositories by stars, first Hugging Face models) appear on the current week only, because
+  earlier weeks have no stored signal snapshot. Rows open in the drawer. `feed.xml` is a static
+  Atom 1.0 feed with one entry per week (newest first, `<content type="html">` with the same
+  lists), built by `src/feed-xml.js` with `PUBLIC_URL` as the base of every absolute link, so a
+  reader subscribed to `https://sudish007.github.io/startup-radar/feed.xml` gets a new entry
+  each week and the current week's entry updates with each build.
+- **Resources** (`resources.html`, from `public/resources-data.js`). Sixteen hand-picked links in
+  four groups (idea sources, reports, communities, learning), each with one sentence saying what
+  it is and who publishes it. Links only: nothing on that page is fetched, counted or ranked, and
+  every link opens on the publisher's site in a new tab (`rel="noopener noreferrer"`).
+  `node scripts/check-links.mjs` probes every URL and exits 1 on anything but 200 / 3xx; run it
+  when the list changes.
 - **Keyboard layer** (press `?` for the in-app list):
 
   | Key | Action |
@@ -165,7 +202,7 @@ step and no third-party script. What it does:
   | `t` | Toggle dark / light theme |
   | `?` | Keyboard shortcuts |
   | `j` / `→`, `k` / `←` | In the drawer: next / previous item |
-  | `g` then `h` / `t` / `f` / `y` / `n` | Go to Feed / Trends / Funding / YC / Notebook (every page) |
+  | `g` then `h` / `t` / `f` / `y` / `n` / `s` / `d` / `r` | Go to Feed / Trends / Funding / YC / Notebook / Signals / Digest / Resources (every page) |
 
   Shortcuts are ignored while typing in a field; `Esc` always closes exactly one layer.
 - **Live data.** `data/stats.json` is polled every 5 minutes (paused while the tab is hidden).
@@ -191,8 +228,9 @@ step and no third-party script. What it does:
   is `public/icons.svg`; `npm run icons:make` renders the PWA icons under `public/icons/` with
   the repo's Playwright venv (`PW_CHANNEL` picks the browser, default `msedge`).
 - **Budget.** Every page set (the HTML + CSS + JS one page loads for its first render) stays
-  under 150 KB uncompressed: home ≈ 149.4 KB, notebook ≈ 127.2 KB, funding ≈ 114.5 KB, YC ≈ 109 KB,
-  trends ≈ 108 KB, sources ≈ 78 KB. The service worker, its client and the lazily loaded
+  under 150 KB uncompressed: home ≈ 149.9 KB, notebook ≈ 129.6 KB, digest ≈ 117.1 KB,
+  funding ≈ 116.9 KB, signals ≈ 112.6 KB, YC ≈ 111.6 KB, trends ≈ 110.3 KB, resources ≈ 106.4 KB,
+  sources ≈ 78.6 KB. The service worker, its client and the lazily loaded
   related-items module share a 16 KB deferred budget; the numbers are enforced and printed by
   `test/budget.test.js`. Reduced motion is honoured (the sweeps pause,
   loops stop, transitions become instant). To measure a build with Lighthouse 13 (which has no
@@ -267,6 +305,46 @@ counts unless `PRODUCTHUNT_TOKEN` is configured, because the public feed does no
 | [Tiny Startups](https://www.tinystartups.com/) | No feed |
 | [StartupBase](https://startupbase.io/) | Only a blog feed exists, not the launch listings |
 
+### Signals (6, fetched with every build)
+
+Signals are not feed items: each is a separate dataset in `data/signals.json`, fetched by
+`src/signals/<id>.js` after the sources cycle (per-signal isolation, 15 s timeout, a failing
+signal keeps the previous build's data and reports `unavailable since`, and never fails the
+build). They refresh with the build (hourly schedule; see [Hosting](#8-hosting-on-github-pages-free)
+for how often GitHub actually runs it) and on every server refresh. `signals.html` shows them
+as-is.
+
+| Signal | What the numbers are | Source URL | Known runner blocks |
+|---|---|---|---|
+| Ask HN (`ask_hn`) | The 50 newest Ask HN / Tell HN posts with points and comment counts as reported by the Hacker News (Algolia) API at fetch time | https://news.ycombinator.com/ask | none observed |
+| GitHub: new repositories (`github_new_repos`) | The 50 most-starred repositories created in the last 7 days, as returned by the GitHub search API; the column is literally "stars since creation (<= 7 days)" | https://github.com/search?q=created%3A%3E%3D2020-01-01&type=repositories&s=stars&o=desc | Unauthenticated search is limited to 10 requests/minute (one request per build is enough); `GITHUB_TOKEN` raises it to 30 and the Pages workflow passes `github.token` automatically. The page says whether the request was authenticated. |
+| Hugging Face: trending (`hf_trending`) | The first 30 models and 30 spaces in the order the Hugging Face API returns for its own trending sort; likes and downloads are the API's numbers. The API's ranking field is only used as a query parameter and never displayed | https://huggingface.co/models?sort=trending | none observed |
+| HN: Who is hiring? (`hn_hiring`) | For 40 fixed keywords (languages, frameworks, infra, LLM/AI, roles/modes), the number of comments in the current "Ask HN: Who is hiring?" thread (the first 1 000 the Algolia API returns) that mention it (word-boundary, case-insensitive); the thread, month and the comment count the mentions are counted in are printed | https://news.ycombinator.com/submitted?id=whoishiring | none observed |
+| SBIR/STTR open solicitations (`sbir`) | Open US SBIR/STTR solicitations (title, agency, close date) as listed by the sbir.gov public API | https://www.sbir.gov/topics | `api.www.sbir.gov` answers **HTTP 403** from this network and from GitHub-hosted runners on every probe so far; the page shows "unavailable since <time> — HTTP 403 …" with the link to sbir.gov and no data. The build stays green. |
+| Product Hunt: topics (`producthunt_topics`) | The 20 Product Hunt topics with the most followers; follower and post counts are the API's numbers at fetch time | https://www.producthunt.com/topics | Needs `PRODUCTHUNT_TOKEN` (GraphQL v2); without it the page says "not configured (PRODUCTHUNT_TOKEN)". The mapping follows the v2 schema and has not been verified against a live token. |
+
+### Digest and Atom feed
+
+`data/digest.json` holds the last 12 ISO weeks (oldest first, the last one current and
+partial). For each week: the funding items ordered by their headline amount converted to USD at
+the static rates (at most 10, items without a parseable amount excluded), the launches ordered by
+Hacker News points or Product Hunt votes (at most 10, the metric stated per row), the YC
+companies of the three newest batches whose launch date falls in the week, the 15 terms with the
+largest rise versus the 4 preceding weeks, and, for the current week only, the top 5 GitHub
+repositories by stars and the first 5 Hugging Face models from the signals. `feed.xml` is the
+same data as an Atom 1.0 feed, one entry per week, newest first, at
+https://sudish007.github.io/startup-radar/feed.xml (and `/feed.xml` on the server). `PUBLIC_URL`
+is the base of every absolute link in the feed (`<id>`, `rel="self"`, the per-week
+`digest.html?week=` links), so set it to the site's URL when you host your own copy.
+
+### Resources (links only)
+
+`resources.html` lists 16 hand-picked links in four groups (idea sources, reports, communities,
+learning) from `public/resources-data.js`, each with a one-sentence note on what it is and who
+publishes it. Nothing on that page is fetched, counted or ranked; `node scripts/check-links.mjs`
+probes every URL (all 200 on 2026-10-07; the Sequoia Arc URL redirects to `sequoiacap.com/arc`,
+and BVP's "State of the Cloud 2025" URL is a 404, so the 2024 report is linked).
+
 ## 3. Requirements
 
 - Node.js 22 or newer. `better-sqlite3` 13 (the SQLite binding) requires Node 22+, and it ships
@@ -327,12 +405,13 @@ Copy `.env.example` to get started.
 | `PRODUCTHUNT_TOKEN` | unset | producthunt | Developer Token from producthunt.com/v2/oauth/applications → create app → "Developer Token". Switches Product Hunt to the GraphQL API (adds votes). |
 | `CRUNCHBASE_API_KEY` | unset | crunchbase | Enables the Crunchbase v4 funding-rounds adapter. |
 | `ENABLE_REDDIT` | `false` | reddit | `true` enables r/SideProject + r/startups (Atom). Off by default because Reddit answered 403/429 during verification. |
-| `PUBLIC_URL` | `http://localhost:3000` | config | Used in the outbound `User-Agent: StartupRadar/1.0 (+<PUBLIC_URL>)`. Set it to your Pages or Railway URL. |
+| `GITHUB_TOKEN` | unset | github_new_repos signal | Optional GitHub token for the "new repositories" signal: raises the search rate limit from 10 to 30 requests/minute. The Pages workflow passes `github.token` automatically; unauthenticated works for the one request per build. |
+| `PUBLIC_URL` | `http://localhost:3000` | config | Used in the outbound `User-Agent: StartupRadar/1.0 (+<PUBLIC_URL>)` and as the base of every absolute link in `feed.xml` (`<id>`, `rel="self"`, the `digest.html?week=` entry links). Set it to your Pages or Railway URL. |
 | `PREVIOUS_SNAPSHOT_URL` | unset | build:static only | URL of the previously published `data/items.json`. Its items (plus the sibling `archive.json` and `sources.json`) are imported before the live fetch so history survives between static builds. A 404 (first build) or a network error is logged and tolerated. Ignored by `npm start`. |
 
 `PORT`, `DATA_DIR`, `REFRESH_MINUTES` and `ADMIN_TOKEN` apply only to the Node server; the
 static build has no port, no persistent database and no write endpoint. `PRODUCTHUNT_TOKEN`,
-`CRUNCHBASE_API_KEY`, `ENABLE_REDDIT` and `PUBLIC_URL` apply to both.
+`CRUNCHBASE_API_KEY`, `ENABLE_REDDIT`, `GITHUB_TOKEN` and `PUBLIC_URL` apply to both.
 
 Fixed constants (not configurable): 15 s timeout per source, 5 MB maximum response body,
 API `limit` default 30 / maximum 100, summaries truncated to 300 characters. Static export caps:
@@ -343,12 +422,12 @@ whole set exceeds 600 KB (the rest goes to `archive.json`).
 
 ### Data files (GitHub Pages and the Node server)
 
-The frontend reads only these seven files, with relative URLs, so it works under any base path
-(the live site lives under `/startup-radar/`). On GitHub Pages they are static files written by
-`npm run build:static`; the Node server generates the same shapes on request at the same paths
-(`Cache-Control: no-store`; the three derived files are cached per refresh and recomputed only
-when the database changed). All filtering, searching and paging happens in the browser
-(`public/filter.js`), so there are no query parameters.
+The frontend reads only these nine files plus `feed.xml`, with relative URLs, so it works under
+any base path (the live site lives under `/startup-radar/`). On GitHub Pages they are static
+files written by `npm run build:static`; the Node server generates the same shapes on request at
+the same paths (`Cache-Control: no-store`; the derived files are cached per refresh and
+recomputed only when the database or the signals changed). All filtering, searching and paging
+happens in the browser (`public/filter.js`), so there are no query parameters.
 
 | File | Content |
 |---|---|
@@ -360,12 +439,17 @@ when the database changed). All filtering, searching and paging happens in the b
 | `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom } + usdApprox \| null] (`amountFrom` / `stageFrom` are `"title"` \| `"summary"` \| `null`, the field each value was read from; the page labels the amount and the stage separately), totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
 | `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
+| `GET /data/signals.json` | Backs `signals.html`. `{ generatedAt, signals [{ id, name, homepage, description, requires, enabled, ok, fetchedAt, lastSuccessAt, error, unavailableSince, data, durationMs }] }` in registry order (`ask_hn`, `github_new_repos`, `hf_trending`, `hn_hiring`, `producthunt_topics`, `sbir`); `data` is per signal (see the [Signals table](#signals-6-fetched-with-every-build)), `null` for a disabled signal, and the previous build's data for a failed one (`ok: false`, `unavailableSince` = the first failure). Computed by `src/signals/run.js`; the server keeps the latest run in the `kv` table and serves `{ generatedAt: null, signals: [] }` before the first refresh. |
+| `GET /data/digest.json` | Backs `digest.html`. `{ generatedAt, method, weeks [12 × { week "YYYY-Www", from, to, partial, rounds [{ key, title, url, source, publishedAt, amount, currency, amountText, stage, usdApprox, metric: "approx. USD at static rates" }], launches [{ key, title, url, source, publishedAt, metric: "HN points" \| "PH votes", value }], ycNew [{ key, name, url, batch, oneLiner, launchedAt }], risingTerms [{ term, kind, thisWeek, priorWeeklyAvg, rise }], signalHighlights { repos [≤ 5], models [≤ 5] } \| null (current week only) }] }`, oldest first. Computed by `src/digest.js`. |
+| `GET /feed.xml` | Atom 1.0 (`application/atom+xml`; `text/xml` from GitHub Pages): `<id>` = `PUBLIC_URL/feed.xml`, `rel="self"` and a `rel="alternate"` link to `digest.html`, one `<entry>` per digest week (newest first; `id`/`link` = `PUBLIC_URL/digest.html?week=YYYY-Www`, `title` "Startup Radar digest — week YYYY-Www", `updated` = the build time for the current week and the week end otherwise, `published` = the week start, `<content type="html">` with the same lists). String-built with an escape helper by `src/feed-xml.js`, no XML dependency. |
+
 Items in `items.json`, `archive.json` and `/api/items` carry `sectors: string[]` (sector ids,
 keyword-tagged from title and summary; see `src/lib/sectors.js`).
 
-`sources.html`, `trends.html`, `funding.html`, `yc.html` and `notebook.html` are the other pages
-on both hosts; the Node server also serves them without the extension (`/sources`, `/trends`,
-`/funding`, `/yc`, `/notebook`).
+`sources.html`, `trends.html`, `funding.html`, `yc.html`, `notebook.html`, `signals.html`,
+`digest.html` and `resources.html` are the other pages on both hosts; the Node server also serves
+them without the extension (`/sources`, `/trends`, `/funding`, `/yc`, `/notebook`, `/signals`,
+`/digest`, `/resources`).
 
 ### JSON API (Node server only)
 
@@ -513,7 +597,11 @@ database that is deleted afterwards:
    `data/items.json`, `data/sources.json`, `data/stats.json` (and `data/archive.json` when the
    600 KB / 800-item split applies) are written, then the derived `data/trends.json`,
    `data/funding.json` and `data/yc.json` (logged as `[build] derived trends.json … KB, …`; a
-   `yc.json` above 300 KB fails the build). The last log line reads
+   `yc.json` above 300 KB fails the build), then the signals run (its own
+   `signal | status | items | ms | error` table; the previous build's `signals.json` is fetched
+   with the snapshot so a failing signal carries its last data forward) and `data/signals.json`,
+   `data/digest.json` and `feed.xml` (logged as `[build] derived signals.json … KB, …`). A
+   failing signal never fails the build. The last log line reads
    `[build] imported N from snapshot, fetched M live (K sources OK of T enabled), exported X items (…)`.
 
 Only items published in the last 90 days are exported (at most 3 000), so an item disappears
@@ -539,7 +627,9 @@ demand (`workflow_dispatch`). The `build` job checks out the repo, installs with
   persistence: the runner has no disk between runs, the Pages site is the database. The first
   build gets a 404 here and starts empty, which is expected.
 - `PRODUCTHUNT_TOKEN` and `CRUNCHBASE_API_KEY` from repository secrets (both optional; the
-  adapters skip when they are empty).
+  adapters skip when they are empty),
+- `GITHUB_TOKEN: ${{ github.token }}`, the workflow's own token, so the `github_new_repos`
+  signal searches GitHub at 30 instead of 10 requests/minute (no secret to configure).
 
 The `dist/` folder is uploaded with `actions/upload-pages-artifact` (with hidden files, so
 `.nojekyll` ships) and the `deploy` job publishes it with `actions/deploy-pages` to the
@@ -549,7 +639,10 @@ id-token: write` and never commits to the repository. Runs are serialized
 
 Per-source failures are logged in the per-source table but do not fail the build; it fails only
 when zero sources returned items, in which case nothing is deployed and the previous site stays
-online.
+online. Signal failures never fail the build either: expect `sbir | FAIL | … | HTTP 403` in the
+signals table on every run (sbir.gov blocks the runner IPs as it blocks this network) and
+`producthunt_topics | not configured (PRODUCTHUNT_TOKEN)` until that secret is set; the
+signals page shows both states honestly.
 
 Caps: items from the last 90 days, at most 3 000, `items.json` split at 800 items when the
 whole set exceeds 600 KB (older items go to `archive.json` and load on demand). Right after a
@@ -605,8 +698,9 @@ If you rename the repository, change the two URLs again; the site path follows t
 
 ### What the static site does not have
 
-- No `/api/*` endpoints and no `/health`; only the four `data/*.json` files. Anything that needs
-  server-side queries (arbitrary `since` dates, `limit`, `page`) is done by the browser instead.
+- No `/api/*` endpoints and no `/health`; only the `data/*.json` files and `feed.xml`. Anything
+  that needs server-side queries (arbitrary `since` dates, `limit`, `page`) is done by the
+  browser instead.
 - No `POST /api/refresh`: trigger a rebuild with `gh workflow run pages.yml` or from the Actions
   tab.
 - No `Content-Security-Policy` or other security headers from the server; the pages carry the
@@ -788,7 +882,7 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (374 tests in 71 suites, no network, about three
+Runs `node --test` over `test/*.test.js` (440 tests in 84 suites, no network, about three
 seconds; count with `node --test --test-reporter=tap 2>&1 | Select-String '^# tests'`). The
 GitHub Pages workflow runs the same command before every build.
 
@@ -836,10 +930,11 @@ GitHub Pages workflow runs the same command before every build.
   honest pre-cap count.
 - `app.test.js`: the HTTP app on an ephemeral port: `/health` shape, `/api/items` validation and
   clamping (items carry `sectors`), `/api/refresh` 404/401/409/200, `/data/*.json` routes
-  (including `trends.json`, `funding.json`, `yc.json` and their per-refresh cache) and
-  `no-store`, the six HTML pages (`/`, `/sources`, `/trends`, `/funding`, `/yc`, `/notebook`),
-  security headers, `/sw.js` with the injected version and `Cache-Control: no-cache`, the
-  manifest and PWA icons.
+  (including `trends.json`, `funding.json`, `yc.json`, `signals.json`, `digest.json` and their
+  per-refresh cache), `/feed.xml` (`application/atom+xml`) and `no-store`, the nine HTML pages
+  (`/`, `/sources`, `/trends`, `/funding`, `/yc`, `/notebook`, `/signals`, `/digest`,
+  `/resources`, each linking `./feed.xml`), security headers, `/sw.js` with the injected version
+  and `Cache-Control: no-cache`, the manifest and PWA icons.
 - `sectors.test.js`: the 15 sector rules (`src/lib/sectors.js`): positives and negatives per
   sector with word boundaries, table order, de-duplication, labels.
 - `funding-parse.test.js`: `parseFunding` over real-looking headlines: amounts in USD / EUR /
@@ -852,10 +947,24 @@ GitHub Pages workflow runs the same command before every build.
 - `trends.test.js`, `derived.test.js`: `buildTrends` (12 weeks, partial current week, minimum
   support, rise and ratio, ≤ 5 examples, counts per sector / kind / region) and `buildDerived`
   (the three derived payloads from an in-memory database, including the un-windowed YC query).
-- `shell.test.js`: `public/nav.js` (six pages, go-to keys, `pageOf` at the root and under a
-  sub-path) and the shell contract of every `public/*.html`: the static nav list equals `NAV`
-  with `aria-current` on its own page, no page-local help dialog / toasts / footer links, one
+- `shell.test.js`: `public/nav.js` (nine pages, unique go-to keys, `pageOf` at the root and
+  under a sub-path) and the shell contract of every `public/*.html`: the static nav list equals
+  `NAV` with `aria-current` on its own page, exactly one Atom `<link rel="alternate">` to
+  `./feed.xml` in `<head>`, no page-local help dialog / toasts / footer links, one
   attribute-free `<h1>`.
+- `signals.test.js`, `digest.test.js`, `feed-xml.test.js`: the signal registry and runner
+  (`src/signals/`: validation, per-signal isolation and timeout, carry-over of the previous data
+  and `unavailableSince` on failure, `not configured` for disabled signals, the summary table)
+  and each adapter's mapping from fixtures; `buildDigest` (12 weeks, rounds ordered by
+  `usdApprox`, launches by points / votes with the metric per row, YC companies by launch week,
+  rising terms as of the week end, highlights on the current week only, byte-identical output
+  for the same input); the Atom builder (`esc`, the well-formed skeleton with `id` / `self` /
+  `alternate` from `PUBLIC_URL`, one entry per week newest first, escaped titles and hrefs,
+  double-escaped HTML content with absolute links).
+- `resources.test.js`: `public/resources-data.js` has 4 groups × 4 links = 16 links, https only,
+  unique URLs and names, one-sentence notes of at most 160 characters without
+  `best` / `top` / `#1` / `ultimate`, the probed BVP 2024 and Sequoia Arc URLs, and
+  `resources.js` renders them with `extLink` and fetches nothing.
 - `related.test.js`: `relatedItems` (≥ 2 shared significant words or a shared sector + 1 word,
   self and same-URL excluded, ordered by shared count then date, capped at 5).
 - `notebook-store.test.js`: `public/notebook-store.js` and `public/notebook-tools.js`: add /
@@ -868,17 +977,17 @@ GitHub Pages workflow runs the same command before every build.
   `'/api/'`, `'/data/'`, `url(/...)` or `register('/...')`), the manifest has `start_url` and
   `scope` `./`, no `id` and three `./icons/` entries, every page keeps an attribute-free `<h1>`,
   loads only its own module script and the right stylesheets (`pages.css` + `body.page-<name>`
-  on the lens and notebook pages).
+  on the lens, notebook, signals, digest and resources pages).
 - `public-safety.test.js`: no `innerHTML`, `insertAdjacentHTML`, `outerHTML`, `document.write`,
   `eval`, `new Function` or `window.open` in `public/*.js`; `'_blank'` appears only inside
   `extLink` in `ui.js`; no `<iframe>`, `<embed>` or `<object>`; no inline scripts, styles or
   handlers in the HTML; the honesty wording guard (no `trend(ing) score`, `opportunity index`
   or standalone `score` anywhere in `public/`).
-- `budget.test.js`: each page set (home, sources, trends, funding, YC, notebook: the HTML, CSS
-  and JS that page loads for its first render) stays under 150 000 bytes as deployed (LF line
-  endings), `theme.js` under 1 024 bytes, the deferred set (`pwa.js`, `sw.js`, `related.js`,
-  `text.js`) under 16 000 bytes, no off-origin `<script src>` and no Google Fonts references;
-  it prints the per-file byte table.
+- `budget.test.js`: each page set (home, sources, trends, funding, YC, notebook, signals,
+  digest, resources: the HTML, CSS and JS that page loads for its first render) stays under
+  150 000 bytes as deployed (LF line endings), `theme.js` under 1 024 bytes, the deferred set
+  (`pwa.js`, `sw.js`, `related.js`, `text.js`) under 16 000 bytes, no off-origin `<script src>`
+  and no Google Fonts references; it prints the per-file byte table.
 
 `scripts/verify-pages.mjs <baseUrl> [--max-age-hours N]` (also `npm run verify:pages -- <baseUrl>`)
 checks a deployed site over HTTP without a browser: the HTML, CSS and JS use only relative URLs,
@@ -890,19 +999,31 @@ documented shape, `generatedAt` is fresher than `N` hours (default 3), `data/arc
 either absent or a consistent split, `data/trends.json` has 12 weeks and 15 sector rows of
 non-negative integers, `data/funding.json` has consistent coverage counts and `rates.USD === 1`,
 `data/yc.json` stays under 300 KB with ≥ 100 companies in 3 batches, the verbatim attribution and
-industry counts that sum to the company count, every page has one bare `<h1>`, its own script and
-stylesheets, and `notebook.html` carries the browser-only banner. It prints one `PASS`/`FAIL`
-line per check (118 checks) and exits 1 on any failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
+industry counts that sum to the company count, `data/signals.json` lists the 6 signals with
+consistent states (a disabled signal is never `ok`, a failed one carries `unavailableSince`),
+`data/digest.json` has 12 ISO weeks oldest first with the last one partial, rounds with the
+static-rates metric, launches with `HN points` / `PH votes` and highlights on the current week
+only, `feed.xml` answers 200 with an xml content type, starts with `<?xml`, has the Atom root,
+at least one `<entry>` (every one closed), no unescaped `&`, an `<id>`, `<updated>`, a
+`rel="self"` link and the `digest.html` alternate, every page has one bare `<h1>`, its own
+script and stylesheets and the Atom `<link rel="alternate">`, and `notebook.html` carries the
+browser-only banner. It prints one `PASS`/`FAIL` line per check (151 checks) and exits 1 on any
+failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
+
+`node scripts/check-links.mjs` (network, not part of `npm test`) GETs every URL in
+`public/resources-data.js` with the StartupRadar User-Agent, prints `PASS <status> <url> -> <final url>`
+per link and exits 1 on anything other than 200 / 3xx.
 
 `scripts/screenshots.py` runs the frontend in a real browser. It needs Python with `playwright`
 installed and a local Edge or Chrome; it launches the browser via Playwright's `channel` option
 so no browser download is required. Two modes:
 
 - **Parity mode** (default, needs the Node server with a fresh database): captures the eight
-  screenshots above and asserts, for all six pages at 320 / 390 / 768 / 1024 / 1280 / 1920 px in
+  screenshots above and asserts, for all nine pages at 320 / 390 / 768 / 1024 / 1280 / 1920 px in
   the dark and the light theme and in every state (default, filtered, sources list open, list
   view, drawer open, help open, phone filter sheet, lens pages with their drawers, the notebook
-  with a seeded item and an open canvas editor): body font 16 px, nothing below 12 px, every
+  with a seeded item and an open canvas editor, the signals, digest and resources pages): body
+  font 16 px, nothing below 12 px, every
   control exactly `--control-h` (40 px from 1024 px with a fine pointer, 44 px otherwise), no
   horizontal overflow,
   composited WCAG AA contrast of every visible text node and indicator (text 4.5:1, non-text
@@ -932,7 +1053,16 @@ so no browser download is required. Two modes:
   from the home page, keeps notes and tags across a reload and across a save from a second feed
   tab opened before the note was written, searches, edits and duplicates
   canvases, downloads the Markdown and JSON exports, imports the JSON back and deletes behind
-  `confirm()`, the 390 px layout of every page has no overflow, and there are no console errors.
+  `confirm()`, `signals.html` renders the six sections in `signals.json` order, each in exactly
+  one of the three states with the state line, fetched time, description and attribution
+  matching the JSON and the row / bar counts equal to the data, `digest.html` defaults to the
+  newest complete week, a `?week=` deep link selects that week (an unknown one falls back), the
+  rows equal the JSON with the metric label per row, highlights appear only on the current week,
+  prev / next step through the weeks, a row opens the drawer keeping `week=` in the URL, and
+  `feed.xml` fetched from the page parses with `DOMParser('application/xml')` without a
+  `parsererror` into one Atom entry per week, `resources.html` lists 16 https links in 4 groups
+  all with `rel="noopener noreferrer"` and no superlatives, the 390 px layout of every page has
+  no overflow, and there are no console errors.
   Use it against a `dist/` preview or the live Pages site. On Windows run it with
   `$env:PYTHONUTF8 = "1"` when piping the output (check labels contain `↓` and `—`).
 
