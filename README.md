@@ -54,7 +54,7 @@ three newest Y Combinator batches). `notebook.html` keeps the items you bookmark
 tags and idea canvases, in this browser only. `signals.html` shows six outside indicators fetched
 with every build (Ask HN, new GitHub repositories, Hugging Face trending, "Who is hiring" keyword
 mentions, SBIR solicitations, Product Hunt topics), each with its source and fetch time;
-`digest.html` is one page per ISO week (biggest parsed rounds, top launches, new YC companies,
+`digest.html` is one page per ISO week (largest parsed funding amounts, top launches, new YC companies,
 rising terms) with an Atom feed at `feed.xml`; `resources.html` is a hand-picked list of 16 links
 for finding startup ideas, fetched and counted by nothing. The same UI works unchanged on GitHub
 Pages and on the Node server; the server additionally exposes a read-only JSON API.
@@ -178,7 +178,10 @@ step and no third-party script. What it does:
   launch date falls in the week, and the 15 terms with the largest rise versus the 4 weeks
   before (trends method, computed as of the week's end). Signal highlights (top GitHub
   repositories by stars, first Hugging Face models) appear on the current week only, because
-  earlier weeks have no stored signal snapshot. Rows open in the drawer. `feed.xml` is a static
+  earlier weeks have no stored signal snapshot; when that signal's fetch failed, the list is the
+  previous build's data and both the page and the feed label it "last good data from <time> —
+  unavailable since <time>". Week ranges are printed in UTC (ISO weeks run Monday 00:00 to
+  Sunday 23:59 UTC). Rows open in the drawer. `feed.xml` is a static
   Atom 1.0 feed with one entry per week (newest first, `<content type="html">` with the same
   lists), built by `src/feed-xml.js` with `PUBLIC_URL` as the base of every absolute link, so a
   reader subscribed to `https://sudish007.github.io/startup-radar/feed.xml` gets a new entry
@@ -317,10 +320,10 @@ as-is.
 | Signal | What the numbers are | Source URL | Known runner blocks |
 |---|---|---|---|
 | Ask HN (`ask_hn`) | The 50 newest Ask HN / Tell HN posts with points and comment counts as reported by the Hacker News (Algolia) API at fetch time | https://news.ycombinator.com/ask | none observed |
-| GitHub: new repositories (`github_new_repos`) | The 50 most-starred repositories created in the last 7 days, as returned by the GitHub search API; the column is literally "stars since creation (<= 7 days)" | https://github.com/search?q=created%3A%3E%3D2020-01-01&type=repositories&s=stars&o=desc | Unauthenticated search is limited to 10 requests/minute (one request per build is enough); `GITHUB_TOKEN` raises it to 30 and the Pages workflow passes `github.token` automatically. The page says whether the request was authenticated. |
+| GitHub: new repositories (`github_new_repos`) | The 50 most-starred repositories created in the last 7 days, as returned by the GitHub search API; the column is literally "stars since creation (<= 7 days)" | https://github.com/trending | Unauthenticated search is limited to 10 requests/minute (one request per build is enough); `GITHUB_TOKEN` raises it to 30 and the Pages workflow passes `github.token` automatically. The page says whether the request was authenticated. |
 | Hugging Face: trending (`hf_trending`) | The first 30 models and 30 spaces in the order the Hugging Face API returns for its own trending sort; likes and downloads are the API's numbers. The API's ranking field is only used as a query parameter and never displayed | https://huggingface.co/models?sort=trending | none observed |
-| HN: Who is hiring? (`hn_hiring`) | For 40 fixed keywords (languages, frameworks, infra, LLM/AI, roles/modes), the number of comments in the current "Ask HN: Who is hiring?" thread (the first 1 000 the Algolia API returns) that mention it (word-boundary, case-insensitive); the thread, month and the comment count the mentions are counted in are printed | https://news.ycombinator.com/submitted?id=whoishiring | none observed |
-| SBIR/STTR open solicitations (`sbir`) | Open US SBIR/STTR solicitations (title, agency, close date) as listed by the sbir.gov public API | https://www.sbir.gov/topics | `api.www.sbir.gov` answers **HTTP 403** from this network and from GitHub-hosted runners on every probe so far; the page shows "unavailable since <time> — HTTP 403 …" with the link to sbir.gov and no data. The build stays green. |
+| HN: Who is hiring? (`hn_hiring`) | For 40 fixed keywords (languages, frameworks, infra, LLM/AI, roles/modes), the number of comments in the current "Ask HN: Who is hiring?" thread (the first 1 000 the Algolia API returns) that mention it (word-boundary, case-insensitive; `go` is matched as a bare word and therefore also counts the English verb, which the page says); the thread, month and the comment count the mentions are counted in are printed | https://news.ycombinator.com/submitted?id=whoishiring | none observed |
+| SBIR/STTR open solicitations (`sbir`) | Open US SBIR/STTR solicitations (title, agency, close date) as listed by the sbir.gov public API | https://www.sbir.gov/topics | `api.www.sbir.gov` answers **HTTP 403** from this network on every probe so far; runner behaviour is confirmed after the first Pages run of this build. The page shows "unavailable since <time> — HTTP 403 …" with the link to sbir.gov and no data. The build stays green. |
 | Product Hunt: topics (`producthunt_topics`) | The 20 Product Hunt topics with the most followers; follower and post counts are the API's numbers at fetch time | https://www.producthunt.com/topics | Needs `PRODUCTHUNT_TOKEN` (GraphQL v2); without it the page says "not configured (PRODUCTHUNT_TOKEN)". The mapping follows the v2 schema and has not been verified against a live token. |
 
 ### Digest and Atom feed
@@ -440,7 +443,7 @@ happens in the browser (`public/filter.js`), so there are no query parameters.
 | `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
 | `GET /data/signals.json` | Backs `signals.html`. `{ generatedAt, signals [{ id, name, homepage, description, requires, enabled, ok, fetchedAt, lastSuccessAt, error, unavailableSince, data, durationMs }] }` in registry order (`ask_hn`, `github_new_repos`, `hf_trending`, `hn_hiring`, `producthunt_topics`, `sbir`); `data` is per signal (see the [Signals table](#signals-6-fetched-with-every-build)), `null` for a disabled signal, and the previous build's data for a failed one (`ok: false`, `unavailableSince` = the first failure). Computed by `src/signals/run.js`; the server keeps the latest run in the `kv` table and serves `{ generatedAt: null, signals: [] }` before the first refresh. |
-| `GET /data/digest.json` | Backs `digest.html`. `{ generatedAt, method, weeks [12 × { week "YYYY-Www", from, to, partial, rounds [{ key, title, url, source, publishedAt, amount, currency, amountText, stage, usdApprox, metric: "approx. USD at static rates" }], launches [{ key, title, url, source, publishedAt, metric: "HN points" \| "PH votes", value }], ycNew [{ key, name, url, batch, oneLiner, launchedAt }], risingTerms [{ term, kind, thisWeek, priorWeeklyAvg, rise }], signalHighlights { repos [≤ 5], models [≤ 5] } \| null (current week only) }] }`, oldest first. Computed by `src/digest.js`. |
+| `GET /data/digest.json` | Backs `digest.html`. `{ generatedAt, method, weeks [12 × { week "YYYY-Www", from, to, partial, rounds [{ key, title, url, source, publishedAt, amount, currency, amountText, stage, usdApprox, metric: "approx. USD at static rates" }], launches [{ key, title, url, source, publishedAt, metric: "HN points" \| "PH votes", value }], ycNew [{ key, name, url, batch, oneLiner, launchedAt }], risingTerms [{ term, kind, thisWeek, priorWeeklyAvg, rise }], signalHighlights { repos [≤ 5], models [≤ 5], github, huggingface } \| null (current week only; `github` / `huggingface` = that signal's `{ ok, fetchedAt, lastSuccessAt, unavailableSince }` or `null`, so data carried over from a failed fetch is labelled "last good data from …" on the page and in the feed) }] }`, oldest first. Computed by `src/digest.js`. |
 | `GET /feed.xml` | Atom 1.0 (`application/atom+xml`; `text/xml` from GitHub Pages): `<id>` = `PUBLIC_URL/feed.xml`, `rel="self"` and a `rel="alternate"` link to `digest.html`, one `<entry>` per digest week (newest first; `id`/`link` = `PUBLIC_URL/digest.html?week=YYYY-Www`, `title` "Startup Radar digest — week YYYY-Www", `updated` = the build time for the current week and the week end otherwise, `published` = the week start, `<content type="html">` with the same lists). String-built with an escape helper by `src/feed-xml.js`, no XML dependency. |
 
 Items in `items.json`, `archive.json` and `/api/items` carry `sectors: string[]` (sector ids,
@@ -882,7 +885,7 @@ a row to the table in this README.
 npm test
 ```
 
-Runs `node --test` over `test/*.test.js` (440 tests in 84 suites, no network, about three
+Runs `node --test` over `test/*.test.js` (443 tests in 84 suites, no network, about three
 seconds; count with `node --test --test-reporter=tap 2>&1 | Select-String '^# tests'`). The
 GitHub Pages workflow runs the same command before every build.
 
@@ -957,10 +960,13 @@ GitHub Pages workflow runs the same command before every build.
   and `unavailableSince` on failure, `not configured` for disabled signals, the summary table)
   and each adapter's mapping from fixtures; `buildDigest` (12 weeks, rounds ordered by
   `usdApprox`, launches by points / votes with the metric per row, YC companies by launch week,
-  rising terms as of the week end, highlights on the current week only, byte-identical output
-  for the same input); the Atom builder (`esc`, the well-formed skeleton with `id` / `self` /
-  `alternate` from `PUBLIC_URL`, one entry per week newest first, escaped titles and hrefs,
-  double-escaped HTML content with absolute links).
+  rising terms as of the week end, highlights on the current week only carrying each signal's
+  `ok` / `lastSuccessAt` / `unavailableSince` so a carried-over payload stays labelled,
+  byte-identical output for the same input); the Atom builder (`esc` incl. dropping the C0
+  control characters XML forbids, the well-formed skeleton with `id` / `self` / `alternate`
+  from `PUBLIC_URL`, one entry per week newest first, escaped titles and hrefs, double-escaped
+  HTML content with absolute links, the "last good data from … — unavailable since …" note on
+  a carried-over highlight list).
 - `resources.test.js`: `public/resources-data.js` has 4 groups × 4 links = 16 links, https only,
   unique URLs and names, one-sentence notes of at most 160 characters without
   `best` / `top` / `#1` / `ultimate`, the probed BVP 2024 and Sequoia Arc URLs, and
