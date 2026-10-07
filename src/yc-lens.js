@@ -3,7 +3,8 @@
 
 import { itemKey } from '../public/filter.js';
 
-export const YC_ATTRIBUTION = 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly';
+export const YC_ATTRIBUTION =
+  'Source: yc-oss open API mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few times a day in practice - see the generated time above.';
 export const TEAM_SIZE_BUCKETS = ['1', '2-5', '6-10', '11-25', '26-50', '51+', 'unknown'];
 export const MAX_TAGS = 40;
 

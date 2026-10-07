@@ -70,6 +70,11 @@ export function safeHttpUrl(s) {
   }
 }
 
+/** True only for a positive finite team size: YC's team_size is 0 or null when not listed, which must not render as "team 0". */
+export function hasTeamSize(n) {
+  return typeof n === 'number' && Number.isFinite(n) && n >= 1;
+}
+
 /** Hostname without a leading "www."; "unknown host" when the URL does not parse. */
 export function hostnameOf(url) {
   const safe = safeHttpUrl(url);

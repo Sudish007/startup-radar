@@ -37,8 +37,9 @@ metrics.
 
 Startup Radar fetches 19 public sources, normalizes each entry to one row (title, URL, summary,
 source, kind, region, published date), de-duplicates by URL and stores everything in SQLite.
-On the static site this happens once per hourly build; on a server it happens every
-`REFRESH_MINUTES` (default 30).
+On the static site this happens once per build (scheduled hourly, but GitHub runs the schedule
+only a few times a day in practice - the pages show the real generated time); on a server it
+happens every `REFRESH_MINUTES` (default 30).
 
 The web UI (`index.html`) loads the item list once from `data/items.json` and does all
 filtering, sorting, searching and paging in the browser: filter by kind (launch, funding,
@@ -126,7 +127,8 @@ step and no third-party script. What it does:
   items and the coverage line says how many items had a parseable amount and a stage.
 - **YC lens** (`yc.html`, from `data/yc.json`). The companies of the three newest Y Combinator
   batches (slim fields only, from the `yc-oss` mirror; attribution "Source: yc-oss open API
-  mirror of ycombinator.com, refreshed hourly" is printed verbatim), grouped by the industry YC
+  mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few
+  times a day in practice - see the generated time above." is printed verbatim), grouped by the industry YC
   lists, with the tags YC assigned (top 40) and team-size buckets as bars. A batch chip filters
   everything, and the counts are recomputed from the companies shown. A company that is also a
   feed item opens in the drawer; the others link to their YC page.
@@ -551,8 +553,10 @@ online.
 
 Caps: items from the last 90 days, at most 3 000, `items.json` split at 800 items when the
 whole set exceeds 600 KB (older items go to `archive.json` and load on demand). Right after a
-build the data is a few seconds old; because the build runs hourly and Pages' CDN caches files
-for 10 minutes, what a visitor sees can be up to about 70 minutes old.
+build the data is a few seconds old; the schedule is hourly, but observed runs over 2026-10-06/07
+were 4-8 hours apart (00:49, 07:34, 15:11, 20:19, 00:42, 07:14 UTC, all successful), so what a
+visitor sees is typically a few hours old (plus up to 10 minutes of Pages CDN caching). Every
+page shows the real "Last refreshed" / generated time from the data files.
 
 > **Sources blocked from GitHub runners** (from the Actions logs of 2026-10-03): 18 of the 19
 > default sources succeed. **Launching Next** (`launchingnext`) answers `HTTP 403` for
