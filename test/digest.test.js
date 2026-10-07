@@ -54,7 +54,7 @@ describe('buildDigest', () => {
       assert.equal(w.partial, i === d.weeks.length - 1);
       assert.deepEqual([w.rounds, w.launches, w.ycNew, w.risingTerms], [[], [], [], []]);
     }
-    assert.deepEqual(d.weeks.at(-1).signalHighlights, { repos: [], models: [] });
+    assert.deepEqual(d.weeks.at(-1).signalHighlights, { repos: [], models: [], github: null, huggingface: null });
     assert.ok(d.weeks.slice(0, -1).every((w) => w.signalHighlights === null), 'highlights only in the current week');
   });
 
@@ -151,8 +151,31 @@ describe('buildDigest', () => {
     assert.deepEqual(h.models[0], { id: 'org/m0', url: 'https://huggingface.co/org/m0', likes: 10, downloads: 0, position: 1 });
     assert.equal(JSON.stringify(d).includes('trendingScore'), false);
     assert.ok(d.weeks.slice(0, -1).every((w) => w.signalHighlights === null));
-    assert.deepEqual(buildDigest({ signals: { generatedAt: null, signals: [] }, now: NOW }).weeks.at(-1).signalHighlights, { repos: [], models: [] });
-    assert.deepEqual(buildDigest({ signals: null, now: NOW }).weeks.at(-1).signalHighlights, { repos: [], models: [] });
+    assert.deepEqual(Object.keys(h), ['repos', 'models', 'github', 'huggingface']);
+    assert.deepEqual(h.github, { ok: true, fetchedAt: null, lastSuccessAt: null, unavailableSince: null }, 'fixture rows carry no times');
+    assert.deepEqual(h.huggingface, { ok: true, fetchedAt: null, lastSuccessAt: null, unavailableSince: null });
+    const empty = { repos: [], models: [], github: null, huggingface: null };
+    assert.deepEqual(buildDigest({ signals: { generatedAt: null, signals: [] }, now: NOW }).weeks.at(-1).signalHighlights, empty);
+    assert.deepEqual(buildDigest({ signals: null, now: NOW }).weeks.at(-1).signalHighlights, empty);
+  });
+
+  test('signalHighlights: a carried-over payload (ok: false) keeps its fetch state so the page and feed can label it', () => {
+    const stale = {
+      generatedAt: NOW.toISOString(),
+      signals: [
+        { ...SIGNALS.signals[0], ok: false, fetchedAt: NOW.toISOString(), lastSuccessAt: '2026-10-05T10:00:00.000Z', unavailableSince: '2026-10-06T10:00:00.000Z', error: 'HTTP 403' },
+        { ...SIGNALS.signals[1], ok: true, fetchedAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(), unavailableSince: null, error: null },
+      ],
+    };
+    const h = buildDigest({ signals: stale, now: NOW }).weeks.at(-1).signalHighlights;
+    assert.equal(h.repos.length, MAX_HIGHLIGHTS, 'the carried-over rows are still listed');
+    assert.deepEqual(h.github, { ok: false, fetchedAt: NOW.toISOString(), lastSuccessAt: '2026-10-05T10:00:00.000Z', unavailableSince: '2026-10-06T10:00:00.000Z' });
+    assert.deepEqual(h.huggingface, { ok: true, fetchedAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(), unavailableSince: null });
+    assert.equal(JSON.stringify(h).includes('HTTP 403'), false, 'the error text stays on the signals page');
+    const nullData = buildDigest({ signals: { generatedAt: NOW.toISOString(), signals: [{ id: 'github_new_repos', ok: false, data: null, fetchedAt: NOW.toISOString(), lastSuccessAt: null, unavailableSince: NOW.toISOString() }] }, now: NOW }).weeks.at(-1).signalHighlights;
+    assert.deepEqual(nullData.repos, []);
+    assert.deepEqual(nullData.github, { ok: false, fetchedAt: NOW.toISOString(), lastSuccessAt: null, unavailableSince: NOW.toISOString() });
+    assert.equal(nullData.huggingface, null);
   });
 
   test('deterministic: the same input (in any order) gives byte-identical output; partial flag follows now', () => {

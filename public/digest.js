@@ -38,7 +38,8 @@ const buildUrl = (key) => {
 };
 const lens = createLensPage({ page: 'digest', getList: () => drawerList, findItem: (key) => items.find(key), buildUrl });
 
-const dayText = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+// Week bounds are UTC instants (Mon 00:00Z .. Sun 23:59:59.999Z): format them in UTC so every timezone sees Mon – Sun.
+const dayText = (iso) => new Date(iso).toLocaleDateString(undefined, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
 const str = (v) => (typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v));
 const usdText = (n) => (typeof n === 'number' && Number.isFinite(n) ? `\u2248 $${compactMoney(n)}` : DASH);
 const usdTitle = (n) => (typeof n === 'number' && Number.isFinite(n) ? `${METHOD_LABELS.usd}: ${n.toLocaleString()} USD` : 'no parseable amount');
@@ -86,7 +87,7 @@ function renderRounds(week) {
     ]));
   }
   if (!week.rounds.length) els.rounds.append(el('tr', {}, [el('td', { colspan: '6', className: 'dim', text: 'No funding item of this week had a parseable amount.' })]));
-  els.roundsCaption.textContent = `${num(week.rounds.length)} funding items, ranked by ${str(week.rounds[0]?.metric) || 'approx. USD at static rates'}`;
+  els.roundsCaption.textContent = `${num(week.rounds.length)} funding items with a parsed amount, ranked by ${str(week.rounds[0]?.metric) || 'approx. USD at static rates'}`;
 }
 
 function renderLaunches(week) {
@@ -109,13 +110,8 @@ function renderYc(week) {
   for (const c of week.ycNew) {
     const name = str(c.name) || '(unnamed)';
     const key = str(c.key);
-    let title;
-    if (key && items.peek(key)) {
-      drawerList.push(items.peek(key));
-      title = itemLink(key, name);
-    } else {
-      title = safeHttpUrl(c.url) ? extLink(safeHttpUrl(c.url), name) : tx(name);
-    }
+    // same guard as titleLink: a company that is also a rounds/launches row is listed once in the drawer order
+    const title = key && items.peek(key) ? titleLink(c, name) : safeHttpUrl(c.url) ? extLink(safeHttpUrl(c.url), name) : tx(name);
     els.ycList.append(el('li', { className: 'company-row' }, [
       el('h3', {}, [title]),
       c.oneLiner ? el('p', { className: 'one-liner', text: str(c.oneLiner) }) : null,
@@ -155,19 +151,25 @@ function renderHighlights(week) {
   const starsHead = str(repos[0]?.label) || 'stars since creation (<= 7 days)';
   els.highlightLists.append(
     repos.length
-      ? highlightTable(`${num(repos.length)} new GitHub repositories by stars`, [['Repository'], [starsHead, 'num']], repos.map((r) => el('tr', {}, [el('th', { scope: 'row' }, [safeHttpUrl(r.url) ? extLink(safeHttpUrl(r.url), str(r.fullName) || '(unnamed)') : tx(str(r.fullName))]), textCell(starsHead, num(r.stars), 'num')])))
+      ? el('div', {}, [staleNote(h.github), highlightTable(`${num(repos.length)} new GitHub repositories by stars`, [['Repository'], [starsHead, 'num']], repos.map((r) => el('tr', {}, [el('th', { scope: 'row' }, [safeHttpUrl(r.url) ? extLink(safeHttpUrl(r.url), str(r.fullName) || '(unnamed)') : tx(str(r.fullName))]), textCell(starsHead, num(r.stars), 'num')])))])
       : el('p', { className: 'empty-note', text: 'No GitHub highlight in this build (signal unavailable).' }),
     models.length
-      ? highlightTable(`${num(models.length)} Hugging Face models in the API's trending order`, [['#', 'num'], ['Model'], ['Likes', 'num'], ['Downloads', 'num']], models.map((m) => el('tr', {}, [textCell('#', num(m.position), 'num'), el('th', { scope: 'row' }, [safeHttpUrl(m.url) ? extLink(safeHttpUrl(m.url), str(m.id) || '(unnamed)') : tx(str(m.id))]), textCell('Likes', num(m.likes), 'num'), textCell('Downloads', num(m.downloads), 'num')])))
+      ? el('div', {}, [staleNote(h.huggingface), highlightTable(`${num(models.length)} Hugging Face models in the API's trending order`, [['#', 'num'], ['Model'], ['Likes', 'num'], ['Downloads', 'num']], models.map((m) => el('tr', {}, [textCell('#', num(m.position), 'num'), el('th', { scope: 'row' }, [safeHttpUrl(m.url) ? extLink(safeHttpUrl(m.url), str(m.id) || '(unnamed)') : tx(str(m.id))]), textCell('Likes', num(m.likes), 'num'), textCell('Downloads', num(m.downloads), 'num')])))])
       : el('p', { className: 'empty-note', text: 'No Hugging Face highlight in this build (signal unavailable).' }),
   );
+}
+
+/** Same label the Signals page gives a carried-over payload; null when the signal's fetch behind this build succeeded. */
+function staleNote(state) {
+  if (!state || typeof state !== 'object' || state.ok !== false) return null;
+  return el('p', { className: 'signal-state is-stale', text: `Carried over from an earlier fetch: last good data from ${absoluteTime(state.lastSuccessAt) || 'an unknown time'} \u2014 unavailable since ${absoluteTime(state.unavailableSince) || 'an unknown time'}` });
 }
 
 function renderWeek() {
   const week = current();
   drawerList = [];
   if (!week) return;
-  els.range.textContent = `${week.week}: ${dayText(week.from)} \u2013 ${dayText(week.to)}${week.partial ? ' (current week, partial)' : ''}`;
+  els.range.textContent = `${week.week}: ${dayText(week.from)} \u2013 ${dayText(week.to)} (UTC)${week.partial ? ' (current week, partial)' : ''}`;
   renderRounds(week);
   renderLaunches(week);
   renderYc(week);
@@ -180,7 +182,7 @@ function fillWeeks() {
   clear(els.week);
   weekIds = digest.weeks.map((w) => w.week);
   for (const w of [...digest.weeks].reverse()) {
-    els.week.append(el('option', { value: w.week, text: `${w.week} \u00b7 ${dayText(w.from)} \u2013 ${dayText(w.to)}${w.partial ? ' (partial)' : ''}` }));
+    els.week.append(el('option', { value: w.week, text: `${w.week} \u00b7 ${dayText(w.from)} \u2013 ${dayText(w.to)} (UTC)${w.partial ? ' (partial)' : ''}` }));
   }
 }
 

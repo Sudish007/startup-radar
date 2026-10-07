@@ -26,7 +26,8 @@ let exampleList = []; // items referenced by the rendered example buttons, in pa
 const buildUrl = (key) => (key ? `${location.pathname}?item=${key}` : location.pathname);
 const lens = createLensPage({ page: 'trends', getList: () => exampleList, findItem: (key) => items.find(key), buildUrl });
 
-const dayText = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+// ISO week bounds are UTC instants: format them in UTC so every timezone sees the Mon – Sun range.
+const dayText = (iso) => new Date(iso).toLocaleDateString(undefined, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
 
 // -- rising terms --
 
@@ -63,7 +64,7 @@ function renderTerms() {
   }
   const tw = trends.thisWeek;
   const pr = trends.prior;
-  els.termsWindow.textContent = `This week = ISO week ${tw.id} (${dayText(tw.from)} \u2013 ${dayText(tw.to)}, partial); prior = ${pr.weeks} weeks ${dayText(pr.from)} \u2013 ${dayText(pr.to)}. Terms are words or adjacent word pairs from titles and summaries; "new" means no mention in the prior weeks.`;
+  els.termsWindow.textContent = `This week = ISO week ${tw.id} (${dayText(tw.from)} \u2013 ${dayText(tw.to)} UTC, partial); prior = ${pr.weeks} weeks ${dayText(pr.from)} \u2013 ${dayText(pr.to)} UTC. Terms are words or adjacent word pairs from titles and summaries; "new" means no mention in the prior weeks.`;
   els.termsCaption.textContent = `${trends.terms.length} terms with at least ${num(trends.minSupport)} mentions this week, sorted by rise (this week minus the prior weekly average)`;
 }
 

@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Digest — Startup Radar</title>
-<meta name="description" content="One page per ISO week: the biggest parsed funding rounds, the top launches by points or votes, new YC companies and the rising terms of that week, from the Startup Radar feed. Also an Atom feed.">
+<meta name="description" content="One page per ISO week: the funding items with the largest parsed amounts, the top launches by points or votes, new YC companies and the rising terms of that week, from the Startup Radar feed. Also an Atom feed.">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0B0F17">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
@@ -68,7 +68,7 @@
 </form>
 
 <section class="lens-section" id="rounds" aria-labelledby="rounds-heading">
-<h2 id="rounds-heading">Biggest parsed funding rounds</h2>
+<h2 id="rounds-heading">Largest parsed funding amounts</h2>
 <p class="method">Ranked by approx. USD at static rates (see the FX table on the funding page); the amount is shown as written in the headline, in its original currency. Items whose headline had no parseable amount are not listed.</p>
 <div class="table-scroll">
 <table class="data-table stack" id="rounds-table">
@@ -136,7 +136,7 @@
 
 <section class="lens-section" id="highlights" aria-labelledby="highlights-heading" hidden>
 <h2 id="highlights-heading">Signal highlights</h2>
-<p class="method">Current week only: the 5 most-starred new GitHub repositories and the first 5 Hugging Face models of the signals fetch behind this build, as those APIs report them. Earlier weeks have no stored signal snapshot.</p>
+<p class="method">Current week only: the 5 most-starred new GitHub repositories and the first 5 Hugging Face models of the signals dataset behind this build, as those APIs report them. When a signal's fetch failed, its list is the previous build's data and is labelled with the time of that last good fetch. Earlier weeks have no stored signal snapshot.</p>
 <div class="two-col" id="highlight-lists"></div>
 </section>
 </main>
