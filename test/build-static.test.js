@@ -150,7 +150,8 @@ describe('runBuild', () => {
     assert.equal(funding.totals.bySector.length, 15);
     const yc = readJson(path.join(outDir, 'data', 'yc.json'));
     assert.deepEqual(yc.companies, []);
-    assert.equal(yc.attribution, 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly');
+    assert.equal(yc.attribution, 'Source: yc-oss open API mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few times a day in practice - see the generated time above.');
+    assert.equal(/refreshed hourly/i.test(yc.attribution), false, 'no "refreshed hourly" promise (the schedule is not honoured hourly in practice)');
     assert.equal(yc.teamSize.buckets.length, 7);
     assert.ok(logs.some((l) => /^\[build\] derived trends\.json [\d.]+ KB, funding\.json [\d.]+ KB, yc\.json [\d.]+ KB$/.test(l)), 'derived size line');
     assert.ok(logs.some((l) => /^\[build\] derived signals\.json [\d.]+ KB, digest\.json [\d.]+ KB, feed\.xml [\d.]+ KB$/.test(l)), 'phase-2 size line');

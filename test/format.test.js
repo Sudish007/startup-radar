@@ -11,6 +11,7 @@ import {
   pluralize,
   safeHttpUrl,
   hostnameOf,
+  hasTeamSize,
   pointsText,
   commentsText,
   votesText,
@@ -142,6 +143,20 @@ describe('rowLabel', () => {
     assert.equal(rowLabel('votes', 'Votes', 'hn_show'), 'Votes');
     assert.equal(rowLabel('batch', 'Batch', 'yc'), 'Batch', 'the value already reads "YC <batch>"');
     assert.equal(rowLabel('location', 'Location', 'yc'), 'Location');
+  });
+});
+
+describe('hasTeamSize', () => {
+  test('true only for a positive finite number: 0, null and non-numbers are "not listed" (no "team 0" on the YC page)', () => {
+    assert.equal(hasTeamSize(1), true);
+    assert.equal(hasTeamSize(12), true);
+    assert.equal(hasTeamSize(0), false);
+    assert.equal(hasTeamSize(-3), false);
+    assert.equal(hasTeamSize(null), false);
+    assert.equal(hasTeamSize(undefined), false);
+    assert.equal(hasTeamSize('4'), false);
+    assert.equal(hasTeamSize(Number.NaN), false);
+    assert.equal(hasTeamSize(Number.POSITIVE_INFINITY), false);
   });
 });
 

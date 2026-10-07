@@ -3,7 +3,7 @@
 // company name is an outbound link to its YC page. Groups, tag counts and team-size buckets are counted here
 // from the companies of the selected batches, so the numbers always match the rows shown.
 
-import { absoluteTime, hostnameOf, safeHttpUrl } from './format.js';
+import { absoluteTime, hasTeamSize, hostnameOf, safeHttpUrl } from './format.js';
 import { clear, el, extLink, fetchJson } from './ui.js';
 import { createItemStore, createLensPage, itemLink, itemParam, num, wireOpeners } from './lens.js';
 
@@ -89,7 +89,7 @@ function companyRow(c) {
     if (value) meta.append(el('span', { title: label, text: value }));
   }
   if (c.subindustry && c.subindustry !== c.industry) meta.append(el('span', { title: 'Subindustry', text: c.subindustry }));
-  if (typeof c.teamSize === 'number') meta.append(el('span', { title: 'Team size', text: `team ${num(c.teamSize)}` }));
+  if (hasTeamSize(c.teamSize)) meta.append(el('span', { title: 'Team size', text: `team ${num(c.teamSize)}` }));
   const site = safeHttpUrl(c.website);
   if (site) meta.append(extLink(site, hostnameOf(site), { ariaLabel: `${c.name} website, ${hostnameOf(site)} (opens in a new tab)` }));
   const row = el('li', { className: 'company-row' }, [el('h3', {}, [name])]);
