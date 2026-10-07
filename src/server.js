@@ -3,14 +3,16 @@ import { loadConfig } from './config.js';
 import { openDb } from './db.js';
 import { createHttp } from './lib/http.js';
 import { loadSources } from './sources/index.js';
+import { loadSignals } from './signals/index.js';
 import { createRefresh, createScheduler } from './refresh.js';
 import { createApp } from './app.js';
 
 const config = loadConfig();
 const db = openDb(path.join(config.dataDir, 'startup-radar.db'));
 const sources = await loadSources();
+const signals = await loadSignals();
 const http = createHttp(config);
-const refresh = createRefresh({ db, http, sources, env: process.env, log: console.log });
+const refresh = createRefresh({ db, http, sources, signals, env: process.env, log: console.log });
 const scheduler = createScheduler(refresh, config.refreshMinutes);
 const app = createApp({ db, sources, config, refresh });
 

@@ -107,6 +107,7 @@ describe('runBuild', () => {
       imported: 1, live: 2, sourcesOk: 1, sourcesEnabled: 2, exported: 3,
       items: 3, itemsBytes: dataSize('items.json'), archive: 0, archiveBytes: 0,
       trendsBytes: dataSize('trends.json'), fundingBytes: dataSize('funding.json'), ycBytes: dataSize('yc.json'),
+      signalsBytes: dataSize('signals.json'), digestBytes: dataSize('digest.json'), feedBytes: fs.statSync(path.join(outDir, 'feed.xml')).size,
     });
 
     assert.ok(fs.existsSync(path.join(outDir, '.nojekyll')));
@@ -152,6 +153,19 @@ describe('runBuild', () => {
     assert.equal(yc.attribution, 'Source: yc-oss open API mirror of ycombinator.com, refreshed hourly');
     assert.equal(yc.teamSize.buckets.length, 7);
     assert.ok(logs.some((l) => /^\[build\] derived trends\.json [\d.]+ KB, funding\.json [\d.]+ KB, yc\.json [\d.]+ KB$/.test(l)), 'derived size line');
+    assert.ok(logs.some((l) => /^\[build\] derived signals\.json [\d.]+ KB, digest\.json [\d.]+ KB, feed\.xml [\d.]+ KB$/.test(l)), 'phase-2 size line');
+
+    const signals = readJson(path.join(outDir, 'data', 'signals.json'));
+    assert.deepEqual(signals, { generatedAt: NOW.toISOString(), signals: [] }, 'no signals passed -> empty payload, still written');
+    const digest = readJson(path.join(outDir, 'data', 'digest.json'));
+    assert.equal(digest.generatedAt, NOW.toISOString());
+    assert.equal(digest.weeks.length, 12);
+    assert.equal(digest.weeks.at(-1).partial, true);
+    const feed = fs.readFileSync(path.join(outDir, 'feed.xml'), 'utf8');
+    assert.ok(feed.startsWith('<?xml version="1.0" encoding="utf-8"?>'));
+    assert.equal((feed.match(/<entry>/g) ?? []).length, 12);
+    assert.ok(feed.includes('<id>http://localhost:3000/feed.xml</id>'), 'publicUrl falls back to localhost when env.PUBLIC_URL is unset');
+    assert.equal(logs.some((l) => l.startsWith('signal ')), false, 'no signals table without signals');
 
     assert.ok(logs.some((l) => l === `[build] snapshot: imported 1 items (0 invalid, 1 unknown source) from ${SNAPSHOT_URL}`));
     assert.ok(logs.some((l) => l.startsWith('source ') && l.includes('| status')));
@@ -233,6 +247,67 @@ describe('runBuild', () => {
     assert.equal(r.exitCode, 1);
     assert.ok(logs.some((l) => l.startsWith('[build] derived trends.json')));
     assert.ok(logs.some((l) => /^\[build\] FAIL: yc\.json is \d+ bytes \(limit 300000\)$/.test(l)), logs.at(-1));
+  });
+
+  const okSignal = {
+    id: 'sig_ok', name: 'Sig OK', homepage: 'https://sig.test/', description: 'counts', enabled: () => true, requires: null,
+    async fetch() { return { posts: [{ title: 'a' }, { title: 'b' }] }; },
+  };
+  const failSignal = {
+    id: 'sig_fail', name: 'Sig Fail', homepage: 'https://fail.test/topics', description: 'counts', enabled: () => true, requires: null,
+    async fetch() { throw new HttpError(403, 'https://fail.test/api'); },
+  };
+  const gatedSignal = {
+    id: 'sig_gated', name: 'Sig Gated', homepage: 'https://gated.test/', description: 'counts', enabled: (env) => Boolean(env.SIG_TOKEN), requires: 'SIG_TOKEN',
+    async fetch() { return { topics: [] }; },
+  };
+
+  test('signals: data/signals.json is written with every signal, failures carry the snapshot payload and never change the exit code', async () => {
+    const PREVIOUS = {
+      generatedAt: daysAgo(1),
+      signals: [{ id: 'sig_fail', ok: true, lastSuccessAt: daysAgo(1), unavailableSince: null, data: { solicitations: [{ title: 'old' }] } }],
+    };
+    const http = {
+      fetchText: async (url) => {
+        if (url === SNAPSHOT_URL) return { text: JSON.stringify(SNAPSHOT_ITEMS) };
+        if (url.endsWith('signals.json')) return { text: JSON.stringify(PREVIOUS) };
+        throw new HttpError(404, url);
+      },
+    };
+    const r = await build({ http, signals: [okSignal, failSignal, gatedSignal], env: { PUBLIC_URL: 'https://x.test/startup-radar' } });
+    assert.equal(r.exitCode, 0);
+    const signals = readJson(path.join(outDir, 'data', 'signals.json'));
+    assert.equal(signals.generatedAt, NOW.toISOString());
+    assert.deepEqual(signals.signals.map((s) => [s.id, s.enabled, s.ok]), [['sig_ok', true, true], ['sig_fail', true, false], ['sig_gated', false, false]]);
+    const ok = signals.signals[0];
+    assert.deepEqual(Object.keys(ok), ['id', 'name', 'homepage', 'description', 'requires', 'enabled', 'ok', 'fetchedAt', 'lastSuccessAt', 'error', 'unavailableSince', 'data', 'durationMs']);
+    assert.deepEqual(ok.data, { posts: [{ title: 'a' }, { title: 'b' }] });
+    const fail = signals.signals[1];
+    assert.equal(fail.error, 'HTTP 403 for https://fail.test/api');
+    assert.equal(fail.unavailableSince, NOW.toISOString(), 'first failure after a good snapshot -> now');
+    assert.equal(fail.lastSuccessAt, daysAgo(1));
+    assert.deepEqual(fail.data, { solicitations: [{ title: 'old' }] }, 'previous payload carried over');
+    const gated = signals.signals[2];
+    assert.equal(gated.error, 'not configured (SIG_TOKEN)');
+    assert.equal(gated.data, null);
+
+    assert.ok(logs.some((l) => l.startsWith('signal ') && l.includes('| status')), 'signals table header');
+    assert.ok(logs.some((l) => l.startsWith('sig_fail') && l.includes('FAIL (previous kept)') && l.includes('HTTP 403')));
+    assert.ok(logs.some((l) => l.startsWith('sig_gated') && l.includes('not configured (SIG_TOKEN)')));
+    assert.ok(logs.includes('1/2 enabled signals OK'));
+
+    const feed = fs.readFileSync(path.join(outDir, 'feed.xml'), 'utf8');
+    assert.ok(feed.includes('<id>https://x.test/startup-radar/feed.xml</id>'));
+    assert.ok(feed.includes('href="https://x.test/startup-radar/digest.html"'));
+  });
+
+  test('signals: every signal throwing still exits 0 and writes signals.json', async () => {
+    const r = await build({ signals: [failSignal, { ...failSignal, id: 'sig_fail2' }] });
+    assert.equal(r.exitCode, 0);
+    const signals = readJson(path.join(outDir, 'data', 'signals.json'));
+    assert.equal(signals.signals.length, 2);
+    assert.ok(signals.signals.every((s) => s.enabled && !s.ok && s.data === null && s.unavailableSince === NOW.toISOString()));
+    assert.ok(logs.includes('0/2 enabled signals OK'));
   });
 
   test('replaces a stale outDir', async () => {

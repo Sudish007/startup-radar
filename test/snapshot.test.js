@@ -167,12 +167,13 @@ describe('fetchSnapshot', () => {
     const http = fakeHttp((url) => { throw new HttpError(404, url); });
     const logs = [];
     const snap = await fetchSnapshot(BASE, { http, log: (l) => logs.push(l), retryDelayMs: 0 });
-    assert.deepEqual(snap, { items: null, archive: null, sources: null });
-    assert.equal(http.calls.length, 3);
+    assert.deepEqual(snap, { items: null, archive: null, sources: null, signals: null });
+    assert.equal(http.calls.length, 4);
     assert.deepEqual(http.calls.map((c) => c.url), [
       BASE,
       'https://x.test/startup-radar/data/archive.json',
       'https://x.test/startup-radar/data/sources.json',
+      'https://x.test/startup-radar/data/signals.json',
     ]);
     assert.equal(logs[0], `[build] snapshot: none (HTTP 404 for ${BASE})`);
     assert.deepEqual(http.calls[0].opts, { timeoutMs: 15000, maxBytes: 20_000_000 });
@@ -182,8 +183,8 @@ describe('fetchSnapshot', () => {
     const http = fakeHttp(() => { throw new Error('The operation was aborted due to timeout'); });
     const logs = [];
     const snap = await fetchSnapshot(BASE, { http, log: (l) => logs.push(l), retryDelayMs: 1 });
-    assert.deepEqual(snap, { items: null, archive: null, sources: null });
-    assert.equal(http.calls.length, 9);
+    assert.deepEqual(snap, { items: null, archive: null, sources: null, signals: null });
+    assert.equal(http.calls.length, 12);
     assert.ok(logs.some((l) => l.includes('giving up') && l.includes(BASE)));
   });
 
@@ -198,6 +199,7 @@ describe('fetchSnapshot', () => {
     assert.deepEqual(snap.items, [{ title: 'a' }]);
     assert.equal(snap.archive, null);
     assert.equal(snap.sources, null);
+    assert.equal(snap.signals, null, 'a 404 on signals.json (first Phase-2 build) is tolerated');
     assert.equal(http.calls.filter((c) => c.url === BASE).length, 2);
   });
 
@@ -205,22 +207,26 @@ describe('fetchSnapshot', () => {
     const http = fakeHttp((url) => {
       if (url.endsWith('items.json')) return { text: JSON.stringify([{ title: 'a' }, { title: 'b' }]) };
       if (url.endsWith('archive.json')) return { text: JSON.stringify([{ title: 'c' }]) };
+      if (url.endsWith('signals.json')) return { text: JSON.stringify({ generatedAt: '2026-10-01T00:00:00.000Z', signals: [{ id: 'ask_hn', ok: true, data: { posts: [] } }] }) };
       return { text: JSON.stringify({ sources: [{ id: 'hn_show' }], exploreMore: [] }) };
     });
     const snap = await fetchSnapshot(BASE, { http, log: () => {}, retryDelayMs: 0 });
     assert.equal(snap.items.length, 2);
     assert.equal(snap.archive.length, 1);
     assert.deepEqual(snap.sources.sources, [{ id: 'hn_show' }]);
+    assert.equal(snap.signals.signals[0].id, 'ask_hn');
 
     const bad = fakeHttp((url) => {
       if (url.endsWith('items.json')) return { text: '{"not":"an array"}' };
       if (url.endsWith('archive.json')) return { text: 'not json' };
+      if (url.endsWith('signals.json')) return { text: JSON.stringify({ signals: 'nope' }) };
       return { text: '[]' };
     });
     const logs = [];
     const snap2 = await fetchSnapshot(BASE, { http: bad, log: (l) => logs.push(l), retryDelayMs: 0 });
-    assert.deepEqual(snap2, { items: null, archive: null, sources: null });
-    assert.equal(bad.calls.length, 3);
+    assert.deepEqual(snap2, { items: null, archive: null, sources: null, signals: null });
+    assert.equal(bad.calls.length, 4);
+    assert.ok(logs.some((l) => l.includes('unexpected shape') && l.endsWith('signals.json')), 'signals.json with a non-array signals field is rejected');
     assert.ok(logs.some((l) => l.includes('unexpected shape')));
     assert.ok(logs.some((l) => l.includes('invalid JSON')));
   });

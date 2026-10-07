@@ -20,11 +20,27 @@ const stubSource = {
   },
 };
 
-function boot({ adminToken = null, swVersion = 'test-v1' } = {}) {
+let stubSignalCalls = 0;
+// Uses the github_new_repos id so the digest's current-week highlights pick it up.
+const stubSignal = {
+  id: 'github_new_repos',
+  name: 'Stub Signal',
+  homepage: 'https://stub.test/signal',
+  description: 'counts from the stub',
+  enabled: () => true,
+  requires: null,
+  async fetch() {
+    stubSignalCalls += 1;
+    if (stubSignalCalls > 1) throw new Error('second run fails');
+    return { repos: [{ fullName: 'stub/repo', url: 'https://github.com/stub/repo', stars: 7 }], label: 'stars since creation (<= 7 days)' };
+  },
+};
+
+function boot({ adminToken = null, swVersion = 'test-v1', signals = [stubSignal] } = {}) {
   const db = openDb(':memory:');
   const sources = [stubSource];
-  const config = { adminToken, userAgent: 'test', fetchTimeoutMs: 1000, maxBodyBytes: 1000 };
-  const refresh = createRefresh({ db, http: {}, sources, env: {}, log: () => {} });
+  const config = { adminToken, userAgent: 'test', fetchTimeoutMs: 1000, maxBodyBytes: 1000, publicUrl: 'https://radar.test' };
+  const refresh = createRefresh({ db, http: {}, sources, signals, env: {}, log: () => {} });
   // swVersion: null -> let createApp pick its default (a fresh ISO timestamp)
   const app = createApp({ db, sources, config, refresh, env: {}, ...(swVersion === null ? {} : { swVersion }) });
   return new Promise((resolve) => {
@@ -172,6 +188,35 @@ describe('app without ADMIN_TOKEN', () => {
     assert.deepEqual(y.teamSize.buckets, ['1', '2-5', '6-10', '11-25', '26-50', '51+', 'unknown']);
   });
 
+  test('GET /data/signals.json, /data/digest.json and /feed.xml serve the phase-2 payloads with no-store', async () => {
+    const signals = await fetch(`${ctx.base}/data/signals.json`);
+    assert.equal(signals.status, 200);
+    assert.equal(signals.headers.get('cache-control'), 'no-store');
+    assert.match(signals.headers.get('content-type'), /application\/json/);
+    assert.deepEqual(await signals.json(), { generatedAt: null, signals: [] }, 'empty shape before the first refresh');
+
+    const digest = await fetch(`${ctx.base}/data/digest.json`);
+    assert.equal(digest.status, 200);
+    assert.equal(digest.headers.get('cache-control'), 'no-store');
+    const d = await digest.json();
+    assert.deepEqual(Object.keys(d), ['generatedAt', 'method', 'weeks']);
+    assert.equal(d.weeks.length, 12);
+    assert.deepEqual(Object.keys(d.weeks[0]), ['week', 'from', 'to', 'partial', 'rounds', 'launches', 'ycNew', 'risingTerms', 'signalHighlights']);
+    assert.equal(d.weeks.at(-1).partial, true);
+    assert.deepEqual(d.weeks.at(-1).signalHighlights, { repos: [], models: [] });
+    assert.equal(d.weeks[0].signalHighlights, null);
+
+    const feed = await fetch(`${ctx.base}/feed.xml`);
+    assert.equal(feed.status, 200);
+    assert.equal(feed.headers.get('content-type'), 'application/atom+xml; charset=utf-8');
+    assert.equal(feed.headers.get('cache-control'), 'no-store');
+    const xml = await feed.text();
+    assert.ok(xml.startsWith('<?xml version="1.0" encoding="utf-8"?>'));
+    assert.ok(xml.includes('<feed xmlns="http://www.w3.org/2005/Atom">'));
+    assert.equal((xml.match(/<entry>/g) ?? []).length, 12);
+    assert.ok(xml.includes('<id>https://radar.test/feed.xml</id>'), 'config.publicUrl is the feed base');
+  });
+
   test('unknown /api path is a JSON 404', async () => {
     const res = await fetch(`${ctx.base}/api/nope`);
     assert.equal(res.status, 404);
@@ -287,6 +332,32 @@ describe('app with ADMIN_TOKEN', () => {
     assert.ok(dataItems.every((i) => Array.isArray(i.sectors)), '/data/items.json items carry sectors');
     assert.equal(dataStats.sectors.length, 15);
     assert.ok(dataStats.sectors.every((s) => s.count === 0));
+
+    const signals = await (await fetch(`${ctx.base}/data/signals.json`)).json();
+    assert.equal(typeof signals.generatedAt, 'string', 'the refresh ran the signals and persisted them in kv');
+    assert.equal(signals.signals.length, 1);
+    assert.equal(signals.signals[0].id, 'github_new_repos');
+    assert.equal(signals.signals[0].ok, true);
+    assert.equal(signals.signals[0].data.repos[0].stars, 7);
+    assert.deepEqual(ctx.db.kvGet('signals'), signals, 'served straight from kv');
+    assert.equal(body.signals, undefined, 'POST /api/refresh response shape is unchanged');
+  });
+
+  test('a failing signal run keeps the previous payload in kv with unavailableSince, and the digest highlights follow', async () => {
+    const before = await (await fetch(`${ctx.base}/data/signals.json`)).json();
+    const res = await fetch(`${ctx.base}/api/refresh`, { method: 'POST', headers: { Authorization: 'Bearer secret' } });
+    assert.equal(res.status, 200);
+    const after = await (await fetch(`${ctx.base}/data/signals.json`)).json();
+    const s = after.signals[0];
+    assert.equal(s.ok, false);
+    assert.equal(s.error, 'second run fails');
+    assert.equal(s.lastSuccessAt, before.signals[0].lastSuccessAt);
+    assert.deepEqual(s.data, before.signals[0].data, 'previous data carried over');
+    assert.equal(typeof s.unavailableSince, 'string');
+    assert.ok(Date.parse(s.unavailableSince) >= Date.parse(before.generatedAt));
+
+    const digest = await (await fetch(`${ctx.base}/data/digest.json`)).json();
+    assert.deepEqual(digest.weeks.at(-1).signalHighlights.repos, [{ fullName: 'stub/repo', url: 'https://github.com/stub/repo', stars: 7, label: 'stars since creation (<= 7 days)' }]);
   });
 
   test('derived files are recomputed only when the DB changed', async () => {

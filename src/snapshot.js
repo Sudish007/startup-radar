@@ -45,18 +45,20 @@ async function fetchJsonFile(url, validate, { http, log, retryDelayMs }) {
 }
 
 /**
- * Fetch items.json (snapshotUrl) plus the sibling archive.json and sources.json.
- * Returns { items: array|null, archive: array|null, sources: object|null }; never throws.
+ * Fetch items.json (snapshotUrl) plus the sibling archive.json, sources.json and signals.json.
+ * Returns { items: array|null, archive: array|null, sources: object|null, signals: object|null }; never throws.
  */
 export async function fetchSnapshot(snapshotUrl, { http, log = console.log, retryDelayMs = RETRY_DELAY_MS } = {}) {
   const opts = { http, log, retryDelayMs };
   const isArray = (v) => Array.isArray(v);
   const isSourcesDoc = (v) => Boolean(v) && typeof v === 'object' && Array.isArray(v.sources);
+  const isSignalsDoc = (v) => Boolean(v) && typeof v === 'object' && Array.isArray(v.signals);
 
   const items = await fetchJsonFile(snapshotUrl, isArray, opts);
   const archive = await fetchJsonFile(new URL('archive.json', snapshotUrl).href, isArray, opts);
   const sources = await fetchJsonFile(new URL('sources.json', snapshotUrl).href, isSourcesDoc, opts);
-  return { items, archive, sources };
+  const signals = await fetchJsonFile(new URL('signals.json', snapshotUrl).href, isSignalsDoc, opts);
+  return { items, archive, sources, signals };
 }
 
 function validFetchedAt(value) {

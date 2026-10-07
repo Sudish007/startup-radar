@@ -6,8 +6,11 @@ import { createHttp } from './lib/http.js';
 import { fetchFeed, parseFeed, feedItemToRaw } from './lib/rss.js';
 import { normalizeItem } from './lib/normalize.js';
 import { loadSources } from './sources/index.js';
+import { loadSignals } from './signals/index.js';
+import { formatSignalsTable, runSignals } from './signals/run.js';
 
 export const SOURCE_TIMEOUT_MS = 15000;
+export const SIGNALS_KV_KEY = 'signals';
 
 function withTimeout(promise, ms, label) {
   let timer;
@@ -76,12 +79,28 @@ export async function runSource(source, deps) {
 }
 
 /**
- * Create a refresh engine bound to deps { db, http, sources, env, log }.
+ * Create a refresh engine bound to deps { db, http, sources, env, log, signals? }.
  * runRefreshCycle is single-flight: concurrent callers share the in-flight promise.
+ * When `signals` is given, runSignals runs after the sources cycle with the previous payload from
+ * db.kvGet('signals'); the result is stored back under the same key (summary.signals). Signal
+ * failures never fail the cycle.
  */
 export function createRefresh(deps) {
-  const { sources, env = process.env, log = console.log } = deps;
+  const { db, http, sources, signals = null, env = process.env, log = console.log } = deps;
   let inFlight = null;
+
+  async function cycleSignals(now) {
+    if (!signals || signals.length === 0) return null;
+    try {
+      const previous = db.kvGet(SIGNALS_KV_KEY);
+      const result = await runSignals({ signals, http, env, previous, now, log });
+      db.kvSet(SIGNALS_KV_KEY, result, { nowIso: result.generatedAt });
+      return result;
+    } catch (err) {
+      log(`[signals] cycle failed: ${err?.message ?? err}`);
+      return null;
+    }
+  }
 
   function enabledSources() {
     return sources.filter((s) => s.enabled(env));
@@ -104,7 +123,8 @@ export function createRefresh(deps) {
           : `[refresh] ${r.id}: FAIL after ${r.durationMs} ms: ${r.error}`,
       );
     }
-    return { startedAt, durationMs: Date.now() - started, sources: results };
+    const signalsResult = await cycleSignals(new Date());
+    return { startedAt, durationMs: Date.now() - started, sources: results, signals: signalsResult };
   }
 
   function runRefreshCycle() {
@@ -198,8 +218,9 @@ async function main() {
   const db = openDb(path.join(config.dataDir, 'startup-radar.db'));
   try {
     const sources = await loadSources();
+    const signals = await loadSignals();
     const http = createHttp(config);
-    const refresh = createRefresh({ db, http, sources, env: process.env, log: () => {} });
+    const refresh = createRefresh({ db, http, sources, signals, env: process.env, log: () => {} });
     const summary = await refresh.runRefreshCycle();
 
     const lines = formatSummaryTable(sources, summary, process.env);
@@ -207,6 +228,10 @@ async function main() {
     lines.pop(); // blank line: main() prints it as the "\n" prefix of the footer, as before
     for (const line of lines) console.log(line);
     console.log(`\n${footer}; ${db.countItems()} items in DB`);
+    if (summary.signals) {
+      console.log('');
+      for (const line of formatSignalsTable(signals, summary.signals)) console.log(line);
+    }
     const okCount = summary.sources.filter((r) => r.ok).length;
     return okCount > 0 ? 0 : 1;
   } finally {
