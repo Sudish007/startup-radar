@@ -62,8 +62,10 @@ Pages and on the Node server; the server additionally exposes a read-only JSON A
 **Honesty rules.** Every number on every page is a real count or sum of the items shown, with its
 basis stated next to it (the 90-day window, the selected batches, "N of M had a parseable
 amount"). Derived values are labelled with how they were derived: sector tags say
-`keyword-tagged`, funding amounts say `parsed from headline` or `parsed from summary`, dollar
-figures say `approx. USD at static rates — see table`, related items say `token overlap`. Nothing
+`keyword-tagged`, funding amounts say `parsed from headline` or `parsed from summary`, a parsed
+valuation says `valuation $22B — not a round amount` and is never an amount, grouped funding rows
+say `grouped: same parsed amount (or valuation) and shared company name, published within 3 days`,
+dollar figures say `approx. USD at static rates — see table`, related items say `token overlap`. Nothing
 is called a score, trend score, opportunity index or ranking, there is no generated text, and
 anything kept only in your browser is labelled "stored in this browser only — export to keep
 it". Computations that cover only part of the items (the funding sums) show their coverage.
@@ -128,12 +130,37 @@ step and no third-party script. What it does:
   the window with the amount, currency and stage parsed from its headline (then its summary) by
   text rules (`src/lib/funding-parse.js`; USD, EUR, GBP, INR, "crore" / "lakh" imply INR);
   the amount and the stage are each labelled `parsed from headline` / `parsed from summary` for
-  the field they were actually read from (they can differ on one row), and a headline
-  that names a valuation or fund size is parsed as such, so the sums are "headline amounts".
-  Approximate USD uses the static ECB reference rates of 2026-10-05 printed in the page's FX
-  table (`src/lib/fx-rates.js`) and is used only to sort and to sum. Filters (stage, sector,
-  region, time window, sort) are URL-synced; totals by sector and by stage cover all window
-  items and the coverage line says how many items had a parseable amount and a stage.
+  the field they were actually read from (they can differ on one row). A money figure the text
+  calls a valuation is **not** an amount: "doubles valuation to $22B", "at a $1B valuation",
+  "valued at $2B", "worth $5B" and "$40B+ valuation" are recorded as `funding.valuation` (with
+  `valuationCurrency`, `valuationText`, `valuationFrom`), shown on the row as
+  `valuation $22B — not a round amount · parsed from headline` and in the drawer as a
+  "Valuation" row, and never ranked or summed; a headline with only a valuation has no amount
+  (`usdApprox` null, excluded from "with a parsed amount" and from every total). Among the other
+  figures the amount is the one closest to a raise word (raises, secures, lands, closes, bags,
+  nabs, gets, picks up, round, seed, Series X, funding, investment, tender offer, debt, grant),
+  so "ElevenLabs' valuation doubles to $22BN, as completes $300M employee tender offer" yields
+  amount $300M and valuation $22BN; a figure in brackets right after another ("€892.4 million
+  ($1 billion)") restates it and is dropped; a fund size still parses as an amount when the
+  headline reads that way. Approximate USD uses the static ECB reference rates of 2026-10-05
+  printed in the page's FX table (`src/lib/fx-rates.js`) and is used only to sort and to sum.
+  Filters (stage, sector, region, time window, sort) are URL-synced; in the approx. USD order,
+  reports of one round are grouped into one row (`public/funding-group.js`, rule below), led by
+  the newest report with an amount, the other sources listed as "also reported by" links that
+  open in a new tab. Totals by sector and by stage cover all window items and the coverage line
+  says how many items had a parseable amount and a stage (and how many carry a valuation, which
+  is never summed). The totals and FX tables sit in wrappers that scroll horizontally on their own
+  below 480 px, so the page itself never widens (320 px verified).
+- **Same-story grouping** (`public/funding-group.js`, used by `src/digest.js` in Node and by
+  `funding.html` in the browser). Two funding items are one story only when all three hold:
+  published within 3 days of each other; their titles share a company-name token (a word with a
+  capital letter, at least 4 characters, that is not a stopword, a generic business / sector /
+  round / money word, a nationality or a place: "ElevenLabs", "Spiko"; in an all-capitalised
+  Title Case headline only the words before the first money figure or raise verb count, and such a
+  headline without either yields no token); and their parsed money figures agree: the same approx.
+  USD amount, or, when one of them has no amount, the same valuation (figure and currency). Items
+  with different amounts are never grouped. Every grouped row prints the rule verbatim:
+  `grouped: same parsed amount (or valuation) and shared company name, published within 3 days`.
 - **YC lens** (`yc.html`, from `data/yc.json`). The companies of the three newest Y Combinator
   batches (slim fields only, from the `yc-oss` mirror; attribution "Source: yc-oss open API
   mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few
@@ -173,7 +200,10 @@ step and no third-party script. What it does:
 - **Digest + Atom feed** (`digest.html`, from `data/digest.json`; `feed.xml`). One page per ISO
   week for the last 12 weeks (`?week=YYYY-Www` deep links, a select plus prev / next buttons;
   the default is the newest complete week): the funding items with the largest headline amounts
-  ("ranked by approx. USD at static rates", amounts shown as written), the launches with the
+  ("ranked by approx. USD at static rates", amounts shown as written; a parsed valuation is a
+  note on the row and never ranked, so a valuation-only headline is not listed; reports of one
+  round are one row led by the newest report with an amount, the others as "also reported by"
+  links with the grouping rule printed next to them, see "Same-story grouping" above), the launches with the
   most points or votes (each row labelled `HN points` or `PH votes`), the YC companies whose
   launch date falls in the week, and the 15 terms with the largest rise versus the 4 weeks
   before (trends method, computed as of the week's end). Signal highlights (top GitHub
@@ -439,11 +469,11 @@ happens in the browser (`public/filter.js`), so there are no query parameters.
 | `GET /data/sources.json` | Exactly the `/api/sources` payload: `{ "sources": [...], "exploreMore": [...] }`. Backs `sources.html`. |
 | `GET /data/stats.json` | The `/api/stats` payload plus `generatedAt` (ISO 8601, when the build or request started), `archiveItems` (number of items in `archive.json`, `0` when there is none) and `sectors` (`[{ id, label, count }]`, the 15 sectors with the number of window items tagged with each; the only place sector labels travel). The UI shows "Last refreshed" from `lastRefresh`, falling back to `generatedAt`. |
 | `GET /data/trends.json` | Backs `trends.html`. `{ generatedAt, method, thisWeek { id, from, to, partial }, prior { from, to, weeks }, terms [{ term, kind: "token" \| "bigram", thisWeek, priorWeeklyAvg, rise, ratio \| null, examples [item keys, ≤ 5] }], minSupport (the "this week" threshold the page prints), weeks [12 ISO week ids], partialWeek, bySector / byKind / byRegion [{ id, label, counts[12] }], items }`. Computed by `src/trends.js` from the window items. |
-| `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom } + usdApprox \| null] (`amountFrom` / `stageFrom` are `"title"` \| `"summary"` \| `null`, the field each value was read from; the page labels the amount and the stage separately), totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
+| `GET /data/funding.json` | Backs `funding.html`. `{ generatedAt, method, fx { asOf, source, rates }, items [item + sectors + funding { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom, valuation, valuationCurrency, valuationText, valuationFrom } + usdApprox \| null] (`amountFrom` / `stageFrom` / `valuationFrom` are `"title"` \| `"summary"` \| `null`, the field each value was read from; the page labels the amount, the stage and the valuation separately; a valuation is never the amount, so a valuation-only headline has `amount` and `usdApprox` null), totals { bySector, byStage [{ …, items, withAmount, sumUsd }] }, coverage { items, withAmount, withStage } }`. Computed by `src/funding.js` (`src/lib/funding-parse.js`, `src/lib/fx-rates.js`). |
 | `GET /data/yc.json` | Backs `yc.html`. `{ generatedAt, attribution, batches [{ batch, count }], companies [{ key, name, url, website, oneLiner, batch, status, stage, industry, subindustry, tags, teamSize, location, launchedAt }], byIndustry, tagFrequency (top 40), teamSize { buckets, counts }, byStatus }` for the three newest batches (slim fields only, about 230 KB; the build fails above 300 KB). Computed by `src/yc-lens.js` from the YC source rows, which are not limited to the 90-day window. |
 
 | `GET /data/signals.json` | Backs `signals.html`. `{ generatedAt, signals [{ id, name, homepage, description, requires, enabled, ok, fetchedAt, lastSuccessAt, error, unavailableSince, data, durationMs }] }` in registry order (`ask_hn`, `github_new_repos`, `hf_trending`, `hn_hiring`, `producthunt_topics`, `sbir`); `data` is per signal (see the [Signals table](#signals-6-fetched-with-every-build)), `null` for a disabled signal, and the previous build's data for a failed one (`ok: false`, `unavailableSince` = the first failure). Computed by `src/signals/run.js`; the server keeps the latest run in the `kv` table and serves `{ generatedAt: null, signals: [] }` before the first refresh. |
-| `GET /data/digest.json` | Backs `digest.html`. `{ generatedAt, method, weeks [12 × { week "YYYY-Www", from, to, partial, rounds [{ key, title, url, source, publishedAt, amount, currency, amountText, stage, usdApprox, metric: "approx. USD at static rates" }], launches [{ key, title, url, source, publishedAt, metric: "HN points" \| "PH votes", value }], ycNew [{ key, name, url, batch, oneLiner, launchedAt }], risingTerms [{ term, kind, thisWeek, priorWeeklyAvg, rise }], signalHighlights { repos [≤ 5], models [≤ 5], github, huggingface } \| null (current week only; `github` / `huggingface` = that signal's `{ ok, fetchedAt, lastSuccessAt, unavailableSince }` or `null`, so data carried over from a failed fetch is labelled "last good data from …" on the page and in the feed) }] }`, oldest first. Computed by `src/digest.js`. |
+| `GET /data/digest.json` | Backs `digest.html`. `{ generatedAt, method, roundsGrouping (the one-line grouping rule the page prints), weeks [12 × { week "YYYY-Www", from, to, partial, rounds [{ key, title, url, source, publishedAt, amount, currency, amountText, amountFrom, stage, usdApprox, metric: "approx. USD at static rates", valuationText, valuationFrom, alsoReportedBy [{ key, title, url, source, publishedAt }] }] (one row per story, every row has a real amount; `alsoReportedBy` lists the other reports grouped into it, including valuation-only headlines), launches [{ key, title, url, source, publishedAt, metric: "HN points" \| "PH votes", value }], ycNew [{ key, name, url, batch, oneLiner, launchedAt }], risingTerms [{ term, kind, thisWeek, priorWeeklyAvg, rise }], signalHighlights { repos [≤ 5], models [≤ 5], github, huggingface } \| null (current week only; `github` / `huggingface` = that signal's `{ ok, fetchedAt, lastSuccessAt, unavailableSince }` or `null`, so data carried over from a failed fetch is labelled "last good data from …" on the page and in the feed) }] }`, oldest first. Computed by `src/digest.js`. |
 | `GET /feed.xml` | Atom 1.0 (`application/atom+xml`; `text/xml` from GitHub Pages): `<id>` = `PUBLIC_URL/feed.xml`, `rel="self"` and a `rel="alternate"` link to `digest.html`, one `<entry>` per digest week (newest first; `id`/`link` = `PUBLIC_URL/digest.html?week=YYYY-Www`, `title` "Startup Radar digest — week YYYY-Www", `updated` = the build time for the current week and the week end otherwise, `published` = the week start, `<content type="html">` with the same lists). String-built with an escape helper by `src/feed-xml.js`, no XML dependency. |
 
 Items in `items.json`, `archive.json` and `/api/items` carry `sectors: string[]` (sector ids,
@@ -944,7 +974,15 @@ GitHub Pages workflow runs the same command before every build.
   GBP / INR with `k` / `M` / `bn` / `crore` / `lakh`, stages (pre-seed to Series H, bridge and
   growth only when followed by a round word), `amountFrom` / `stageFrom` / `parsedFrom` title
   or summary (a title amount with a summary-only stage keeps both fields apart), `toUsd` at the
-  static rates.
+  static rates; valuations kept apart from amounts (the three ElevenLabs headlines of 2026-W40
+  → amount null / null / $300M with valuation $22B each, "raises $50M Series B at a $1B
+  valuation", "valued at $2B after $100M round", "hits $5B valuation", "unicorn MNT-Halan secures
+  $76.5m" stays an amount, "closes its fund at $120 million" stays an amount, "€892.4 million
+  ($1 billion) valuation" keeps the first figure), the amount as the figure closest to a raise word.
+- `funding-group.test.js`: `public/funding-group.js` on a fixture built from live headlines:
+  company tokens (sentence case vs Title Case, possessives, hyphens, inner capitals, generic and
+  place words dropped), equal amounts vs equal valuations, the 3-day window, one row per story led
+  by the newest report with an amount, never two items with different amounts, the rule label.
 - `text.test.js`, `weeks.test.js`: `public/text.js` stopwords, significant tokens, singulars
   and bigrams; `src/lib/weeks.js` ISO week ids, Monday starts, the last-N-weeks list.
 - `trends.test.js`, `derived.test.js`: `buildTrends` (12 weeks, partial current week, minimum
@@ -1004,16 +1042,20 @@ the 90-day window with the required fields, `data/sources.json` and `data/stats.
 documented shape, `generatedAt` is fresher than `N` hours (default 3), `data/archive.json` is
 either absent or a consistent split, `data/trends.json` has 12 weeks and 15 sector rows of
 non-negative integers, `data/funding.json` has consistent coverage counts and `rates.USD === 1`,
-`data/yc.json` stays under 300 KB with ≥ 100 companies in 3 batches, the verbatim attribution and
-industry counts that sum to the company count, `data/signals.json` lists the 6 signals with
-consistent states (a disabled signal is never `ok`, a failed one carries `unavailableSince`),
+carries `funding.valuation` apart from the amount (a valuation-only item has `amount` and
+`usdApprox` null; totals never sum an unparsed row) and says so in its method, `data/yc.json`
+stays under 300 KB with ≥ 100 companies in 3 batches, the verbatim attribution and industry
+counts that sum to the company count, `data/signals.json` lists the 6 signals with consistent
+states (a disabled signal is never `ok`, a failed one carries `unavailableSince`),
 `data/digest.json` has 12 ISO weeks oldest first with the last one partial, rounds with the
-static-rates metric, launches with `HN points` / `PH votes` and highlights on the current week
-only, `feed.xml` answers 200 with an xml content type, starts with `<?xml`, has the Atom root,
-at least one `<entry>` (every one closed), no unescaped `&`, an `<id>`, `<updated>`, a
-`rel="self"` link and the `digest.html` alternate, every page has one bare `<h1>`, its own
-script and stylesheets and the Atom `<link rel="alternate">`, and `notebook.html` carries the
-browser-only banner. It prints one `PASS`/`FAIL` line per check (151 checks) and exits 1 on any
+static-rates metric, a real amount on every round with `valuationText` and
+`alsoReportedBy[{ key, url, source }]` (no item twice in a week), the valuation and grouping
+rules in its method and `roundsGrouping`, launches with `HN points` / `PH votes` and highlights
+on the current week only, `feed.xml` answers 200 with an xml content type, starts with `<?xml`,
+has the Atom root, at least one `<entry>` (every one closed), no unescaped `&`, an `<id>`,
+`<updated>`, a `rel="self"` link and the `digest.html` alternate, every page has one bare `<h1>`,
+its own script and stylesheets and the Atom `<link rel="alternate">`, and `notebook.html` carries
+the browser-only banner. It prints one `PASS`/`FAIL` line per check (158 checks) and exits 1 on any
 failure. It works against `http://localhost:3000`, a local `dist/` preview and the live site.
 
 `node scripts/check-links.mjs` (network, not part of `npm test`) GETs every URL in
@@ -1068,7 +1110,12 @@ so no browser download is required. Two modes:
   `feed.xml` fetched from the page parses with `DOMParser('application/xml')` without a
   `parsererror` into one Atom entry per week, `resources.html` lists 16 https links in 4 groups
   all with `rel="noopener noreferrer"` and no superlatives, the 390 px layout of every page has
-  no overflow, and there are no console errors.
+  no overflow, `funding.html` and `digest.html` fit a 320 px viewport (every funding table inside
+  its wrapper, the page never wider than the viewport, text ≥ 12 px, controls 44 px), the funding
+  rows show a parsed valuation only as a note (never as the amount), the approx. USD order groups
+  the reports of one round with new-tab `noopener noreferrer` links and the rule label and every
+  grouped report has the lead's amount (or valuation) within 3 days, the digest rounds carry the
+  same notes and links as their JSON, and there are no console errors.
   Use it against a `dist/` preview or the live Pages site. On Windows run it with
   `$env:PYTHONUTF8 = "1"` when piping the output (check labels contain `↓` and `—`).
 
