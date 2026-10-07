@@ -2,13 +2,16 @@
 // window, unchanged (the drawer renders them as-is) plus `funding` (parsed from headline) and
 // `usdApprox` (static FX table, sorting/sums only). Totals state their coverage: `items` is the
 // number of funding items, `withAmount` how many had a parseable amount, `sumUsd` sums only those.
+// A figure the text calls a valuation travels as `funding.valuation*` and is never an amount, so a
+// valuation-only headline has usdApprox null and is neither ranked nor summed.
 
 import { FX, toUsd } from './lib/fx-rates.js';
 import { parseFunding } from './lib/funding-parse.js';
 import { SECTORS, tagSectors } from './lib/sectors.js';
 
 export const FUNDING_METHOD =
-  'Amounts and stages are parsed from the headline (then the summary) with text rules; ' +
+  'Amounts and stages are parsed from the headline (then the summary) with text rules; a figure the text calls a ' +
+  'valuation is kept apart as a valuation and never counted as an amount; ' +
   `USD figures are approximate conversions at static ${FX.source} of ${FX.asOf}.`;
 
 export const STAGE_ORDER = ['pre-seed', 'seed', 'series a', 'series b', 'series c', 'series d', 'series e', 'series f', 'series g', 'series h', 'bridge', 'growth', 'debt', 'grant'];
@@ -32,7 +35,8 @@ function add(total, usd) {
 /**
  * buildFunding(items, { now }) -> {
  *   generatedAt, method, fx: FX,
- *   items: [item + { funding: { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom }, usdApprox }],
+ *   items: [item + { funding: { amount, currency, amountText, stage, amountFrom, stageFrom, parsedFrom,
+ *                              valuation, valuationCurrency, valuationText, valuationFrom }, usdApprox }],
  *   totals: { bySector: [{ id, label, items, withAmount, sumUsd }], byStage: [{ stage, items, withAmount, sumUsd }] },
  *   coverage: { items, withAmount, withStage } }
  * `byStage` lists only stages that occur, in STAGE_ORDER, with an 'unknown' row last when any item lacks a stage.

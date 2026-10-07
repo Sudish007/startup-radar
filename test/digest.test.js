@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { itemKey } from '../public/filter.js';
-import { buildDigest, DIGEST_WEEKS, MAX_HIGHLIGHTS, MAX_LAUNCHES, MAX_ROUNDS, MAX_TERMS, ROUNDS_METRIC } from '../src/digest.js';
+import { buildDigest, DIGEST_METHOD, DIGEST_WEEKS, MAX_HIGHLIGHTS, MAX_LAUNCHES, MAX_ROUNDS, MAX_TERMS, ROUNDS_GROUPING, ROUNDS_METRIC } from '../src/digest.js';
 import { buildFunding } from '../src/funding.js';
 import { isoWeekEnd, isoWeekId, isoWeekStart, lastWeeks } from '../src/lib/weeks.js';
 
@@ -80,10 +80,47 @@ describe('buildDigest', () => {
     assert.deepEqual(cur.rounds.slice(1).map((r) => r.usdApprox), [12e6, 11e6, 10e6, 9e6, 8e6, 7e6, 6e6, 5e6, 4e6]);
     assert.equal(cur.rounds.some((r) => r.title.startsWith('Mystery')), false, 'no amount -> cannot be ordered -> excluded');
     assert.equal(cur.rounds[0].key, itemKey(cur.rounds[0].url));
-    assert.deepEqual(Object.keys(cur.rounds[0]), ['key', 'title', 'url', 'source', 'publishedAt', 'amount', 'currency', 'amountText', 'stage', 'usdApprox', 'metric']);
+    assert.deepEqual(Object.keys(cur.rounds[0]), ['key', 'title', 'url', 'source', 'publishedAt', 'amount', 'currency', 'amountText', 'amountFrom', 'stage', 'usdApprox', 'metric', 'valuationText', 'valuationFrom', 'alsoReportedBy']);
+    assert.deepEqual([cur.rounds[0].amountFrom, cur.rounds[0].valuationText, cur.rounds[0].valuationFrom, cur.rounds[0].alsoReportedBy], ['title', null, null, []]);
     const prev = d.weeks.at(-2);
     assert.deepEqual(prev.rounds.map((r) => r.title), ['LastWeek raises $100M']);
     assert.equal(d.weeks.at(-3).rounds.length, 0);
+  });
+
+  test('rounds: a valuation is never ranked; one row per story with the other reports as alsoReportedBy (funding parser fix)', () => {
+    const src = (name) => ({ id: name.toLowerCase(), name });
+    const items = [
+      item('AI voice startup ElevenLabs doubles valuation to $22B', { kind: 'funding', publishedAt: at(1, 18), source: src('TechCrunch') }),
+      item('ElevenLabs doubles valuation to $22bn with tender offer', { kind: 'funding', publishedAt: at(1, 12), source: src('Sifted') }),
+      item("ElevenLabs' valuation doubles to $22BN, as completes $300M employee tender offer", { kind: 'funding', publishedAt: at(1, 9), source: src('Tech.eu') }),
+      item('Valor, Atreides, and Sequoia back AI startup Flow Engineering at $750M valuation', { kind: 'funding', publishedAt: at(1), source: src('TechCrunch') }),
+      item('Armadin raises $255.5M at $2.5B valuation', { kind: 'funding', publishedAt: at(1), source: src('TechCrunch') }),
+      item('Hadrian raises $40M to tackle AI-driven cyber threats', { kind: 'funding', publishedAt: at(1, 11), source: src('Tech.eu') }),
+      item('Exclusive: Hadrian raises $40m as AI cyberattacks accelerate', { kind: 'funding', publishedAt: at(1, 10), source: src('Sifted') }),
+      item('Cybersecurity startup Hadrian raises \u20AC35.68 million to scale its platform', { kind: 'funding', publishedAt: at(1, 9), source: src('EU-Startups') }),
+      item('Acme raises $40M seed', { kind: 'funding', publishedAt: at(1, 8), source: src('S') }),
+    ];
+    const funding = buildFunding(items, { now: NOW });
+    assert.equal(funding.coverage.withAmount, 6, 'the three valuation-only headlines have no amount');
+    const cur = buildDigest({ items, funding, now: NOW }).weeks.at(-1);
+    assert.deepEqual(cur.rounds.map((r) => [r.amountText, r.usdApprox, r.source, r.alsoReportedBy.map((a) => a.source)]), [
+      ['$300M', 300_000_000, 'Tech.eu', ['TechCrunch', 'Sifted']],
+      ['$255.5M', 255_500_000, 'TechCrunch', []],
+      ['$40M', 40_000_000, 'Tech.eu', ['Sifted']],
+      ['$40M', 40_000_000, 'S', []],
+      ['\u20AC35.68 million', Math.round(35_680_000 * 1.12), 'EU-Startups', []],
+    ]);
+    assert.equal(cur.rounds.some((r) => /\$22/.test(r.amountText) || r.usdApprox === 22_000_000_000 || r.usdApprox === 750_000_000), false, 'valuations are not ranked');
+    const eleven = cur.rounds[0];
+    assert.deepEqual([eleven.valuationText, eleven.valuationFrom, eleven.amountFrom], ['$22BN', 'title', 'title']);
+    assert.deepEqual(Object.keys(eleven.alsoReportedBy[0]), ['key', 'title', 'url', 'source', 'publishedAt']);
+    assert.equal(eleven.alsoReportedBy[0].key, itemKey(items[0].url));
+    assert.equal(cur.rounds[1].valuationText, '$2.5B');
+    assert.equal(cur.rounds[2].alsoReportedBy.length, 1, 'the EUR 35.68M report has a different amount and stays its own row');
+    assert.equal(cur.rounds[3].alsoReportedBy.length, 0, 'Acme shares the $40M amount but no company name');
+    assert.ok(DIGEST_METHOD.includes('grouped into one row'));
+    assert.equal(ROUNDS_GROUPING, 'grouped: same parsed amount (or valuation) and shared company name, published within 3 days');
+    assert.equal(buildDigest({ now: NOW }).roundsGrouping, ROUNDS_GROUPING, 'digest.json carries the rule the page prints');
   });
 
   test('launches: launch-kind items with points/votes, top 10 by value, metric HN points | PH votes', () => {

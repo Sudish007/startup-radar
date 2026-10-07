@@ -29,6 +29,10 @@
 /* data tables: table at >= 1024 px, stacked cards below (sources.css pattern) */
 .table-scroll{overflow:visible}
 .table-x{overflow-x:auto;overscroll-behavior-x:contain}
+/* plain tables at every width (funding totals, FX): any horizontal scroll stays inside the wrapper, never the page */
+.table-fit{overflow-x:auto;overscroll-behavior-x:contain;min-width:0}
+@media (max-width:479.98px){.table-fit .data-table th,.table-fit .data-table td{padding:8px}
+}
 .data-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:auto;background:var(--bg-1);border:1px solid var(--hairline);border-radius:var(--r-3)}
 .data-table caption{text-align:left;caption-side:top;padding:0 0 8px;font:500 var(--t-label)/1.4 var(--font-ui);color:var(--fg-2)}
 .data-table thead th{font:500 var(--t-label)/1.4 var(--font-ui);color:var(--fg-2);background:var(--bg-1)}
@@ -45,6 +49,10 @@
 .data-table td.num{white-space:nowrap}
 .data-table .dim{color:var(--fg-2)}
 .data-table .cell-note{display:block;margin-top:2px;color:var(--fg-2);font:400 var(--t-meta)/1.4 var(--font-mono);white-space:normal}
+/* funding parser fix: a parsed valuation is a note (never the amount); grouped rows list the other reports as links */
+.data-table .cell-note.valuation{color:var(--fg-1)}
+.data-table th .cell-note{font-weight:400}
+.data-table .cell-note.also a{color:var(--accent-text)}
 .data-table .partial{color:var(--fg-2)}
 .item-link{color:var(--fg-0);font-weight:500;text-decoration:none}
 .item-link:hover,.item-link:focus-visible{text-decoration:underline;text-underline-offset:3px}
@@ -159,6 +167,7 @@ details.industry-group[open]>summary{border-bottom:1px solid var(--hairline);bor
 .data-table.stack tbody th{display:block;padding:0 0 8px;font-size:var(--t-title);line-height:1.35;font-weight:600;border:0}
 .data-table.stack tbody td{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border:0;text-align:left}
 .data-table.stack tbody td::before{content:attr(data-label);font:400 var(--t-meta)/1.5 var(--font-mono);color:var(--fg-2);flex:0 0 auto;max-width:50%;overflow-wrap:anywhere}
+.data-table.stack tbody td .cell-value{min-width:0}
 .data-table.stack tbody td.num{text-align:right}
 .data-table.stack tbody td.wide{flex-direction:column;gap:4px}
 }

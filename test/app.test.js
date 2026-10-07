@@ -200,7 +200,8 @@ describe('app without ADMIN_TOKEN', () => {
     assert.equal(digest.status, 200);
     assert.equal(digest.headers.get('cache-control'), 'no-store');
     const d = await digest.json();
-    assert.deepEqual(Object.keys(d), ['generatedAt', 'method', 'weeks']);
+    assert.deepEqual(Object.keys(d), ['generatedAt', 'method', 'roundsGrouping', 'weeks']);
+    assert.equal(typeof d.roundsGrouping, 'string');
     assert.equal(d.weeks.length, 12);
     assert.deepEqual(Object.keys(d.weeks[0]), ['week', 'from', 'to', 'partial', 'rounds', 'launches', 'ycNew', 'risingTerms', 'signalHighlights']);
     assert.equal(d.weeks.at(-1).partial, true);

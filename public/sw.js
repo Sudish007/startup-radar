@@ -13,7 +13,7 @@ const SHELL_CACHE = `sr-shell-${VERSION}`;
 const DATA_CACHE = 'sr-data';
 const STATIC_CACHE = 'sr-static';
 const STATIC_MAX = 24;
-const SHELL = ['./', './index.html', './sources.html', './trends.html', './funding.html', './yc.html', './notebook.html', './signals.html', './digest.html', './resources.html', './styles.css', './sources.css', './pages.css', './theme.js', './ui.js', './app.js', './filter.js', './format.js', './radar.js', './sources.js', './trends.js', './funding.js', './yc.js', './notebook.js', './signals.js', './digest.js', './resources.js', './resources-data.js', './lens.js', './nav.js', './shell.js', './drawer.js', './notebook-store.js', './notebook-tools.js', './related.js', './text.js', './pwa.js', './icons.svg', './manifest.webmanifest'];
+const SHELL = ['./', './index.html', './sources.html', './trends.html', './funding.html', './yc.html', './notebook.html', './signals.html', './digest.html', './resources.html', './styles.css', './sources.css', './pages.css', './theme.js', './ui.js', './app.js', './filter.js', './format.js', './radar.js', './sources.js', './trends.js', './funding.js', './yc.js', './notebook.js', './signals.js', './digest.js', './resources.js', './resources-data.js', './lens.js', './nav.js', './shell.js', './drawer.js', './notebook-store.js', './notebook-tools.js', './related.js', './text.js', './funding-group.js', './pwa.js', './icons.svg', './manifest.webmanifest'];
 
 const SCOPE = self.registration.scope;
 const scopePath = new URL(SCOPE).pathname;

@@ -3,8 +3,9 @@
 // items.json (+ archive.json on demand) store for drawer lookups, small textContent-only table helpers.
 
 import { createDrawer, keyOf, openExternal } from './drawer.js';
+import { METHOD_LABELS, safeHttpUrl } from './format.js';
 import { mountShell } from './shell.js';
-import { createStatusLine, el, fetchJson, openHelp, pollStats, startPwa, startTicker, tickTimes, toast, toggleTheme } from './ui.js';
+import { createStatusLine, el, extLink, fetchJson, openHelp, pollStats, startPwa, startTicker, tickTimes, toast, toggleTheme } from './ui.js';
 
 export const STATS_URL = './data/stats.json';
 export const ITEMS_URL = './data/items.json';
@@ -28,6 +29,8 @@ export const tx = (s) => document.createTextNode(String(s));
 export const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString() : '\u2014');
 export const cell = (label, children, className = null) => el('td', { 'data-label': label, className }, children);
 export const textCell = (label, text, className = null) => cell(label, [tx(text)], className);
+/** A value with its method notes in one span.cell-value, so the stacked card layout keeps label and value as two items. */
+export const noteCell = (label, text, notes = [], className = null) => cell(label, [el('span', { className: 'cell-value' }, [tx(text), ...notes])], className);
 export const th = (text, className = null, title = null) => el('th', { scope: 'col', className, title, text });
 export const rowHead = (children, label = null) => el('th', { scope: 'row', 'data-label': label }, children);
 
@@ -171,3 +174,31 @@ export function itemLink(key, text) {
 
 /** p.coverage / p.method style notes. */
 export const note = (className, text) => el('p', { className, text });
+
+// Funding honesty labels (funding parser fix). They live here rather than in format.js METHOD_LABELS because the
+// home page set sits at its payload ceiling and only the lens pages print them.
+/** 'title' | 'summary' (funding.amountFrom / stageFrom / valuationFrom) -> its method label, null otherwise. */
+export const parsedLabel = (field) => (field === 'summary' ? METHOD_LABELS.summary : field === 'title' ? METHOD_LABELS.headline : null);
+export const VALUATION_LABEL = 'not a round amount';
+
+/** "valuation $22B — not a round amount · parsed from headline" for { valuationText, valuationFrom }; null when none parsed. */
+export function valuationNote(f) {
+  if (!f || typeof f.valuationText !== 'string' || !f.valuationText) return null;
+  const from = parsedLabel(f.valuationFrom);
+  return el('span', { className: 'cell-note valuation', text: `valuation ${f.valuationText} \u2014 ${VALUATION_LABEL}${from ? ` \u00b7 ${from}` : ''}` });
+}
+
+/**
+ * Under a grouped row's title: "also reported by <a>Sifted</a>, <a>Tech.eu</a>" (extLink: new tab, noopener noreferrer,
+ * textContent only) and the one-line grouping `rule`. `reports` = [{ url, name }]; [] when no report has an http(s) URL.
+ */
+export function alsoReportedBy(reports, rule) {
+  const links = (Array.isArray(reports) ? reports : []).map((r) => ({ url: safeHttpUrl(r?.url), name: String(r?.name || 'unknown source') })).filter((r) => r.url);
+  if (!links.length) return [];
+  const also = el('span', { className: 'cell-note also' }, [tx('also reported by ')]);
+  links.forEach((r, i) => {
+    if (i) also.append(tx(', '));
+    also.append(extLink(r.url, r.name));
+  });
+  return rule ? [also, el('span', { className: 'cell-note rule', text: String(rule) })] : [also];
+}

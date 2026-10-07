@@ -3,6 +3,7 @@
 // Deterministic for a given input: no Date.now(), stable tie-breaks.
 
 import { itemKey } from '../public/filter.js';
+import { GROUP_RULE, groupFunding } from '../public/funding-group.js';
 import { isoWeekEnd, isoWeekId, isoWeekStart, lastWeeks } from './lib/weeks.js';
 import { buildTrends } from './trends.js';
 
@@ -12,8 +13,11 @@ export const MAX_LAUNCHES = 10;
 export const MAX_TERMS = 15;
 export const MAX_HIGHLIGHTS = 5;
 export const ROUNDS_METRIC = 'approx. USD at static rates';
+export const ROUNDS_GROUPING = GROUP_RULE;
 export const DIGEST_METHOD =
-  'Each week lists the funding items ordered by their headline amount converted to USD at static rates, ' +
+  'Each week lists the funding items ordered by their headline amount converted to USD at static rates ' +
+  '(a figure the headline calls a valuation is shown apart and never ranked; reports of one round with the same parsed ' +
+  'amount and company name within 3 days are grouped into one row), ' +
   'the launches ordered by Hacker News points or Product Hunt votes, the YC companies whose launch date falls ' +
   `in the week, and the ${MAX_TERMS} terms with the largest rise in that week versus the 4 preceding weeks (trends method). ` +
   'Signal highlights (GitHub stars, Hugging Face trending order) are available for the current week only.';
@@ -44,19 +48,34 @@ function launchMetric(item) {
   return null;
 }
 
+const hasUsd = (f) => typeof f.usdApprox === 'number' && Number.isFinite(f.usdApprox);
+
+/** approx. USD desc, then newest first, then title: a deterministic order whose first item of a story leads its group. */
+function compareRounds(a, b) {
+  return (hasUsd(b) ? b.usdApprox : -1) - (hasUsd(a) ? a.usdApprox : -1) || byText(String(b.publishedAt ?? ''), String(a.publishedAt ?? '')) || byText(a.title, b.title);
+}
+
+/**
+ * Rows ranked by approx. USD: one per story (public/funding-group.js), led by the newest report with an amount;
+ * `alsoReportedBy` lists the other reports of the same round (same parsed amount or valuation, shared company
+ * name, within 3 days), including valuation-only headlines that are themselves never ranked.
+ */
 function roundsOf(fundingItems) {
-  return fundingItems
-    .filter((f) => typeof f.usdApprox === 'number' && Number.isFinite(f.usdApprox))
-    .sort((a, b) => b.usdApprox - a.usdApprox || byText(a.title, b.title))
+  return groupFunding(fundingItems, compareRounds)
+    .filter((g) => hasUsd(g.item))
     .slice(0, MAX_ROUNDS)
-    .map((f) => ({
+    .map(({ item: f, also }) => ({
       ...pick(f),
       amount: f.funding?.amount ?? null,
       currency: f.funding?.currency ?? null,
       amountText: f.funding?.amountText ?? null,
+      amountFrom: f.funding?.amountFrom ?? null,
       stage: f.funding?.stage ?? null,
       usdApprox: f.usdApprox,
       metric: ROUNDS_METRIC,
+      valuationText: f.funding?.valuationText ?? null,
+      valuationFrom: f.funding?.valuationFrom ?? null,
+      alsoReportedBy: also.map(pick),
     }));
 }
 
@@ -107,8 +126,11 @@ function highlightsOf(signals) {
 }
 
 /**
- * buildDigest({ items, funding, yc, signals, now }) -> { generatedAt, method, weeks: [12 × {
+ * buildDigest({ items, funding, yc, signals, now }) -> { generatedAt, method, roundsGrouping, weeks: [12 × {
  *   week, from, to, partial, rounds, launches, ycNew, risingTerms, signalHighlights|null }] }
+ * rounds = [{ key, title, url, source, publishedAt, amount, currency, amountText, amountFrom, stage, usdApprox, metric,
+ *   valuationText, valuationFrom, alsoReportedBy: [{ key, title, url, source, publishedAt }] }] (see roundsOf);
+ * `roundsGrouping` is the one-line rule the digest page prints next to a grouped row (public/funding-group.js GROUP_RULE).
  * signalHighlights = { repos, models, github, huggingface } where github / huggingface carry the signal's
  * { ok, fetchedAt, lastSuccessAt, unavailableSince } (null when the signal is absent) so carried-over data stays labelled.
  * `items` = window items (as exported), `funding` = buildFunding() output (or its items array),
@@ -160,5 +182,5 @@ export function buildDigest({ items = [], funding = null, yc = null, signals = n
     };
   });
 
-  return { generatedAt: now.toISOString(), method: DIGEST_METHOD, weeks: out };
+  return { generatedAt: now.toISOString(), method: DIGEST_METHOD, roundsGrouping: ROUNDS_GROUPING, weeks: out };
 }
