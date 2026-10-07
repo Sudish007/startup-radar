@@ -16,7 +16,7 @@ const REQUIRED_ITEM_FIELDS = ['id', 'title', 'url', 'source', 'kind', 'region', 
 const HTML_PAGES = ['index.html', 'sources.html', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html'];
 const LENS_PAGES = ['trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']; // pages.css + own module
 const CSS_FILES = ['styles.css', 'sources.css', 'pages.css'];
-const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'notebook-tools.js', 'related.js', 'pwa.js', 'sw.js'];
+const JS_FILES = ['app.js', 'filter.js', 'sources.js', 'trends.js', 'funding.js', 'funding-group.js', 'yc.js', 'notebook.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'lens.js', 'theme.js', 'ui.js', 'format.js', 'radar.js', 'nav.js', 'shell.js', 'drawer.js', 'text.js', 'notebook-store.js', 'notebook-tools.js', 'related.js', 'pwa.js', 'sw.js'];
 const FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Startup Radar weekly digest" href="./feed.xml">';
 const SIGNAL_COUNT = 6; // src/signals/*.js adapters
 const SIGNAL_FIELDS = ['id', 'name', 'homepage', 'description', 'enabled', 'ok'];
@@ -303,6 +303,14 @@ async function main() {
       check('data/funding.json fx.asOf is a date and rates include USD = 1', typeof body.fx.asOf === 'string' && !Number.isNaN(Date.parse(body.fx.asOf)) && body.fx.rates && body.fx.rates.USD === 1, `asOf ${body.fx.asOf}, ${Object.keys(body.fx.rates || {}).length} currencies`);
       const bad = body.items.filter((it) => it.kind !== 'funding' || !it.funding || typeof it.funding !== 'object' || !('usdApprox' in it));
       check('every funding item is kind funding with funding{} and usdApprox', bad.length === 0, `${body.items.length} items, ${bad.length} bad`);
+      // funding parser fix: a valuation travels apart from the amount and a valuation-only item has usdApprox null
+      const badValuation = body.items.filter((it) => !it.funding || !('valuation' in it.funding) || !('valuationText' in it.funding) || (it.funding.valuation !== null && typeof it.funding.valuation !== 'number') || (it.funding.amount === null && it.usdApprox !== null) || (typeof it.funding.amount === 'number' && it.usdApprox === null && Object.hasOwn(body.fx.rates || {}, it.funding.currency)));
+      const valued = body.items.filter((it) => it.funding?.valuation !== null && it.funding?.valuation !== undefined);
+      const valuationOnly = valued.filter((it) => it.funding.amount === null);
+      check('data/funding.json items carry funding.valuation / valuationText; a valuation-only item has amount null and usdApprox null', badValuation.length === 0, `${valued.length} with a valuation, ${valuationOnly.length} valuation-only, ${badValuation.length} bad`);
+      check('data/funding.json method says a valuation is never counted as an amount', typeof body.method === 'string' && /valuation/.test(body.method) && /never counted as an amount/.test(body.method), String(body.method).slice(0, 120));
+      const sumOk = body.totals.byStage.every((t) => t.withAmount <= t.items && (t.withAmount > 0 || t.sumUsd === 0)) && body.totals.bySector.every((t) => t.withAmount <= t.items && (t.withAmount > 0 || t.sumUsd === 0));
+      check('data/funding.json totals: withAmount <= items and sumUsd is 0 wherever nothing was parsed (valuations are never summed)', sumOk);
     }
   } catch (err) {
     check('data/funding.json -> 200 with items[], totals.bySector[], totals.byStage[], coverage, fx', false, err.message);
@@ -358,6 +366,13 @@ async function main() {
       check('data/digest.json weeks carry from, to, rounds[], launches[], ycNew[], risingTerms[]', badWeeks.length === 0, `${badWeeks.length} bad weeks`);
       const badRows = body.weeks.flatMap((w) => [...w.rounds.filter((r) => typeof r.key !== 'string' || typeof r.usdApprox !== 'number' || r.metric !== 'approx. USD at static rates'), ...w.launches.filter((l) => typeof l.key !== 'string' || typeof l.value !== 'number' || !['HN points', 'PH votes'].includes(l.metric))]);
       check('data/digest.json rounds carry key, usdApprox and the static-rates metric; launches carry key, value and HN points / PH votes', badRows.length === 0, `${badRows.length} bad rows over ${body.weeks.reduce((n, w) => n + w.rounds.length + w.launches.length, 0)}`);
+      // funding parser fix: every round has a real amount (never a valuation), one row per story with alsoReportedBy[]
+      const rounds = body.weeks.flatMap((w) => w.rounds);
+      const badAmounts = rounds.filter((r) => typeof r.amount !== 'number' || !('valuationText' in r) || !Array.isArray(r.alsoReportedBy) || r.alsoReportedBy.some((a) => typeof a?.key !== 'string' || typeof a?.url !== 'string' || typeof a?.source !== 'string'));
+      const grouped = rounds.filter((r) => Array.isArray(r.alsoReportedBy) && r.alsoReportedBy.length > 0);
+      const dupKeys = body.weeks.filter((w) => { const keys = w.rounds.flatMap((r) => [r.key, ...(r.alsoReportedBy ?? []).map((a) => a.key)]); return new Set(keys).size !== keys.length; });
+      check('data/digest.json rounds: every row has a parsed amount, carries valuationText and alsoReportedBy[{key,url,source}], no item twice in a week', badAmounts.length === 0 && dupKeys.length === 0, `${rounds.length} rows, ${grouped.length} grouped (${grouped.reduce((n, r) => n + r.alsoReportedBy.length, 0)} folded reports), ${rounds.filter((r) => r.valuationText).length} with a valuation note, ${badAmounts.length} bad, ${dupKeys.length} weeks with a duplicate`);
+      check('data/digest.json method states the valuation and grouping rules and roundsGrouping carries the one-line rule', typeof body.method === 'string' && /valuation/.test(body.method) && /grouped into one row/.test(body.method) && body.roundsGrouping === 'grouped: same parsed amount (or valuation) and shared company name, published within 3 days', String(body.roundsGrouping).slice(0, 120));
       const highlighted = body.weeks.filter((w) => w.signalHighlights !== null && w.signalHighlights !== undefined).map((w) => w.week);
       check('data/digest.json signalHighlights exist on the current week only', highlighted.length <= 1 && (highlighted.length === 0 || highlighted[0] === ids.at(-1)), highlighted.join(', ') || 'none');
       check('data/digest.json generatedAt is ISO and method is a sentence', isIso(body.generatedAt) && typeof body.method === 'string' && body.method.length > 40, `generatedAt ${body.generatedAt}`);

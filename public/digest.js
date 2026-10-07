@@ -5,7 +5,7 @@
 
 import { METHOD_LABELS, absoluteTime, compactMoney, safeHttpUrl } from './format.js';
 import { clear, el, extLink, fetchJson, timeEl } from './ui.js';
-import { createItemStore, createLensPage, itemLink, itemParam, num, textCell, th, tx, wireOpeners } from './lens.js';
+import { alsoReportedBy, createItemStore, createLensPage, itemLink, itemParam, noteCell, num, parsedLabel, textCell, th, tx, valuationNote, wireOpeners } from './lens.js';
 
 const DIGEST_URL = './data/digest.json';
 const WEEK_RE = /^\d{4}-W\d{2}$/;
@@ -76,10 +76,17 @@ function titleLink(row, text) {
 
 function renderRounds(week) {
   clear(els.rounds);
+  const rule = str(digest.roundsGrouping); // the grouping rule as src/digest.js states it ('' in an older digest.json)
+  let grouped = 0;
   for (const r of week.rounds) {
+    const also = Array.isArray(r.alsoReportedBy) ? r.alsoReportedBy : [];
+    grouped += also.length;
+    const title = el('th', { scope: 'row' }, [titleLink(r, str(r.title) || '(untitled)')]);
+    title.append(...alsoReportedBy(also.map((a) => ({ url: a?.url, name: str(a?.source) || 'unknown source' })), rule));
+    const amountFrom = parsedLabel(r.amountFrom) ?? METHOD_LABELS.headline; // older digest.json rows carry no amountFrom
     els.rounds.append(el('tr', { dataset: { key: str(r.key) } }, [
-      el('th', { scope: 'row' }, [titleLink(r, str(r.title) || '(untitled)')]),
-      el('td', { 'data-label': 'Amount' }, [tx(str(r.amountText) || DASH), r.amountText ? el('span', { className: 'cell-note', text: `${METHOD_LABELS.headline}${r.currency ? ` \u00b7 ${r.currency}` : ''}` }) : null]),
+      title,
+      noteCell('Amount', str(r.amountText) || DASH, [r.amountText ? el('span', { className: 'cell-note', text: `${amountFrom}${r.currency ? ` \u00b7 ${r.currency}` : ''}` }) : null, valuationNote(r)].filter(Boolean)),
       textCell('Stage', str(r.stage) || DASH, 'nowrap'),
       textCell('Source', str(r.source) || DASH),
       el('td', { 'data-label': 'Date' }, [r.publishedAt ? timeEl(r.publishedAt) : tx(DASH)]),
@@ -87,7 +94,8 @@ function renderRounds(week) {
     ]));
   }
   if (!week.rounds.length) els.rounds.append(el('tr', {}, [el('td', { colspan: '6', className: 'dim', text: 'No funding item of this week had a parseable amount.' })]));
-  els.roundsCaption.textContent = `${num(week.rounds.length)} funding items with a parsed amount, ranked by ${str(week.rounds[0]?.metric) || 'approx. USD at static rates'}`;
+  els.roundsCaption.textContent = `${num(week.rounds.length)} funding items with a parsed amount, one row per story, ranked by ${str(week.rounds[0]?.metric) || 'approx. USD at static rates'}` +
+    `${grouped ? ` \u00b7 ${num(grouped)} further ${grouped === 1 ? 'report' : 'reports'} folded into their story\u2019s row${rule ? ` (${rule})` : ''}` : ''}`;
 }
 
 function renderLaunches(week) {

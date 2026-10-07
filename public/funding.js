@@ -1,12 +1,15 @@
 // Startup Radar funding page (plan §2.3 item 10, D6). Reads ./data/funding.json (funding-kind items with
 // `funding` parsed from the headline/summary and `usdApprox` at static FX rates, computed by src/funding.js).
-// Controls are URL-synced (relative replaceState); approx. USD is used only to sort and to sum.
+// Controls are URL-synced (relative replaceState); approx. USD is used only to sort and to sum. A parsed
+// valuation is shown as a note, never as the amount; in the approx. USD order, reports of one round are
+// grouped into one row (./funding-group.js) with the other sources as "also reported by" links.
 
 import { compareNewestFirst } from './filter.js';
 import { METHOD_LABELS, REGION_LABELS, absoluteTime, compactMoney, regionLabel } from './format.js';
+import { GROUP_RULE, groupFunding } from './funding-group.js';
 import { clear, el, fetchJson, timeEl } from './ui.js';
 import { keyOf } from './drawer.js';
-import { createLensPage, itemLink, itemParam, num, textCell, tx, wireOpeners } from './lens.js';
+import { VALUATION_LABEL, alsoReportedBy, createLensPage, itemLink, itemParam, noteCell, num, parsedLabel, textCell, tx, valuationNote, wireOpeners } from './lens.js';
 
 const FUNDING_URL = './data/funding.json';
 const SINCE_DAYS = { '7d': 7, '30d': 30, '90d': null };
@@ -27,7 +30,8 @@ let funding = null;
 let loadError = '';
 let sectorLabel = {}; // id -> label (funding.totals.bySector)
 let knownStages = [];
-let currentList = [];
+let currentList = []; // the rows shown (group leads in the approx. USD order), also the drawer's prev/next list
+let currentAlso = new Map(); // lead item -> the other reports of its story (approx. USD order only)
 
 const buildUrl = (key) => {
   const p = new URLSearchParams();
@@ -47,8 +51,7 @@ const lens = createLensPage({ page: 'funding', getList: () => currentList, findI
 const usdText = (n) => (typeof n === 'number' && Number.isFinite(n) ? `\u2248 $${compactMoney(n)}` : '\u2014');
 const usdTitle = (n) => (typeof n === 'number' && Number.isFinite(n) ? `${METHOD_LABELS.usd}: ${n.toLocaleString()} USD` : 'no parseable amount');
 const sectorText = (item) => (Array.isArray(item.sectors) && item.sectors.length ? item.sectors.map((id) => sectorLabel[id] || id).join(', ') : '\u2014');
-/** 'title' | 'summary' (funding.amountFrom / stageFrom) -> its method label; the amount and the stage are labelled separately. */
-const parsedLabel = (field) => (field === 'summary' ? METHOD_LABELS.summary : field === 'title' ? METHOD_LABELS.headline : null);
+const hasValuation = (item) => typeof item.funding?.valuationText === 'string' && item.funding.valuationText !== '';
 
 // -- state <-> URL --
 
@@ -90,16 +93,14 @@ function filtered() {
     }
     return true;
   });
+  currentAlso = new Map();
   if (state.sort === 'usd') {
-    list.sort((a, b) => {
-      const ua = typeof a.usdApprox === 'number' ? a.usdApprox : -1;
-      const ub = typeof b.usdApprox === 'number' ? b.usdApprox : -1;
-      return ub - ua || compareNewestFirst(a, b);
-    });
-  } else {
-    list.sort(compareNewestFirst);
+    // approx. USD descending (amount-less rows last), one row per story: the lead is the newest report with an amount
+    const groups = groupFunding(list);
+    for (const g of groups) if (g.also.length) currentAlso.set(g.item, g.also);
+    return groups.map((g) => g.item);
   }
-  return list;
+  return list.sort(compareNewestFirst);
 }
 
 // -- rendering --
@@ -107,14 +108,15 @@ function filtered() {
 function renderRow(item) {
   const key = keyOf(item);
   const f = item.funding || {};
-  const amount = el('td', { 'data-label': 'Amount' }, [tx(f.amountText || '\u2014')]);
+  const title = el('th', { scope: 'row' }, [itemLink(key, item.title || '(untitled)')]);
+  const also = currentAlso.get(item);
+  if (also) title.append(...alsoReportedBy(also.map((a) => ({ url: a.url, name: a.source?.name || a.source?.id || 'unknown source' })), GROUP_RULE));
   const amountFrom = f.amountText ? parsedLabel(f.amountFrom) : null;
-  if (amountFrom) amount.append(el('span', { className: 'cell-note', text: amountFrom }));
-  const stage = textCell('Stage', f.stage || '\u2014', 'nowrap');
+  const amount = noteCell('Amount', f.amountText || '\u2014', [amountFrom ? el('span', { className: 'cell-note', text: amountFrom }) : null, valuationNote(f)].filter(Boolean));
   const stageFrom = f.stage ? parsedLabel(f.stageFrom) : null;
-  if (stageFrom) stage.append(el('span', { className: 'cell-note', text: stageFrom }));
+  const stage = noteCell('Stage', f.stage || '\u2014', [stageFrom ? el('span', { className: 'cell-note', text: stageFrom }) : null].filter(Boolean), 'nowrap');
   return el('tr', { dataset: { key } }, [
-    el('th', { scope: 'row' }, [itemLink(key, item.title || '(untitled)')]),
+    title,
     amount,
     stage,
     el('td', { 'data-label': 'Sectors', title: SECTOR_TITLE }, [tx(sectorText(item))]),
@@ -130,8 +132,14 @@ function renderTable() {
   clear(els.tbody);
   for (const item of currentList) els.tbody.append(renderRow(item));
   if (!currentList.length) els.tbody.append(el('tr', {}, [el('td', { colspan: '8', className: 'dim', text: 'No funding items match these filters.' })]));
-  const withAmount = currentList.filter((it) => typeof it.usdApprox === 'number').length;
-  els.count.textContent = `${num(currentList.length)} of ${num(funding.items.length)} funding items \u00b7 ${num(withAmount)} with a parsed amount \u00b7 sorted by ${state.sort === 'usd' ? 'approx. USD' : 'date'}`;
+  const folded = [...currentAlso.values()].flat();
+  const grouped = folded.length;
+  const all = currentList.concat(folded); // every item that passed the filters, shown as a row or folded into one
+  const withAmount = all.filter((it) => typeof it.usdApprox === 'number').length;
+  const withValuation = all.filter(hasValuation).length;
+  els.count.textContent = `${num(all.length)} of ${num(funding.items.length)} funding items \u00b7 ${num(withAmount)} with a parsed amount` +
+    `${withValuation ? ` \u00b7 ${num(withValuation)} with a valuation (never summed)` : ''} \u00b7 sorted by ${state.sort === 'usd' ? 'approx. USD' : 'date'}` +
+    `${grouped ? ` \u00b7 ${num(grouped)} ${grouped === 1 ? 'report' : 'reports'} folded into ${num(currentAlso.size)} grouped ${currentAlso.size === 1 ? 'row' : 'rows'} (${GROUP_RULE})` : ''}`;
 }
 
 function totalRow(label, t) {
@@ -149,7 +157,9 @@ function renderTotals() {
   for (const t of totals.bySector) els.sectorTotals.append(totalRow(t.label, t));
   clear(els.stageTotals);
   for (const t of totals.byStage) els.stageTotals.append(totalRow(t.stage, t));
-  els.coverage.textContent = `sum of parsed amounts: ${num(coverage.withAmount)} of ${num(coverage.items)} funding items had a parseable amount (${num(coverage.withStage)} had a stage). Sums add only the parsed amounts, converted to approx. USD at the static rates below.`;
+  const withValuation = funding.items.filter(hasValuation).length;
+  els.coverage.textContent = `sum of parsed amounts: ${num(coverage.withAmount)} of ${num(coverage.items)} funding items had a parseable amount (${num(coverage.withStage)} had a stage). ` +
+    `Sums add only the parsed amounts, converted to approx. USD at the static rates below.${withValuation ? ` ${num(withValuation)} ${withValuation === 1 ? 'item carries' : 'items carry'} a valuation, which is never an amount and never summed.` : ''}`;
 }
 
 function renderFx() {
@@ -191,8 +201,10 @@ function fundingSection(item) {
   if (!f) return null;
   const amountFrom = f.amountText ? parsedLabel(f.amountFrom) : null;
   const stageFrom = f.stage ? parsedLabel(f.stageFrom) : null;
+  const valuationFrom = f.valuationText ? parsedLabel(f.valuationFrom) : null;
   const dl = el('dl', { className: 'detail-meta detail-funding' });
-  dl.append(el('dt', { text: 'Amount' }), el('dd', {}, [tx(f.amountText || 'none parsed'), amountFrom ? el('span', { className: 'method', text: amountFrom }) : null]));
+  dl.append(el('dt', { text: 'Amount' }), el('dd', {}, [tx(f.amountText || (f.valuationText ? 'none parsed (the figure in the text is a valuation)' : 'none parsed')), amountFrom ? el('span', { className: 'method', text: amountFrom }) : null]));
+  if (f.valuationText) dl.append(el('dt', { text: 'Valuation' }), el('dd', {}, [tx(`${f.valuationText} \u2014 ${VALUATION_LABEL}`), valuationFrom ? el('span', { className: 'method', text: valuationFrom }) : null]));
   dl.append(el('dt', { text: 'Stage' }), el('dd', {}, [tx(f.stage || 'none parsed'), stageFrom ? el('span', { className: 'method', text: stageFrom }) : null]));
   dl.append(el('dt', { text: 'approx. USD' }), el('dd', { title: usdTitle(item.usdApprox) }, [tx(usdText(item.usdApprox)), typeof item.usdApprox === 'number' ? el('span', { className: 'method', text: METHOD_LABELS.usd }) : null]));
   if (Array.isArray(item.sectors) && item.sectors.length) dl.append(el('dt', { text: 'Sectors' }), el('dd', { title: SECTOR_TITLE, text: sectorText(item) }));

@@ -70,6 +70,7 @@ DESKTOP = {"width": 1280, "height": 900}
 WIDE = {"width": 1920, "height": 1080}
 TABLET = {"width": 768, "height": 1024}
 MOBILE = {"width": 390, "height": 844}
+NARROW = {"width": 320, "height": 568}  # the hard-UI-rule floor (funding parser fix, defect 3)
 MOBILE_SCALE = 2
 PAGE_SIZE = 30
 EXPORT_MAX_DAYS = 90  # mirrors EXPORT_LIMITS.maxDays in src/export.js
@@ -86,7 +87,7 @@ MAX_PNG_BYTES = 1024 * 1024
 MIN_PNG_BYTES = 20 * 1024
 GLASS_EXTREME = {"dark": "#21252D", "light": "#DDE0E5"}
 DOT_COMPOSITE = {"dark": "#161A21", "light": "#E6E9ED"}
-SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./signals.html", "./digest.html", "./resources.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./signals.js", "./digest.js", "./resources.js", "./resources-data.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
+SHELL = ["./", "./index.html", "./sources.html", "./trends.html", "./funding.html", "./yc.html", "./notebook.html", "./signals.html", "./digest.html", "./resources.html", "./styles.css", "./sources.css", "./pages.css", "./theme.js", "./ui.js", "./app.js", "./filter.js", "./format.js", "./radar.js", "./sources.js", "./trends.js", "./funding.js", "./yc.js", "./notebook.js", "./signals.js", "./digest.js", "./resources.js", "./resources-data.js", "./lens.js", "./nav.js", "./shell.js", "./drawer.js", "./notebook-store.js", "./notebook-tools.js", "./related.js", "./text.js", "./funding-group.js", "./pwa.js", "./icons.svg", "./manifest.webmanifest"]
 # page kind -> index of its link in NAV (audit_state asserts aria-current there)
 NAV_INDEX = {"home": 0, "trends": 1, "funding": 2, "yc": 3, "notebook": 4, "signals": 5, "digest": 6, "resources": 7, "sources": 8}
 # lens pages (FEAT-003/004/006): (kind, path, selector that proves the data rendered)
@@ -1466,6 +1467,36 @@ def run_live_smoke(browser):
     merrors.check("smoke mobile")
     mctx.close()
 
+    # --- 320 px (funding parser fix, defect 3): the funding totals / FX tables scroll inside their wrapper, never the page ---
+    nctx = new_ctx(browser, viewport=NARROW, mobile=True)
+    npage = nctx.new_page()
+    nerrors = ErrorLog(npage)
+    for kind in ("funding", "digest"):
+        goto_lens(npage, kind)
+        a = audit_page(npage, "smoke %s mobile 320px" % kind, want_controls=True, want_links=False)
+        check("smoke 320px %s: document.documentElement.scrollWidth <= 320" % kind, a["scrollWidth"] <= NARROW["width"], "scrollWidth %d" % a["scrollWidth"])
+        if kind == "funding":
+            w = npage.evaluate(FUNDING_320_JS)
+            check("smoke 320px funding: every table (items, by sector, by stage, FX) stays inside its wrapper and the wrapper inside the viewport", all(t["wrapperRight"] <= NARROW["width"] + 0.5 and t["wrapperLeft"] >= -0.5 and t["overflowX"] in ("auto", "scroll", "visible") for t in w["tables"]) and len(w["tables"]) == 4, json.dumps(w["tables"]))
+    nerrors.check("smoke 320px")
+    nctx.close()
+
+
+FUNDING_320_JS = r"""
+() => {
+  // every data table of the funding page with its wrapper's box and overflow-x (the page must never widen)
+  return {
+    innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    tables: Array.from(document.querySelectorAll('#funding-table, #sector-totals, #stage-totals, #fx-table')).map((t) => {
+      const wrapper = t.closest('.table-scroll') || t.parentElement;
+      const r = wrapper.getBoundingClientRect();
+      return { id: t.id, wrapperLeft: Math.round(r.left), wrapperRight: Math.round(r.right), tableWidth: Math.round(t.getBoundingClientRect().width), overflowX: getComputedStyle(wrapper).overflowX, scrolls: wrapper.scrollWidth > wrapper.clientWidth };
+    }),
+  };
+}
+"""
+
 
 LENS_STATE_JS = r"""
 () => {
@@ -1488,11 +1519,15 @@ LENS_STATE_JS = r"""
     fundingRows: Array.from(document.querySelectorAll('#funding-table tbody tr[data-key]')).map((tr) => ({
       key: tr.dataset.key,
       title: text(tr.querySelector('th a')),
-      amount: text(tr.querySelector('td[data-label="Amount"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
-      note: (tr.querySelector('td[data-label="Amount"] .cell-note') || {}).textContent || '',
+      // the amount is the value span's own text; its notes (.cell-note) are the field label and, when parsed, the valuation
+      amount: Array.from((tr.querySelector('td[data-label="Amount"] .cell-value') || tr.querySelector('td[data-label="Amount"]')).childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(),
+      note: (tr.querySelector('td[data-label="Amount"] .cell-note:not(.valuation)') || {}).textContent || '',
+      valuationNote: (tr.querySelector('td[data-label="Amount"] .cell-note.valuation') || {}).textContent || '',
       stage: text(tr.querySelector('td[data-label="Stage"]')).replace(/\s*(parsed from (headline|summary))$/, ''),
       stageNote: (tr.querySelector('td[data-label="Stage"] .cell-note') || {}).textContent || '',
       usd: text(tr.querySelector('td[data-label="approx. USD"]')),
+      also: Array.from(tr.querySelectorAll('th .cell-note.also a')).map((a) => ({ text: a.textContent, href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), children: a.children.length })),
+      rule: (tr.querySelector('th .cell-note.rule') || {}).textContent || '',
     })),
     fundingCount: text(document.getElementById('count')),
     coverage: text(document.getElementById('coverage')),
@@ -1565,9 +1600,20 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
     # review-phase-1 iteration 2 #5: the stage carries its own field label (a title amount + summary stage differ)
     bad_stages = [r for r in s["fundingRows"] if r["stage"] != (by_key[r["key"]]["funding"].get("stage") or "—") or r["stageNote"] != FROM_LABEL.get(by_key[r["key"]]["funding"].get("stageFrom") if by_key[r["key"]]["funding"].get("stage") else None)]
     check("%s funding: every stage is the parsed stage (or an em dash) labelled with its own field (stageFrom)" % prefix, not bad_stages, ("bad %s" % json.dumps(bad_stages[:2])) if bad_stages else "%d labelled, %d differ from the amount's field" % (len([r for r in s["fundingRows"] if r["stageNote"]]), len([r for r in s["fundingRows"] if r["stageNote"] and r["note"] and r["stageNote"] != r["note"]])))
+    # funding parser fix: a parsed valuation is a note on the row ("valuation $22B — not a round amount · parsed from ..."), never the amount
+    def expected_valuation(it):
+        f = it["funding"]
+        if not f.get("valuationText"):
+            return ""
+        return "valuation %s — not a round amount%s" % (f["valuationText"], (" · " + FROM_LABEL[f.get("valuationFrom")]) if FROM_LABEL.get(f.get("valuationFrom")) else "")
+    bad_val = [r for r in s["fundingRows"] if r["valuationNote"] != expected_valuation(by_key[r["key"]])]
+    valued = [r for r in s["fundingRows"] if r["valuationNote"]]
+    val_only = [r for r in valued if by_key[r["key"]]["funding"].get("amount") is None]
+    check("%s funding: every parsed valuation is shown as its own note (never as the amount; %d valuation-only rows show an em dash)" % (prefix, len(val_only)), not bad_val and all(r["amount"] == "—" and r["usd"] == "—" for r in val_only), ("bad %s" % json.dumps(bad_val[:2], ensure_ascii=False)) if bad_val else "%d rows with a valuation note" % len(valued))
     cov = funding["coverage"]
     expected_cov = "sum of parsed amounts: %s of %s funding items had a parseable amount (%s had a stage)" % (format(cov["withAmount"], ","), format(cov["items"], ","), format(cov["withStage"], ","))
     check("%s funding: coverage sentence present" % prefix, s["coverage"].startswith(expected_cov), s["coverage"][:120])
+    check("%s funding: coverage.withAmount counts only items with usdApprox (valuations excluded)" % prefix, cov["withAmount"] == len([it for it in f_items if it.get("usdApprox") is not None]) and all(it.get("usdApprox") is None for it in f_items if it["funding"].get("amount") is None), "%d with amount" % cov["withAmount"])
     check("%s funding: approx. USD column titled with the static-rates wording and the FX table shows asOf %s" % (prefix, funding["fx"]["asOf"]), "approx. USD at static rates" in s["usdHeaderTitle"] and funding["fx"]["asOf"] in s["fxNote"] and s["fxRows"] == [[k, str(v)] for k, v in funding["fx"]["rates"].items()], "%s | %s" % (s["usdHeaderTitle"], s["fxNote"][:80]))
     check("%s funding: totals by sector (%d) and by stage (%d) rendered" % (prefix, len(funding["totals"]["bySector"]), len(funding["totals"]["byStage"])), s["sectorTotalRows"] == len(funding["totals"]["bySector"]) and s["stageTotalRows"] == len(funding["totals"]["byStage"]))
     check("%s funding: nothing on the page is called a score" % prefix, not re.search(r"\bscore\b", s["bodyText"], re.I))
@@ -1587,6 +1633,30 @@ def smoke_lens_pages(page, ctx, prefix, audit=True):
     usd_order = [by_key[r["key"]].get("usdApprox") for r in s3["fundingRows"]]
     numeric = [u for u in usd_order if u is not None]
     check("%s funding: sort=usd orders by approx. USD descending with unparsed amounts last" % prefix, numeric == sorted(numeric, reverse=True) and usd_order[len(numeric):].count(None) == len(usd_order) - len(numeric), "%d numeric of %d" % (len(numeric), len(usd_order)))
+    # funding parser fix: in the approx. USD order, reports of one round are one row with "also reported by" links + the rule label
+    grouped_rows = [r for r in s3["fundingRows"] if r["also"]]
+    folded = sum(len(r["also"]) for r in grouped_rows)
+    shown_keys = set(r["key"] for r in s3["fundingRows"])
+    by_url = dict((it["url"].rstrip("/"), it) for it in f_items)
+    folded_items = [by_url.get(a["href"].rstrip("/")) for r in grouped_rows for a in r["also"]]
+    rule = "grouped: same parsed amount (or valuation) and shared company name, published within 3 days"
+    links_ok = all(a["target"] == "_blank" and a["rel"] == "noopener noreferrer" and a["href"].startswith("http") and a["children"] == 0 and a["text"] for r in grouped_rows for a in r["also"])
+    check("%s funding: sort=usd groups %d further reports into %d rows; links open in a new tab with rel noopener noreferrer, text only, rule label on each grouped row" % (prefix, folded, len(grouped_rows)), len(s3["fundingRows"]) + folded == len(f_items) and links_ok and all(r["rule"] == rule for r in grouped_rows) and all(r["rule"] == "" for r in s3["fundingRows"] if not r["also"]) and all(it is not None for it in folded_items) and not (shown_keys & set(item_key(it["url"]) for it in folded_items if it)), "%d rows + %d folded = %d items" % (len(s3["fundingRows"]), folded, len(f_items)))
+
+    def same_amount(lead, other):
+        lu, ou = lead.get("usdApprox"), other.get("usdApprox")
+        if lu is not None and ou is not None:
+            return lu == ou
+        lv, ov = lead["funding"].get("valuation"), other["funding"].get("valuation")
+        return lv is not None and ov is not None and lv == ov and lead["funding"].get("valuationCurrency") == other["funding"].get("valuationCurrency")
+
+    def within_3_days(a, b):
+        return abs((parse_iso(a["publishedAt"]) - parse_iso(b["publishedAt"])).total_seconds()) <= 3 * 86400
+
+    bad_groups = [r["key"] for r in grouped_rows if not all((o := by_url.get(a["href"].rstrip("/"))) is not None and same_amount(by_key[r["key"]], o) and within_3_days(by_key[r["key"]], o) for a in r["also"])]
+    check("%s funding: every grouped report has the lead's approx. USD amount (or its valuation when amount-less) and lies within 3 days" % prefix, not bad_groups, ", ".join(bad_groups) or "%d groups" % len(grouped_rows))
+    if grouped_rows:
+        check("%s funding: the count line names the folded reports and the rule" % prefix, ("%d report" % folded) in s3["fundingCount"] and rule in s3["fundingCount"], s3["fundingCount"][-160:])
     page.select_option("#sort", "date")
     page.wait_for_function("() => !new URLSearchParams(location.search).has('sort')", timeout=WAIT_MS)
     if s["fundingRows"]:
@@ -1670,7 +1740,12 @@ PHASE2_STATE_JS = r"""
     weekRange: text(document.getElementById('week-range')),
     prevDisabled: document.getElementById('week-prev') ? document.getElementById('week-prev').disabled : null,
     nextDisabled: document.getElementById('week-next') ? document.getElementById('week-next').disabled : null,
-    roundRows: Array.from(document.querySelectorAll('#rounds-table tbody tr[data-key]')).map((tr) => ({ key: tr.dataset.key, title: text(tr.querySelector('th')), amount: text(tr.querySelector('td[data-label="Amount"]')), usd: text(tr.querySelector('td[data-label="approx. USD"]')), inApp: !!tr.querySelector('th a[data-open-key]') })),
+    roundRows: Array.from(document.querySelectorAll('#rounds-table tbody tr[data-key]')).map((tr) => ({
+      key: tr.dataset.key, title: text(tr.querySelector('th > a') || tr.querySelector('th')), amount: text(tr.querySelector('td[data-label="Amount"]')), usd: text(tr.querySelector('td[data-label="approx. USD"]')), inApp: !!tr.querySelector('th > a[data-open-key]'),
+      valuationNote: (tr.querySelector('td[data-label="Amount"] .cell-note.valuation') || {}).textContent || '',
+      also: Array.from(tr.querySelectorAll('th .cell-note.also a')).map((a) => ({ text: a.textContent, href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), children: a.children.length })),
+      rule: (tr.querySelector('th .cell-note.rule') || {}).textContent || '',
+    })),
     roundsCaption: text(document.getElementById('rounds-caption')),
     launchRows: Array.from(document.querySelectorAll('#launches-table tbody tr[data-key]')).map((tr) => ({ key: tr.dataset.key, title: text(tr.querySelector('th')), value: text(tr.querySelector('td[data-label="Metric"]')).replace(/\s*(HN points|PH votes)$/, ''), metric: text(tr.querySelector('td[data-label="Metric"] .metric')) })),
     ycRows: Array.from(document.querySelectorAll('#yc-list li.company-row')).map((li) => ({ name: text(li.querySelector('h3')), inApp: !!li.querySelector('h3 a[data-open-key]'), external: (li.querySelector('h3 a') || {}).target === '_blank' })),
@@ -1795,6 +1870,17 @@ def smoke_phase2_pages(page, ctx, prefix, audit=True):
     def check_week(tag, w):
         st = page.evaluate(PHASE2_STATE_JS)
         check("%s digest %s: rounds rows equal the JSON (%d) with the original amount text and approx. USD" % (prefix, tag, len(w["rounds"])), [r["key"] for r in st["roundRows"]] == [r["key"] for r in w["rounds"]] and all(r["amount"].startswith(x["amountText"] or "—") for r, x in zip(st["roundRows"], w["rounds"])) and "approx. USD at static rates" in st["roundsCaption"], "%d rows; %s" % (len(st["roundRows"]), st["roundsCaption"][:80]))
+        # funding parser fix: no round is a valuation; a parsed valuation is a note; grouped rows list the other reports as safe links + the rule
+        rule = "grouped: same parsed amount (or valuation) and shared company name, published within 3 days"
+        exp_val = lambda x: ("valuation %s — not a round amount%s" % (x["valuationText"], (" · parsed from %s" % ("headline" if x.get("valuationFrom") == "title" else "summary")) if x.get("valuationFrom") in ("title", "summary") else "")) if x.get("valuationText") else ""  # noqa: E731
+        bad_val = [r["key"] for r, x in zip(st["roundRows"], w["rounds"]) if r["valuationNote"] != exp_val(x) or x.get("amount") is None or not isinstance(x.get("usdApprox"), (int, float))]
+        check("%s digest %s: every round has a real amount; valuations appear only as notes (%d)" % (prefix, tag, len([x for x in w["rounds"] if x.get("valuationText")])), not bad_val, ", ".join(bad_val) or "ok")
+        grouped = [(r, x) for r, x in zip(st["roundRows"], w["rounds"]) if x.get("alsoReportedBy")]
+        bad_grp = [x["key"] for r, x in grouped if [a["text"] for a in r["also"]] != [a["source"] for a in x["alsoReportedBy"]] or [a["href"].rstrip("/") for a in r["also"]] != [a["url"].rstrip("/") for a in x["alsoReportedBy"]] or not all(a["target"] == "_blank" and a["rel"] == "noopener noreferrer" and a["children"] == 0 for a in r["also"]) or r["rule"] != rule]
+        bad_plain = [r["key"] for r, x in zip(st["roundRows"], w["rounds"]) if not x.get("alsoReportedBy") and (r["also"] or r["rule"])]
+        check("%s digest %s: grouped rows (%d) show 'also reported by' links (new tab, noopener noreferrer, text only) and the rule; others none" % (prefix, tag, len(grouped)), not bad_grp and not bad_plain, (", ".join(bad_grp + bad_plain)) or ("%d folded reports" % sum(len(x["alsoReportedBy"]) for _, x in grouped)))
+        if grouped:
+            check("%s digest %s: the rounds caption counts the folded reports and states the rule" % (prefix, tag), ("%d further report" % sum(len(x["alsoReportedBy"]) for _, x in grouped)) in st["roundsCaption"] and rule in st["roundsCaption"], st["roundsCaption"][-140:])
         check("%s digest %s: launch rows equal the JSON (%d), each labelled 'HN points' / 'PH votes' with its value" % (prefix, tag, len(w["launches"])), [r["key"] for r in st["launchRows"]] == [l["key"] for l in w["launches"]] and all(r["metric"] == l["metric"] and r["value"] == format(l["value"], ",") for r, l in zip(st["launchRows"], w["launches"])), str(st["launchRows"][:2])[:160])
         check("%s digest %s: YC rows equal ycNew (%d); in-app when the feed has the key, else a new-tab YC link" % (prefix, tag, len(w["ycNew"])), [r["name"] for r in st["ycRows"]] == [c["name"] for c in w["ycNew"]] and all((r["inApp"] and not r["external"]) if (c["key"] in feed_keys) else (r["external"] and not r["inApp"]) for r, c in zip(st["ycRows"], w["ycNew"])), "%d rows, %d in-app" % (len(st["ycRows"]), len([r for r in st["ycRows"] if r["inApp"]])))
         check("%s digest %s: rising terms equal the JSON (%d) with this week / prior average / rise" % (prefix, tag, len(w["risingTerms"])), st["termRows"] == [[t["term"], {"token": "word", "bigram": "word pair"}.get(t["kind"], t["kind"]), format(t["thisWeek"], ","), format(t["priorWeeklyAvg"], ","), format(t["rise"], ",")] for t in w["risingTerms"]], str(st["termRows"][:2])[:160])
@@ -2201,6 +2287,10 @@ def run_matrix(browser, scheme):
             audit_state(page, "%s %s" % (kind, tag), scheme, width, data, kind=kind)
             if kind == "trends":
                 check("%s %s: sparklines present with HTML axis labels (no scaled SVG text)" % (kind, tag), page.evaluate("document.querySelectorAll('#sector-grid .sparkline').length >= 1 && document.querySelectorAll('#sector-grid svg text').length === 0"))
+            if kind == "funding" and width == 320:
+                # funding parser fix, defect 3: the totals / FX tables scroll inside their wrapper, the page never widens
+                w = page.evaluate(FUNDING_320_JS)
+                check("%s %s: every table (items, by sector, by stage, FX) stays inside its wrapper and the wrapper inside the viewport" % (kind, tag), w["scrollWidth"] <= width and len(w["tables"]) == 4 and all(t["wrapperRight"] <= width + 0.5 and t["wrapperLeft"] >= -0.5 for t in w["tables"]), json.dumps(w["tables"]))
             if kind == "yc" and width >= 1024:
                 page.click("#industry-groups details:nth-of-type(2) summary")
                 page.wait_for_function("() => document.querySelectorAll('#industry-groups details[open]').length >= 2", timeout=WAIT_MS)

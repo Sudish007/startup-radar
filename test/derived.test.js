@@ -48,15 +48,32 @@ describe('buildFunding', () => {
     assert.equal(acme.title, items[0].title);
     assert.equal(acme.url, items[0].url);
     assert.equal(acme.region, 'usa');
-    assert.deepEqual(acme.funding, { amount: 4_000_000, currency: 'USD', amountText: '$4M', stage: 'seed', amountFrom: 'title', stageFrom: 'title', parsedFrom: 'title' });
+    assert.deepEqual(acme.funding, { amount: 4_000_000, currency: 'USD', amountText: '$4M', stage: 'seed', amountFrom: 'title', stageFrom: 'title', parsedFrom: 'title', valuation: null, valuationCurrency: null, valuationText: null, valuationFrom: null });
     assert.equal(acme.usdApprox, 4_000_000);
     assert.equal(beta.funding.amount, 500_000_000);
     assert.equal(beta.funding.currency, 'INR');
     assert.equal(beta.usdApprox, Math.round(500_000_000 * FX.rates.INR));
     assert.equal(beta.funding.stage, 'series a');
-    assert.deepEqual(gamma.funding, { amount: null, currency: null, amountText: null, stage: null, amountFrom: null, stageFrom: null, parsedFrom: null });
+    assert.deepEqual(gamma.funding, { amount: null, currency: null, amountText: null, stage: null, amountFrom: null, stageFrom: null, parsedFrom: null, valuation: null, valuationCurrency: null, valuationText: null, valuationFrom: null });
     assert.equal(gamma.usdApprox, null);
     assert.deepEqual(f.coverage, { items: 3, withAmount: 2, withStage: 2 });
+  });
+
+  test('a valuation is carried apart and never counted as an amount: usdApprox null, excluded from withAmount and every sum', () => {
+    const items = [
+      item('AI voice startup ElevenLabs doubles valuation to $22B', { sectors: ['ai'] }),
+      item('Armadin raises $255.5M at $2.5B valuation', { sectors: ['ai'] }),
+    ];
+    const f = buildFunding(items, { now: NOW });
+    const [eleven, armadin] = f.items;
+    assert.equal(eleven.usdApprox, null);
+    assert.deepEqual([eleven.funding.amount, eleven.funding.valuation, eleven.funding.valuationCurrency, eleven.funding.valuationText, eleven.funding.valuationFrom], [null, 22_000_000_000, 'USD', '$22B', 'title']);
+    assert.equal(armadin.usdApprox, 255_500_000);
+    assert.deepEqual([armadin.funding.valuation, armadin.funding.valuationText], [2_500_000_000, '$2.5B']);
+    assert.deepEqual(f.totals.bySector.find((s) => s.id === 'ai'), { id: 'ai', label: 'AI/ML', items: 2, withAmount: 1, sumUsd: 255_500_000 });
+    assert.deepEqual(f.totals.byStage, [{ stage: 'unknown', items: 2, withAmount: 1, sumUsd: 255_500_000 }]);
+    assert.deepEqual(f.coverage, { items: 2, withAmount: 1, withStage: 0 });
+    assert.ok(f.method.includes('never counted as an amount'));
   });
 
   test('totals by sector and by stage state items, withAmount and sumUsd honestly', () => {

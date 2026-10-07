@@ -52,7 +52,7 @@
 
 <main class="wrap" id="main" tabindex="-1">
 <h1>Funding</h1>
-<p class="intro">Every item of kind Funding in the 90-day window. Amounts are shown as written in the headline (original currency); stages and amounts are parsed from the text, so some rows have neither.</p>
+<p class="intro">Every item of kind Funding in the 90-day window. Amounts are shown as written in the headline (original currency); stages and amounts are parsed from the text, so some rows have neither. A valuation is not an amount: it is shown as its own note and never ranked or summed.</p>
 <p class="method" id="method">Loading method…</p>
 <p id="status" class="status-line" aria-live="polite">Loading funding items…</p>
 
@@ -118,20 +118,20 @@
 <tbody></tbody>
 </table>
 </div>
-<p class="method" id="usd-note">approx. USD at static rates — see table below; amounts are parsed from the headline (or summary) and may be valuations or fund sizes when the headline reads that way.</p>
+<p class="method" id="usd-note">approx. USD at static rates — see table below; amounts are parsed from the headline (or summary). A figure the text calls a valuation ("doubles valuation to $22B", "at a $1B valuation") is shown as a note on the row and is never the amount, so a valuation-only headline has no amount and is neither ranked nor summed; a fund size still parses as an amount when the headline reads that way. In the approx. USD order, reports of one round are grouped into one row (same parsed amount or valuation, shared company name, published within 3 days), led by the newest report with an amount; the other sources are listed as "also reported by" links.</p>
 
 <section class="lens-section" id="totals" aria-labelledby="totals-heading">
 <h2 id="totals-heading">Totals</h2>
 <p class="coverage" id="coverage"></p>
 <div class="two-col">
-<div class="table-scroll">
+<div class="table-scroll table-fit">
 <table class="data-table" id="sector-totals">
 <caption>By sector (keyword-tagged; an item can count in several sectors; all funding items in the window)</caption>
 <thead><tr><th scope="col">Sector</th><th scope="col" class="num">Items</th><th scope="col" class="num">With parsed amount</th><th scope="col" class="num" title="approx. USD at static rates — see table">Sum (approx. USD)</th></tr></thead>
 <tbody></tbody>
 </table>
 </div>
-<div class="table-scroll">
+<div class="table-scroll table-fit">
 <table class="data-table" id="stage-totals">
 <caption>By stage (parsed from the text; all funding items in the window)</caption>
 <thead><tr><th scope="col">Stage</th><th scope="col" class="num">Items</th><th scope="col" class="num">With parsed amount</th><th scope="col" class="num" title="approx. USD at static rates — see table">Sum (approx. USD)</th></tr></thead>
@@ -144,11 +144,13 @@
 <section class="lens-section" id="fx" aria-labelledby="fx-heading">
 <h2 id="fx-heading">FX table</h2>
 <p class="intro" id="fx-note"></p>
+<div class="table-scroll table-fit">
 <table class="data-table fx-table" id="fx-table">
 <caption>USD per unit of currency (static)</caption>
 <thead><tr><th scope="col">Currency</th><th scope="col" class="num">USD per unit</th></tr></thead>
 <tbody></tbody>
 </table>
+</div>
 </section>
 </main>
 

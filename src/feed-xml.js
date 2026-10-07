@@ -40,12 +40,18 @@ function li(href, text, note, publicUrl) {
   return `<li>${a}${note ? ` — ${esc(note)}` : ''}</li>`;
 }
 
+/** "also reported by Sifted, Tech.eu" for a grouped digest round (src/digest.js alsoReportedBy), '' otherwise. */
+function alsoText(round) {
+  const names = (Array.isArray(round.alsoReportedBy) ? round.alsoReportedBy : []).map((a) => a?.source).filter((s) => typeof s === 'string' && s);
+  return names.length ? `also reported by ${names.join(', ')}` : '';
+}
+
 /** HTML body of one week entry (unescaped HTML string; the caller escapes it for Atom). */
 export function weekHtml(week, publicUrl) {
   const digestUrl = `${publicUrl}/digest.html?week=${week.week}`;
   const parts = [
     `<p>ISO week ${esc(week.week)} (${esc(week.from.slice(0, 10))} to ${esc(week.to.slice(0, 10))})${week.partial ? ', partial week' : ''}. <a href="${esc(digestUrl)}">Open in Startup Radar</a>.</p>`,
-    list('Funding rounds (ordered by approx. USD at static rates)', week.rounds.map((r) => li(r.url, r.title, [r.amountText, r.stage].filter(Boolean).join(', '), publicUrl))),
+    list('Funding rounds (ordered by approx. USD at static rates)', week.rounds.map((r) => li(r.url, r.title, [r.amountText, r.stage, r.valuationText ? `valuation ${r.valuationText} (not a round amount)` : null, alsoText(r)].filter(Boolean).join(', '), publicUrl))),
     list('Launches (HN points / PH votes)', week.launches.map((l) => li(l.url, l.title, `${l.value} ${l.metric}`, publicUrl))),
     list('New YC companies (by launch date)', week.ycNew.map((c) => li(c.url, c.name, [c.batch, c.oneLiner].filter(Boolean).join(': '), publicUrl))),
     list('Rising terms (this week vs the 4 prior weeks)', week.risingTerms.map((t) => li(null, t.term, `${t.thisWeek} this week, ${t.priorWeeklyAvg} per prior week`, publicUrl))),

@@ -18,7 +18,8 @@ const SOURCES = ['sources.html', 'styles.css', 'sources.css', 'theme.js', 'ui.js
 // Lens pages (FEAT-003): shell + drawer (drawer.js imports filter.js) + the shared lens.js runtime + pages.css.
 const LENS_SHARED = ['styles.css', 'pages.css', 'theme.js', 'ui.js', 'format.js', 'nav.js', 'shell.js', 'drawer.js', 'filter.js', 'lens.js'];
 const TRENDS = ['trends.html', ...LENS_SHARED, 'trends.js'];
-const FUNDING = ['funding.html', ...LENS_SHARED, 'funding.js'];
+// Funding also loads the DOM-free same-story grouping (funding-group.js imports text.js for the stopword list).
+const FUNDING = ['funding.html', ...LENS_SHARED, 'funding-group.js', 'text.js', 'funding.js'];
 const YC = ['yc.html', ...LENS_SHARED, 'yc.js'];
 // Notebook (FEAT-004): the lens runtime + the store split (notebook-store.js on the home set, notebook-tools.js here only).
 const NOTEBOOK = ['notebook.html', ...LENS_SHARED, 'notebook-store.js', 'notebook-tools.js', 'notebook.js'];
@@ -42,7 +43,7 @@ describe('frontend payload budget', () => {
     console.log('| file | bytes |');
     console.log('|---|---|');
     for (const [f, b] of rows) console.log(`| ${f} | ${b} |`);
-    for (const f of ['pages.css', 'lens.js', 'trends.js', 'funding.js', 'yc.js', 'notebook.js', 'notebook-tools.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']) console.log(`| ${f} (lens pages) | ${size(f)} |`);
+    for (const f of ['pages.css', 'lens.js', 'trends.js', 'funding.js', 'funding-group.js', 'yc.js', 'notebook.js', 'notebook-tools.js', 'signals.js', 'digest.js', 'resources.js', 'resources-data.js', 'trends.html', 'funding.html', 'yc.html', 'notebook.html', 'signals.html', 'digest.html', 'resources.html']) console.log(`| ${f} (lens pages) | ${size(f)} |`);
     for (const [name, files] of Object.entries(PAGE_SETS)) console.log(`| ${name} total | ${total(files)} |`);
     for (const f of DEFERRED) console.log(`| ${f} (after load, not in the first-render budget) | ${size(f)} |`);
     assert.ok(sum < BUDGET, `home set is ${sum} bytes`);
