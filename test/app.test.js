@@ -204,7 +204,7 @@ describe('app without ADMIN_TOKEN', () => {
     assert.equal(d.weeks.length, 12);
     assert.deepEqual(Object.keys(d.weeks[0]), ['week', 'from', 'to', 'partial', 'rounds', 'launches', 'ycNew', 'risingTerms', 'signalHighlights']);
     assert.equal(d.weeks.at(-1).partial, true);
-    assert.deepEqual(d.weeks.at(-1).signalHighlights, { repos: [], models: [] });
+    assert.deepEqual(d.weeks.at(-1).signalHighlights, { repos: [], models: [], github: null, huggingface: null });
     assert.equal(d.weeks[0].signalHighlights, null);
 
     const feed = await fetch(`${ctx.base}/feed.xml`);
@@ -359,6 +359,9 @@ describe('app with ADMIN_TOKEN', () => {
 
     const digest = await (await fetch(`${ctx.base}/data/digest.json`)).json();
     assert.deepEqual(digest.weeks.at(-1).signalHighlights.repos, [{ fullName: 'stub/repo', url: 'https://github.com/stub/repo', stars: 7, label: 'stars since creation (<= 7 days)' }]);
+    assert.deepEqual(digest.weeks.at(-1).signalHighlights.github, { ok: false, fetchedAt: s.fetchedAt, lastSuccessAt: s.lastSuccessAt, unavailableSince: s.unavailableSince }, 'the digest carries the stale state');
+    const feed = await (await fetch(`${ctx.base}/feed.xml`)).text();
+    assert.ok(feed.includes(`last good data from ${s.lastSuccessAt} — unavailable since ${s.unavailableSince}`), 'the feed entry labels the carried-over list');
   });
 
   test('derived files are recomputed only when the DB changed', async () => {

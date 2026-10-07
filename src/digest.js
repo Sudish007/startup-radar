@@ -76,14 +76,26 @@ function ycNewOf(companies) {
     .map((c) => ({ key: c.key, name: c.name, url: c.url, batch: c.batch, oneLiner: c.oneLiner, launchedAt: c.launchedAt }));
 }
 
-function signalData(signals, id) {
-  const row = (Array.isArray(signals?.signals) ? signals.signals : []).find((s) => s?.id === id);
-  return row?.data ?? null;
+function signalRow(signals, id) {
+  return (Array.isArray(signals?.signals) ? signals.signals : []).find((s) => s?.id === id) ?? null;
+}
+
+/** Fetch state of a signal row, so a carried-over payload keeps its "last good data from" label downstream. */
+function signalState(row) {
+  if (!row) return null;
+  return {
+    ok: row.ok === true,
+    fetchedAt: row.fetchedAt ?? null,
+    lastSuccessAt: row.lastSuccessAt ?? null,
+    unavailableSince: row.unavailableSince ?? null,
+  };
 }
 
 function highlightsOf(signals) {
-  const gh = signalData(signals, 'github_new_repos');
-  const hf = signalData(signals, 'hf_trending');
+  const ghRow = signalRow(signals, 'github_new_repos');
+  const hfRow = signalRow(signals, 'hf_trending');
+  const gh = ghRow?.data ?? null;
+  const hf = hfRow?.data ?? null;
   const repos = (Array.isArray(gh?.repos) ? [...gh.repos] : [])
     .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0) || byText(a.fullName, b.fullName))
     .slice(0, MAX_HIGHLIGHTS)
@@ -91,12 +103,14 @@ function highlightsOf(signals) {
   const models = (Array.isArray(hf?.models) ? hf.models : [])
     .slice(0, MAX_HIGHLIGHTS)
     .map((m, i) => ({ id: m.id, url: m.url, likes: m.likes, downloads: m.downloads, position: i + 1 }));
-  return { repos, models };
+  return { repos, models, github: signalState(ghRow), huggingface: signalState(hfRow) };
 }
 
 /**
  * buildDigest({ items, funding, yc, signals, now }) -> { generatedAt, method, weeks: [12 × {
  *   week, from, to, partial, rounds, launches, ycNew, risingTerms, signalHighlights|null }] }
+ * signalHighlights = { repos, models, github, huggingface } where github / huggingface carry the signal's
+ * { ok, fetchedAt, lastSuccessAt, unavailableSince } (null when the signal is absent) so carried-over data stays labelled.
  * `items` = window items (as exported), `funding` = buildFunding() output (or its items array),
  * `yc` = buildYcLens() output (or its companies array), `signals` = runSignals() output or null.
  */

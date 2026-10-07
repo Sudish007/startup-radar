@@ -52,7 +52,7 @@ export function mapGithub(body, { now = new Date(), authenticated = false } = {}
 export default {
   id: 'github_new_repos',
   name: 'GitHub: new repositories',
-  homepage: 'https://github.com/search?q=created%3A%3E%3D2020-01-01&type=repositories&s=stars&o=desc',
+  homepage: 'https://github.com/trending',
   description: 'the 50 most-starred repositories created in the last 7 days, as returned by the GitHub search API at fetch time',
   enabled: () => true,
   requires: null,

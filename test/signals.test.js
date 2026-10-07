@@ -194,6 +194,7 @@ describe('github_new_repos', () => {
   test('sinceDate / searchUrl: created:>= 7 days ago, stars desc, 50 per page', () => {
     assert.equal(sinceDate(NOW), '2026-09-28');
     assert.equal(searchUrl(NOW), 'https://api.github.com/search/repositories?q=created%3A%3E%3D2026-09-28&sort=stars&order=desc&per_page=50');
+    assert.equal(github.homepage, 'https://github.com/trending', 'the Source link is not a fixed-date search');
   });
   test('requestHeaders adds Authorization only when GITHUB_TOKEN is set', () => {
     assert.deepEqual(requestHeaders({}), { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' });
@@ -288,6 +289,8 @@ describe('hn_hiring', () => {
   });
   test('termRegex: word boundaries, case-insensitive, escaped specials (c++, c#, next.js)', () => {
     assert.ok(termRegex('go').test('Go developer'));
+    assert.ok(termRegex('go').test('go to our site'), 'the bare word also matches the English verb');
+    assert.ok(hiring.description.includes('"go" is matched as a bare word'), 'and the description says so');
     assert.equal(termRegex('go').test('Golang and Django'), false, 'go inside golang/django does not count');
     assert.ok(termRegex('c++').test('Senior C++ dev'));
     assert.equal(termRegex('c++').test('c+ +'), false);

@@ -2,8 +2,12 @@
 // attribute goes through esc(); the HTML inside <content type="html"> is built with esc() for its own text
 // and then escaped again as the element's text content, as Atom requires.
 
+// Characters XML 1.0 forbids even when escaped (C0 controls other than tab, LF and CR).
+const XML_ILLEGAL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
+
 export function esc(s) {
   return String(s ?? '')
+    .replace(XML_ILLEGAL, '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
@@ -20,9 +24,15 @@ function absolute(href, publicUrl) {
   return `${publicUrl}/${String(href).replace(/^\.?\//, '')}`;
 }
 
-function list(title, rows) {
+function list(title, rows, note = '') {
   if (!rows.length) return '';
-  return `<h2>${esc(title)}</h2><ul>${rows.join('')}</ul>`;
+  return `<h2>${esc(title)}</h2>${note}<ul>${rows.join('')}</ul>`;
+}
+
+/** Signal highlights carried over from a failed fetch keep the label the Signals page gives them. */
+export function staleNote(state) {
+  if (!state || state.ok !== false) return '';
+  return `<p>Carried over from an earlier fetch: last good data from ${esc(state.lastSuccessAt ?? 'an unknown time')} — unavailable since ${esc(state.unavailableSince ?? 'an unknown time')}.</p>`;
 }
 
 function li(href, text, note, publicUrl) {
@@ -41,9 +51,9 @@ export function weekHtml(week, publicUrl) {
     list('Rising terms (this week vs the 4 prior weeks)', week.risingTerms.map((t) => li(null, t.term, `${t.thisWeek} this week, ${t.priorWeeklyAvg} per prior week`, publicUrl))),
   ];
   if (week.signalHighlights) {
-    const { repos = [], models = [] } = week.signalHighlights;
-    parts.push(list('GitHub: new repositories (stars since creation, <= 7 days)', repos.map((r) => li(r.url, r.fullName, `${r.stars} stars`, publicUrl))));
-    parts.push(list('Hugging Face: trending models (API order)', models.map((m) => li(m.url, m.id, `#${m.position}${m.likes != null ? `, ${m.likes} likes` : ''}`, publicUrl))));
+    const { repos = [], models = [], github = null, huggingface = null } = week.signalHighlights;
+    parts.push(list('GitHub: new repositories (stars since creation, <= 7 days)', repos.map((r) => li(r.url, r.fullName, `${r.stars} stars`, publicUrl)), staleNote(github)));
+    parts.push(list('Hugging Face: trending models (API order)', models.map((m) => li(m.url, m.id, `#${m.position}${m.likes != null ? `, ${m.likes} likes` : ''}`, publicUrl)), staleNote(huggingface)));
   }
   return parts.join('');
 }

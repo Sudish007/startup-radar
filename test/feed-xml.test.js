@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildDigest } from '../src/digest.js';
-import { buildAtom, esc, weekHtml } from '../src/feed-xml.js';
+import { buildAtom, esc, staleNote, weekHtml } from '../src/feed-xml.js';
 import { buildFunding } from '../src/funding.js';
 
 const NOW = new Date('2026-10-07T15:00:00.000Z');
@@ -26,8 +26,8 @@ function digestWithContent() {
   const funding = buildFunding(items, { now: NOW });
   const yc = { companies: [{ key: 'k', name: 'Yc & Sons', url: 'https://www.ycombinator.com/companies/yc', batch: 'Fall 2026', oneLiner: '<b>bold</b>', launchedAt: at(2) }] };
   const signals = { generatedAt: NOW.toISOString(), signals: [
-    { id: 'github_new_repos', data: { label: 'stars since creation (<= 7 days)', repos: [{ fullName: 'o/r', url: 'https://github.com/o/r', stars: 7 }] } },
-    { id: 'hf_trending', data: { models: [{ id: 'org/m', url: 'https://huggingface.co/org/m', likes: 3, downloads: 9 }] } },
+    { id: 'github_new_repos', ok: true, fetchedAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(), unavailableSince: null, data: { label: 'stars since creation (<= 7 days)', repos: [{ fullName: 'o/r', url: 'https://github.com/o/r', stars: 7 }] } },
+    { id: 'hf_trending', ok: true, fetchedAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(), unavailableSince: null, data: { models: [{ id: 'org/m', url: 'https://huggingface.co/org/m', likes: 3, downloads: 9 }] } },
   ] };
   return buildDigest({ items, funding, yc, signals, now: NOW });
 }
@@ -39,6 +39,15 @@ describe('esc', () => {
     assert.equal(esc(undefined), '');
     assert.equal(esc(12), '12');
     assert.equal(esc('&amp;'), '&amp;amp;', 'no double-unescape magic: raw text in, escaped out');
+  });
+  test('drops the C0 control characters XML 1.0 forbids, keeps tab / LF / CR and non-ASCII text', () => {
+    assert.equal(esc('a\x00b\x08c\x0Bd\x0Ce\x0Ef\x1Bg\x1Fh'), 'abcdefgh');
+    assert.equal(esc('tab\tlf\ncr\r'), 'tab\tlf\ncr\r');
+    assert.equal(esc('déjà — 日本 <x>'), 'déjà — 日本 &lt;x&gt;');
+    const digest = buildDigest({ items: [item('Bad \x1B title & more', { kind: 'launch', extra: { points: 1 } })], now: NOW });
+    const xml = buildAtom({ digest, publicUrl: PUBLIC_URL, now: NOW });
+    assert.equal(/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(xml), false, 'no illegal byte reaches feed.xml');
+    assert.ok(xml.includes('Bad  title &amp;amp; more'));
   });
 });
 
@@ -100,6 +109,28 @@ describe('buildAtom', () => {
     const content = /<content type="html">([\s\S]*?)<\/content>/.exec(xml)[1];
     assert.equal(content.includes('<'), false, 'content is text, not markup');
     assert.equal(content, esc(html));
+  });
+
+  test('a carried-over signal payload is labelled "last good data from … — unavailable since …" in the current week; fresh data is not', () => {
+    const fresh = digestWithContent();
+    const freshHtml = weekHtml(fresh.weeks.at(-1), PUBLIC_URL);
+    assert.equal(freshHtml.includes('Carried over'), false);
+    assert.equal(staleNote(null), '');
+    assert.equal(staleNote({ ok: true, lastSuccessAt: 'x', unavailableSince: null }), '');
+    assert.equal(staleNote({ ok: false, lastSuccessAt: '2026-10-05T10:00:00.000Z', unavailableSince: '2026-10-06T10:00:00.000Z' }), '<p>Carried over from an earlier fetch: last good data from 2026-10-05T10:00:00.000Z — unavailable since 2026-10-06T10:00:00.000Z.</p>');
+    assert.equal(staleNote({ ok: false, lastSuccessAt: null, unavailableSince: null }), '<p>Carried over from an earlier fetch: last good data from an unknown time — unavailable since an unknown time.</p>');
+
+    const signals = { generatedAt: NOW.toISOString(), signals: [
+      { id: 'github_new_repos', ok: false, fetchedAt: NOW.toISOString(), lastSuccessAt: '2026-10-05T10:00:00.000Z', unavailableSince: '2026-10-06T10:00:00.000Z', data: { label: 'stars since creation (<= 7 days)', repos: [{ fullName: 'o/r', url: 'https://github.com/o/r', stars: 7 }] } },
+      { id: 'hf_trending', ok: true, fetchedAt: NOW.toISOString(), lastSuccessAt: NOW.toISOString(), unavailableSince: null, data: { models: [{ id: 'org/m', url: 'https://huggingface.co/org/m', likes: 3, downloads: 9 }] } },
+    ] };
+    const digest = buildDigest({ signals, now: NOW });
+    const html = weekHtml(digest.weeks.at(-1), PUBLIC_URL);
+    assert.ok(html.includes('<h2>GitHub: new repositories (stars since creation, &lt;= 7 days)</h2><p>Carried over from an earlier fetch: last good data from 2026-10-05T10:00:00.000Z — unavailable since 2026-10-06T10:00:00.000Z.</p><ul>'), html);
+    assert.ok(html.includes('<h2>Hugging Face: trending models (API order)</h2><ul>'), 'the fresh signal has no note');
+    assert.equal((html.match(/Carried over/g) ?? []).length, 1);
+    const xml = buildAtom({ digest, publicUrl: PUBLIC_URL, now: NOW });
+    assert.ok(xml.includes(esc('last good data from 2026-10-05T10:00:00.000Z — unavailable since 2026-10-06T10:00:00.000Z')));
   });
 
   test('tolerates a missing digest and falls back to now', () => {

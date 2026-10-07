@@ -68,7 +68,7 @@ export default {
   id: 'hn_hiring',
   name: 'HN: Who is hiring?',
   homepage: 'https://news.ycombinator.com/submitted?id=whoishiring',
-  description: 'number of comments in the current "Ask HN: Who is hiring?" thread that mention each keyword (word-boundary, case-insensitive)',
+  description: 'number of comments in the current "Ask HN: Who is hiring?" thread that mention each keyword (word-boundary, case-insensitive; "go" is matched as a bare word, so it also counts the English verb)',
   enabled: () => true,
   requires: null,
   async fetch(ctx) {
