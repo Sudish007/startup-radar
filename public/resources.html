@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>YC — Startup Radar</title>
-<meta name="description" content="Companies of the three newest Y Combinator batches grouped by industry, with tag frequencies and team-size distribution, from the yc-oss open API mirror.">
+<title>Resources — Startup Radar</title>
+<meta name="description" content="Sixteen curated links for finding startup ideas: idea lists, reports, communities and learning material. Links only; nothing is fetched or counted.">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0B0F17">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
@@ -22,7 +22,7 @@
 <link rel="stylesheet" href="./styles.css">
 <link rel="stylesheet" href="./pages.css">
 </head>
-<body class="page-yc">
+<body class="page-resources">
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-header">
@@ -34,11 +34,11 @@
 <li><a href="./index.html">Feed</a></li>
 <li><a href="./trends.html">Trends</a></li>
 <li><a href="./funding.html">Funding</a></li>
-<li><a href="./yc.html" aria-current="page">YC</a></li>
+<li><a href="./yc.html">YC</a></li>
 <li><a href="./notebook.html">Notebook</a></li>
 <li><a href="./signals.html">Signals</a></li>
 <li><a href="./digest.html">Digest</a></li>
-<li><a href="./resources.html">Resources</a></li>
+<li><a href="./resources.html" aria-current="page">Resources</a></li>
 <li><a href="./sources.html">Sources</a></li>
 </ul>
 </nav>
@@ -51,43 +51,19 @@
 </header>
 
 <main class="wrap" id="main" tabindex="-1">
-<h1>YC</h1>
-<p class="intro">Companies of the three newest Y Combinator batches, grouped by the industry YC lists for them, with the tags YC assigned and the team sizes YC publishes. Every count is a count of companies in the selected batches.</p>
-<p class="method attribution" id="attribution">Source: yc-oss open API mirror of ycombinator.com. This page is rebuilt on an hourly schedule; GitHub runs it a few times a day in practice - see the generated time above.</p>
-<p id="status" class="status-line" aria-live="polite">Loading companies…</p>
-
-<div class="lens-controls" id="controls">
-<div class="group" role="group" aria-labelledby="batch-label">
-<span class="group-label" id="batch-label">Batch</span>
-<div class="chips" id="batch-chips"></div>
-</div>
-</div>
-
-<section class="lens-section" id="industries" aria-labelledby="industries-heading">
-<h2 id="industries-heading">Companies by industry</h2>
-<p class="intro" id="industries-note"></p>
-<div id="industry-groups"></div>
-</section>
-
-<section class="lens-section" id="tags" aria-labelledby="tags-heading">
-<h2 id="tags-heading">Tags</h2>
-<p class="intro" id="tags-note"></p>
-<ol class="tag-list" id="tag-list"></ol>
-</section>
-
-<section class="lens-section" id="team" aria-labelledby="team-heading">
-<h2 id="team-heading">Team size</h2>
-<p class="intro" id="team-note"></p>
-<ul class="bar-list" id="team-bars"></ul>
-</section>
+<h1>Resources</h1>
+<p class="intro">Places to look for startup ideas beyond this feed: idea lists from investors, yearly reports, communities and learning material. Each link says what the page is and who publishes it.</p>
+<p class="method" id="method">Links only — nothing here is fetched or counted. Every link opens in a new tab on the publisher's own site.</p>
+<p id="status" class="status-line" aria-live="polite">Loading links…</p>
+<div class="two-col resource-groups" id="resource-groups"></div>
 </main>
 
 <footer class="site-footer">
 <div class="wrap">
-<p>Source: yc-oss open API mirror of ycombinator.com; rebuilt on an hourly schedule that GitHub runs a few times a day in practice. Company pages open on ycombinator.com; items that are also in the feed open in the detail panel. <a href="./index.html">Back to the feed</a>.</p>
+<p>The list is hand-picked (public/resources-data.js) and every link is probed with scripts/check-links.mjs when it changes; the site does not fetch, count or rank any of these pages. <a href="./index.html">Back to the feed</a>.</p>
 </div>
 </footer>
 
-<script src="./yc.js" type="module"></script>
+<script src="./resources.js" type="module"></script>
 </body>
 </html>

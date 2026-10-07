@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS source_status (
   last_duration_ms INTEGER,
   last_item_count  INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS kv (
+  key        TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 const FTS_DDL = `
@@ -152,6 +158,11 @@ export function openDb(filePath, { warn = console.warn } = {}) {
   const countByKindStmt = sqlite.prepare('SELECT kind, COUNT(*) AS n FROM items GROUP BY kind');
   const countByRegionStmt = sqlite.prepare('SELECT region, COUNT(*) AS n FROM items GROUP BY region');
   const countSinceStmt = sqlite.prepare('SELECT COUNT(*) AS n FROM items WHERE published_at >= ?');
+  const kvGetStmt = sqlite.prepare('SELECT value_json FROM kv WHERE key = ?');
+  const kvSetStmt = sqlite.prepare(`
+    INSERT INTO kv (key, value_json, updated_at) VALUES (@key, @value_json, @updated_at)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+  `);
 
   function buildWhere({ kind, region, sources, since }) {
     const clauses = [];
@@ -293,6 +304,21 @@ export function openDb(filePath, { warn = console.warn } = {}) {
     });
   }
 
+  /** JSON value stored under `key`, or null when absent (or unparseable). */
+  function kvGet(key) {
+    const row = kvGetStmt.get(String(key));
+    if (!row) return null;
+    try {
+      return JSON.parse(row.value_json);
+    } catch {
+      return null;
+    }
+  }
+
+  function kvSet(key, value, { nowIso = new Date().toISOString() } = {}) {
+    kvSetStmt.run({ key: String(key), value_json: JSON.stringify(value ?? null), updated_at: nowIso });
+  }
+
   function upsertItems(sourceId, rows) {
     const list = (rows ?? []).filter((r) => r && r.source_id === sourceId);
     const changed = list.length ? upsertTx(list) : 0;
@@ -310,6 +336,8 @@ export function openDb(filePath, { warn = console.warn } = {}) {
     getSourceStatuses,
     setSourceStatus,
     itemCountsBySource,
+    kvGet,
+    kvSet,
     close: () => sqlite.close(),
     /** Raw better-sqlite3 handle; tests only. */
     _sqlite: sqlite,

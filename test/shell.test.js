@@ -20,13 +20,14 @@ function staticNav(html) {
 }
 
 describe('nav.js', () => {
-  test('NAV has six pages with unique hrefs/pages and go-to keys for all but Sources', () => {
-    assert.equal(NAV.length, 6);
-    assert.deepEqual(NAV.map((n) => n.page), ['feed', 'trends', 'funding', 'yc', 'notebook', 'sources']);
-    assert.deepEqual(NAV.map((n) => n.key), ['h', 't', 'f', 'y', 'n', null]);
+  test('NAV has nine pages with unique hrefs/pages and go-to keys for all but Sources', () => {
+    assert.equal(NAV.length, 9);
+    assert.deepEqual(NAV.map((n) => n.page), ['feed', 'trends', 'funding', 'yc', 'notebook', 'signals', 'digest', 'resources', 'sources']);
+    assert.deepEqual(NAV.map((n) => n.key), ['h', 't', 'f', 'y', 'n', 's', 'd', 'r', null]);
     for (const n of NAV) assert.match(n.href, /^\.\/[a-z]+\.html$/, n.href);
-    assert.equal(new Set(NAV.map((n) => n.href)).size, 6);
-    assert.deepEqual(GOTO_ROWS, [[['g', 'h'], 'Go to Feed'], [['g', 't'], 'Go to Trends'], [['g', 'f'], 'Go to Funding'], [['g', 'y'], 'Go to YC'], [['g', 'n'], 'Go to Notebook']]);
+    assert.equal(new Set(NAV.map((n) => n.href)).size, 9);
+    assert.equal(new Set(NAV.map((n) => n.key).filter(Boolean)).size, 8, 'go-to keys are unique');
+    assert.deepEqual(GOTO_ROWS, [[['g', 'h'], 'Go to Feed'], [['g', 't'], 'Go to Trends'], [['g', 'f'], 'Go to Funding'], [['g', 'y'], 'Go to YC'], [['g', 'n'], 'Go to Notebook'], [['g', 's'], 'Go to Signals'], [['g', 'd'], 'Go to Digest'], [['g', 'r'], 'Go to Resources']]);
   });
 
   test('pageOf maps pathnames at the root and under a sub-path', () => {
@@ -37,6 +38,10 @@ describe('nav.js', () => {
     assert.equal(pageOf('/sources'), 'sources');
     assert.equal(pageOf('/sources.html'), 'sources');
     assert.equal(pageOf('/startup-radar/notebook.html'), 'notebook');
+    assert.equal(pageOf('/startup-radar/signals.html'), 'signals');
+    assert.equal(pageOf('/digest'), 'digest');
+    assert.equal(pageOf('/resources.html'), 'resources');
+    assert.equal(pageOf('/feed.xml'), null);
     assert.equal(pageOf('/nope.html'), null);
     assert.equal(pageOf(undefined), 'feed');
   });
@@ -62,6 +67,13 @@ describe('every public/*.html matches the shell contract', () => {
         assert.equal(html.includes(needle), false, `${file} contains ${needle}`);
       }
       assert.ok(html.includes('<footer class="site-footer">') && html.includes('<div class="wrap">'), 'footer.site-footer .wrap exists for the shared links');
+    });
+
+    test(`${file}: links the Atom feed once in <head> (feed discovery)`, () => {
+      const html = read(file);
+      const head = html.slice(0, html.indexOf('</head>'));
+      assert.equal((html.match(/rel="alternate"/g) || []).length, 1);
+      assert.ok(head.includes('<link rel="alternate" type="application/atom+xml" title="Startup Radar weekly digest" href="./feed.xml">'), `${file} head links ./feed.xml`);
     });
 
     test(`${file}: exactly one attribute-free <h1>`, () => {
