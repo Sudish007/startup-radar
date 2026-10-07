@@ -165,9 +165,21 @@ describe('buildDerived', () => {
   });
   afterEach(() => db.close());
 
-  test('returns { trends, funding, yc } over the window (trends/funding) and every yc item (yc)', () => {
+  test('returns { trends, funding, yc, signals, digest, feedXml } over the window (trends/funding) and every yc item (yc)', () => {
     const d = buildDerived({ db, sources: SOURCES, env: {}, now: NOW });
-    assert.deepEqual(Object.keys(d), ['trends', 'funding', 'yc']);
+    assert.deepEqual(Object.keys(d), ['trends', 'funding', 'yc', 'signals', 'digest', 'feedXml']);
+    assert.deepEqual(d.signals, { generatedAt: null, signals: [] }, 'nothing in kv -> empty shape');
+    assert.equal(d.digest.weeks.length, 12);
+    assert.equal(d.digest.weeks.at(-1).rounds.length, 1, 'the $4M round (Monday) falls in the current week (NOW is Wednesday)');
+    assert.equal(d.digest.weeks.at(-1).rounds[0].metric, 'approx. USD at static rates');
+    assert.ok(d.feedXml.startsWith('<?xml'));
+    assert.ok(d.feedXml.includes('http://localhost:3000/feed.xml'), 'no PUBLIC_URL -> localhost fallback');
+
+    db.kvSet('signals', { generatedAt: NOW.toISOString(), signals: [{ id: 'github_new_repos', data: { label: 'stars since creation (<= 7 days)', repos: [{ fullName: 'a/b', url: 'https://github.com/a/b', stars: 9 }] } }] });
+    const d2 = buildDerived({ db, sources: SOURCES, env: { PUBLIC_URL: 'https://x.test/sr/' }, now: NOW });
+    assert.equal(d2.signals.signals[0].id, 'github_new_repos', 'kv payload is picked up');
+    assert.deepEqual(d2.digest.weeks.at(-1).signalHighlights.repos, [{ fullName: 'a/b', url: 'https://github.com/a/b', stars: 9, label: 'stars since creation (<= 7 days)' }]);
+    assert.ok(d2.feedXml.includes('<id>https://x.test/sr/feed.xml</id>'), 'trailing slash trimmed');
 
     assert.equal(d.trends.items, 4, 'window items: 2 hn (one is 200 days old -> excluded), 2 tc, 1 yc = 4');
     assert.equal(d.trends.generatedAt, NOW.toISOString());
@@ -195,7 +207,9 @@ describe('buildDerived', () => {
 
   test('payloads are JSON-serialisable and compact', () => {
     const d = buildDerived({ db, sources: SOURCES, env: {}, now: NOW });
+    assert.equal(typeof d.feedXml, 'string');
     for (const [name, value] of Object.entries(d)) {
+      if (name === 'feedXml') continue;
       const text = JSON.stringify(value);
       assert.deepEqual(JSON.parse(text), value, name);
       assert.ok(Buffer.byteLength(text) < 20_000, `${name} is ${Buffer.byteLength(text)} bytes`);

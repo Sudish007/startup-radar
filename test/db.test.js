@@ -214,4 +214,23 @@ describe('db', () => {
     assert.equal(db.listItems({}).length, 3, 'no sourceId -> every source');
     assert.equal(db.listItems({ sourceId: undefined }).length, 3);
   });
+  test('kv: kvGet is null when absent, kvSet round-trips JSON and overwrites with updated_at', () => {
+    assert.equal(db.kvGet('signals'), null);
+    const payload = { generatedAt: NOW, signals: [{ id: 'ask_hn', ok: true, data: { posts: [{ title: 'a', points: 3 }] } }] };
+    db.kvSet('signals', payload, { nowIso: NOW });
+    assert.deepEqual(db.kvGet('signals'), payload);
+    assert.equal(db._sqlite.prepare('SELECT updated_at FROM kv WHERE key = ?').get('signals').updated_at, NOW);
+
+    db.kvSet('signals', { generatedAt: '2026-10-03T00:00:00.000Z', signals: [] }, { nowIso: '2026-10-03T00:00:00.000Z' });
+    assert.deepEqual(db.kvGet('signals'), { generatedAt: '2026-10-03T00:00:00.000Z', signals: [] });
+    assert.equal(db._sqlite.prepare('SELECT COUNT(*) AS n FROM kv').get().n, 1, 'upsert, not a second row');
+    assert.equal(db._sqlite.prepare('SELECT updated_at FROM kv WHERE key = ?').get('signals').updated_at, '2026-10-03T00:00:00.000Z');
+
+    db.kvSet('other', 'text');
+    assert.equal(db.kvGet('other'), 'text');
+    db.kvSet('nul', undefined);
+    assert.equal(db.kvGet('nul'), null);
+    db._sqlite.prepare('UPDATE kv SET value_json = ? WHERE key = ?').run('{broken', 'other');
+    assert.equal(db.kvGet('other'), null, 'unparseable value -> null, no throw');
+  });
 });

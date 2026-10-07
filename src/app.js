@@ -6,9 +6,11 @@ import express from 'express';
 import { KINDS, REGIONS } from './lib/classify.js';
 import { buildDerived } from './derived.js';
 import { buildSnapshot, decorateItem, itemsPayload, sourcesPayload } from './export.js';
+import { SIGNALS_KV_KEY } from './refresh.js';
+import { EMPTY_SIGNALS } from './signals/run.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook'];
+export const PAGES = ['sources', 'trends', 'funding', 'yc', 'notebook', 'signals', 'digest', 'resources'];
 
 const CSP = "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
@@ -140,11 +142,16 @@ export function createApp({ db, sources, config, refresh, env = process.env, swV
 
   // Derived files (trends/funding/yc) are computed once per DB state: the cache key changes whenever a
   // refresh succeeded or the item count moved, which is exactly when the static build would differ.
+  // The signals payload is part of the key so the digest highlights follow the latest signal run.
   const derivedCache = { key: null, value: null };
+  function signalsPayload() {
+    return db.kvGet(SIGNALS_KV_KEY) ?? EMPTY_SIGNALS;
+  }
   function derived() {
-    const key = `${db.lastRefresh()}|${db.countItems()}`;
+    const signals = signalsPayload();
+    const key = `${db.lastRefresh()}|${db.countItems()}|${signals.generatedAt}`;
     if (derivedCache.key !== key) {
-      derivedCache.value = buildDerived({ db, sources, env });
+      derivedCache.value = buildDerived({ db, sources, env, signals, publicUrl: config.publicUrl });
       derivedCache.key = key;
     }
     return derivedCache.value;
@@ -160,6 +167,21 @@ export function createApp({ db, sources, config, refresh, env = process.env, swV
 
   app.get('/data/yc.json', (req, res) => {
     res.json(derived().yc);
+  });
+
+  // Signals are persisted by the refresh engine in kv (plan D8); before the first refresh the empty shape is served.
+  app.get('/data/signals.json', (req, res) => {
+    res.json(signalsPayload());
+  });
+
+  app.get('/data/digest.json', (req, res) => {
+    res.json(derived().digest);
+  });
+
+  app.get('/feed.xml', (req, res) => {
+    res.setHeader('Content-Type', 'application/atom+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(derived().feedXml);
   });
 
   app.use(express.static(PUBLIC_DIR, { maxAge: '1h', index: 'index.html' }));
